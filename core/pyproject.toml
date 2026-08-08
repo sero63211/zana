@@ -1,0 +1,54 @@
+[project]
+name = "zana-core"
+version = "0.1.0"
+description = "ZANA Core backend sidecar"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi[standard]>=0.115,<0.116",
+    "pydantic>=2.10,<3",
+    "uvicorn[standard]>=0.34,<0.35",
+    "click>=8.1,<9",
+    "psutil>=7,<8",
+    "platformdirs>=4,<5",
+]
+
+[project.scripts]
+zana-core = "zana_core.main:cli"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.24,<0.25",
+    "httpx>=0.28,<0.29",
+    "ruff>=0.9,<0.10",
+    "pyright>=1.1,<2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.pyright]
+include = ["zana_core"]
+pythonVersion = "3.12"
+typeCheckingMode = "basic"
+reportMissingImports = true
+reportMissingTypeStubs = false

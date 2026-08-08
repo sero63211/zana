@@ -1,0 +1,31 @@
+name: ZANA Core CI
+
+on:
+  pull_request:
+    paths:
+      - "core/**"
+      - ".github/workflows/core-ci.yml"
+  push:
+    branches: [master]
+    paths:
+      - "core/**"
+      - ".github/workflows/core-ci.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-extras
+      - run: uv run ruff check zana_core
+      - run: uv run pyright zana_core
+      - run: uv run pytest tests -v

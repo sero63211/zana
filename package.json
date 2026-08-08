@@ -1,0 +1,14 @@
+{
+  "name": "zana",
+  "private": true,
+  "scripts": {
+    "core:dev": "uv run --project core zana-core serve --host 127.0.0.1 --port 8000",
+    "core:test": "uv run --project core pytest core/tests",
+    "core:lint": "uv run --project core ruff check core",
+    "core:typecheck": "uv run --project core pyright core/zana_core",
+    "dev": "echo 'Use core:dev for backend. Desktop dev runs from apps/desktop.'",
+    "test": "uv run --project core pytest core/tests",
+    "lint": "uv run --project core ruff check core",
+    "typecheck": "uv run --project core pyright core/zana_core"
+  }
+}
