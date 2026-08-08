@@ -22,7 +22,9 @@ operational coordination only and never supersedes it.
 | T001 | Judge | none (read-only) | `docs/goals/zana-mvp/notes/` | done | controlling ZANA build plan, Appoint Me agent docs, installed router catalog | receipt `PASS`; note `T001-spec-architecture-judge.md` |
 | T002 | PM | none | GoalBuddy control files | done | T001 receipt | state.yaml updated; `next_allowed_task: T003` |
 | T003 | Worker | none (foundation, Git initialized without commit) | `AGENTS.md`, `docs/agent-adoption-map.md`, `.agent-work/**`, `.gitignore` | done | T001 note, `23_AGENT_ORCHESTRATION.md`, Appoint Me AGENTS.md, handoff protocol | `test -f` all required files; `rg` adoption/verdict/profile/authority terms; `git diff --check` |
-| T004 | Worker | queued scope (see state.yaml) | core and apps/desktop files per state.yaml | queued | T003 handoff, `04_SYSTEM_ARCHITECTURE.md`, `05_TECH_STACK.md`, `18_BACKEND_API_CONTRACT.md`, `21_REPOSITORY_STRUCTURE.md` | `uv` pytest/ruff/pyright, pnpm lint/typecheck/test, cargo fmt/clippy, auth health smoke |
+| T004-core | `router_opencode_go_deepseek_v4_pro` | `agent/T004-core` at `/private/tmp/zana-worktrees/T004-core` | `README.md`, root workspace manifests except lockfiles, `core/**`, `scripts/**`, `.github/**`, `T004-core.md` | active | T003 handoff; fixed bearer-token/health contract in state.yaml | focused backend tests/lint/type/auth smoke; handoff PASS |
+| T004-desktop | `router_opencode_go_deepseek_v4_flash` | `agent/T004-desktop` at `/private/tmp/zana-worktrees/T004-desktop` | `apps/desktop/**`, `T004-desktop.md` | active | T003 handoff; fixed invoke/sidecar/bootstrap contract in state.yaml | pnpm app lint/type/test; cargo fmt/clippy; handoff PASS |
+| T004-integration | PM | `master` at `/Users/sero/Documents/zana` | lockfiles, this ledger, `T004.md`, merges and cross-lane verification | active | T004-core and T004-desktop handoffs | merge without conflict; full M0 checks; authenticated health smoke |
 
 ## Single-owner shared contracts
 

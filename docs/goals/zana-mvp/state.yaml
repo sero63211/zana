@@ -205,6 +205,23 @@ tasks:
       - "Authenticated real Core health"
       - "Tauri/React UI surfaces real Core success and failure"
       - "Focused backend/frontend/native verification"
+    delegated_lanes:
+      - id: T004-core
+        agent: router_opencode_go_deepseek_v4_pro
+        worktree: /private/tmp/zana-worktrees/T004-core
+        owns: "README.md, root workspace manifests except lockfile, core/**, scripts/**, .github/**, .agent-work/handoffs/T004-core.md"
+      - id: T004-desktop
+        agent: router_opencode_go_deepseek_v4_flash
+        worktree: /private/tmp/zana-worktrees/T004-desktop
+        owns: "apps/desktop/**, .agent-work/handoffs/T004-desktop.md"
+      - id: T004-integration
+        agent: PM
+        worktree: /Users/sero/Documents/zana
+        owns: "pnpm-lock.yaml, core/uv.lock, .agent-work/ledger.md, .agent-work/handoffs/T004.md, cross-lane verification and merge"
+    bootstrap_contract:
+      backend: "GET /api/v1/health binds only to 127.0.0.1 and requires the exact per-launch bearer token; missing or wrong token returns 401."
+      desktop: "Tauri chooses a loopback port and random token, launches the zana-core sidecar with that configuration, exposes connection data only through an invoke command, never persists/logs the token, and terminates Core on exit."
+      web_dev: "Standalone Vite may use explicit VITE_ZANA_API_BASE and VITE_ZANA_API_TOKEN; if absent or invalid it must show a real actionable Core-unavailable state."
     allowed_files:
       - "README.md"
       - "package.json"
@@ -222,6 +239,9 @@ tasks:
       - "scripts/package-core.sh"
       - ".github/workflows/**"
       - ".agent-work/handoffs/T004.md"
+      - ".agent-work/handoffs/T004-core.md"
+      - ".agent-work/handoffs/T004-desktop.md"
+      - ".agent-work/ledger.md"
     verify:
       - "uv run --project core pytest core/tests/api"
       - "uv run --project core ruff check core"
