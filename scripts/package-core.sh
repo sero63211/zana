@@ -1,12 +1,27 @@
 #!/usr/bin/env bash
-# Package ZANA Core as a distributable sidecar binary using PyInstaller.
-#
-# Not required for M0; placeholder for future distribution.
-# The packaged binary is launched by Tauri as a sidecar process.
+# Package ZANA Core as the target-qualified binary Tauri requires.
 set -euo pipefail
 
-cd "$(dirname "$0")/.."
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TARGET_TRIPLE="${TAURI_ENV_TARGET_TRIPLE:-$(rustc -vV | awk '/^host:/ { print $2 }')}"
+DESTINATION="$ROOT_DIR/apps/desktop/src-tauri/binaries/zana-core-$TARGET_TRIPLE"
 
-echo "Packaging ZANA Core is a future milestone (post-M0)."
-echo "In dev, run with: uv run --project core zana-core serve"
-exit 1
+if [[ -z "$TARGET_TRIPLE" ]]; then
+  echo "Unable to determine the Rust target triple." >&2
+  exit 1
+fi
+
+cd "$ROOT_DIR"
+uv run --project core pyinstaller \
+  --noconfirm \
+  --clean \
+  --onefile \
+  --name zana-core \
+  --paths core \
+  --distpath core/dist \
+  --workpath core/build/pyinstaller \
+  --specpath core/build \
+  core/zana_core/main.py
+
+install -m 755 "$ROOT_DIR/core/dist/zana-core" "$DESTINATION"
+echo "Packaged ZANA Core sidecar: $DESTINATION"

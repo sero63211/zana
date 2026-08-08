@@ -4,7 +4,7 @@ import hmac
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Header, HTTPException
+from fastapi import Header, HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from zana_core.api.errors import error_401
@@ -32,15 +32,14 @@ def _extract_bearer_token(authorization: str | None) -> str | None:
 
 
 def verify_token(
+    request: Request,
     authorization: Annotated[str | None, Header(alias="Authorization")] = None,
 ) -> ServerConfig:
     """FastAPI dependency: validate bearer token with constant-time comparison.
 
     Raises 401 on missing, malformed, or wrong token.
     """
-    from zana_core.main import _current_config
-
-    config = _current_config()
+    config: ServerConfig = request.app.state.server_config
     provided = _extract_bearer_token(authorization)
 
     if provided is None:

@@ -29,7 +29,10 @@ zana/
 # Install Core dependencies
 uv sync --project core
 
-# Start the backend (dev token)
+# Package the native Core sidecar and launch the desktop app
+pnpm tauri:dev
+
+# Or start only the backend (dev token)
 ./scripts/dev.sh
 
 # Or directly:
@@ -53,6 +56,9 @@ curl -H "Authorization: Bearer dev-token" http://127.0.0.1:8000/api/v1/health
 uv run --project core pytest core/tests -v
 uv run --project core ruff check core
 uv run --project core pyright core/zana_core
+pnpm --filter @zana/desktop lint
+pnpm --filter @zana/desktop typecheck
+pnpm --filter @zana/desktop test
 ```
 
 ## Interface contract

@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "ZANA Core backend sidecar"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi[standard]>=0.115,<0.116",
+    "fastapi>=0.115,<0.116",
     "pydantic>=2.10,<3",
     "uvicorn[standard]>=0.34,<0.35",
     "click>=8.1,<9",
@@ -17,6 +17,7 @@ zana-core = "zana_core.main:cli"
 
 [project.optional-dependencies]
 dev = [
+    "pyinstaller>=6.16,<7",
     "pytest>=8,<9",
     "pytest-asyncio>=0.24,<0.25",
     "httpx>=0.28,<0.29",

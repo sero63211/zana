@@ -56,16 +56,25 @@ export function CoreStatus() {
     );
   }
 
-  if (error) {
+  if (error || !healthQuery.data) {
+    const failure = error ?? {
+      message: "ZANA Core returned no health data.",
+      action: "Restart ZANA Core and retry the connection.",
+    };
     return (
       <section className="core-panel core-panel--error" aria-live="assertive">
         <span className="status-mark" aria-hidden="true">!</span>
         <div>
           <p className="eyebrow">Core unavailable</p>
-          <h2>{error.message}</h2>
-          <p>{error.action}</p>
+          <h2>{failure.message}</h2>
+          <p>{failure.action}</p>
           {restartError ? <p className="secondary-error">{restartError}</p> : null}
-          <button type="button" className="primary-action" onClick={handleRetry} disabled={healthQuery.isFetching}>
+          <button
+            type="button"
+            className="primary-action"
+            onClick={() => void handleRetry()}
+            disabled={healthQuery.isFetching}
+          >
             {healthQuery.isFetching ? "Retrying…" : "Restart and retry"}
           </button>
         </div>

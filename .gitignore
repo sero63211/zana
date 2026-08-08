@@ -16,6 +16,8 @@ venv/
 .mypy_cache/
 .pyright/
 *.egg-info/
+core/build/
+core/dist/
 
 # Node / pnpm
 node_modules/
@@ -27,6 +29,7 @@ target/
 # Tauri / desktop builds
 apps/desktop/src-tauri/target/
 apps/desktop/dist/
+apps/desktop/src-tauri/binaries/zana-core-*
 
 # Local runtime data and secrets
 .env

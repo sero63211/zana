@@ -20,23 +20,17 @@ class TestHealthAuth:
         body = response.json()
         assert body["error"]["code"] == "UNAUTHORIZED"
 
-    def test_wrong_token_returns_401(
-        self, client: TestClient
-    ) -> None:
+    def test_wrong_token_returns_401(self, client: TestClient) -> None:
         response = client.get(self.PATH, headers={"Authorization": "Bearer wrong-token"})
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "UNAUTHORIZED"
 
-    def test_empty_token_returns_401(
-        self, client: TestClient
-    ) -> None:
+    def test_empty_token_returns_401(self, client: TestClient) -> None:
         # No token after Bearer
         response = client.get(self.PATH, headers={"Authorization": "Bearer "})
         assert response.status_code == 401
 
-    def test_malformed_auth_header_returns_401(
-        self, client: TestClient
-    ) -> None:
+    def test_malformed_auth_header_returns_401(self, client: TestClient) -> None:
         # Not a Bearer scheme
         response = client.get(self.PATH, headers={"Authorization": "Basic xyz"})
         assert response.status_code == 401

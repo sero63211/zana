@@ -21,21 +21,9 @@ from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 from zana_core import __version__
 from zana_core.api.deps import ServerConfig
 
-# Module-level reference to the current server config, set by the CLI
-_config: ServerConfig | None = None
-
-
-def _current_config() -> ServerConfig:
-    """Return the current per-launch config. Called by the auth dependency."""
-    assert _config is not None, "Server not configured; use zana-core serve"
-    return _config
-
 
 def create_app(token: str) -> FastAPI:
     """Create and configure a FastAPI application with the given launch token."""
-    global _config
-    _config = ServerConfig(token=token, version=__version__)
-
     app = FastAPI(
         title="ZANA Core",
         version=__version__,
@@ -43,6 +31,7 @@ def create_app(token: str) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.server_config = ServerConfig(token=token, version=__version__)
 
     # Strict CORS: only loopback and Tauri origins
     app.add_middleware(

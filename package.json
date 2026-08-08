@@ -6,9 +6,15 @@
     "core:test": "uv run --project core pytest core/tests",
     "core:lint": "uv run --project core ruff check core",
     "core:typecheck": "uv run --project core pyright core/zana_core",
-    "dev": "echo 'Use core:dev for backend. Desktop dev runs from apps/desktop.'",
-    "test": "uv run --project core pytest core/tests",
-    "lint": "uv run --project core ruff check core",
-    "typecheck": "uv run --project core pyright core/zana_core"
+    "desktop:dev": "pnpm --filter @zana/desktop dev",
+    "desktop:build": "pnpm --filter @zana/desktop build",
+    "package:core": "./scripts/package-core.sh",
+    "tauri:dev": "pnpm package:core && pnpm --filter @zana/desktop tauri dev",
+    "tauri:build": "pnpm package:core && pnpm --filter @zana/desktop tauri build",
+    "dev": "pnpm tauri:dev",
+    "test": "uv run --project core pytest core/tests && pnpm --filter @zana/desktop test",
+    "lint": "uv run --project core ruff check core && pnpm --filter @zana/desktop lint",
+    "typecheck": "uv run --project core pyright core/zana_core && pnpm --filter @zana/desktop typecheck",
+    "build": "pnpm desktop:build"
   }
 }

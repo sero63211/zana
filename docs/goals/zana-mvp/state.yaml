@@ -53,7 +53,7 @@ agents:
   deepseek_max: unavailable_not_configured_max_is_reasoning_effort
 
 environment:
-  implementation_state: M0_agent_foundation_complete
+  implementation_state: M0_authenticated_desktop_foundation_complete
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 6.5
@@ -65,7 +65,7 @@ environment:
   live_runtime_state: "No Ollama, LM Studio, llama.cpp, MLX server, local model, or embedding provider detected."
   acquisition_rule: "Measure disk headroom and require a safety reserve before downloads or training; block only the affected task."
 
-active_task: T004
+active_task: T005
 
 tasks:
   - id: T001
@@ -188,7 +188,7 @@ tasks:
   - id: T004
     type: worker
     assignee: Worker
-    status: active
+    status: done
     reasoning_hint: max
     objective: "Establish the reproducible monorepo and a real authenticated FastAPI Core plus Tauri/React health surface, satisfying the M0 gate without placeholder business data."
     inputs:
@@ -224,6 +224,7 @@ tasks:
       web_dev: "Standalone Vite may use explicit VITE_ZANA_API_BASE and VITE_ZANA_API_TOKEN; if absent or invalid it must show a real actionable Core-unavailable state."
     allowed_files:
       - "README.md"
+      - ".gitignore"
       - "package.json"
       - "pnpm-workspace.yaml"
       - "pnpm-lock.yaml"
@@ -258,6 +259,98 @@ tasks:
       - "Per-launch token/port bootstrap contract is unresolved."
       - "A required file falls outside allowed_files."
       - "Verification fails twice for the same cause."
+    receipt:
+      result: done
+      summary: "Integrated the authenticated FastAPI Core and Tauri/React desktop, corrected cross-lane health/token mismatches, replaced stub packaging with a real frozen sidecar, built ZANA.app, and verified the visible healthy state against the bundled process."
+      handoff: ".agent-work/handoffs/T004.md"
+      changed_files:
+        - "README.md"
+        - ".gitignore"
+        - "package.json"
+        - "pnpm-workspace.yaml"
+        - "pnpm-lock.yaml"
+        - "core/pyproject.toml"
+        - "core/uv.lock"
+        - "core/zana_core/__init__.py"
+        - "core/zana_core/main.py"
+        - "core/zana_core/api/**"
+        - "core/tests/api/**"
+        - "apps/desktop/**"
+        - "scripts/dev.sh"
+        - "scripts/test.sh"
+        - "scripts/package-core.sh"
+        - ".github/workflows/**"
+        - ".agent-work/handoffs/T004.md"
+        - ".agent-work/handoffs/T004-core.md"
+        - ".agent-work/handoffs/T004-desktop.md"
+        - ".agent-work/ledger.md"
+      commands:
+        - cmd: "Core pytest, ruff, format, and pyright"
+          status: pass
+        - cmd: "Desktop ESLint, TypeScript, Vitest, and Vite production build"
+          status: pass
+        - cmd: "Cargo fmt and clippy with warnings denied"
+          status: pass
+        - cmd: "Frozen Core loopback smoke"
+          status: pass
+          detail: "200 authorized; 401 missing; 401 wrong"
+        - cmd: "Tauri debug application bundle and actual UI launch"
+          status: pass
+          detail: "real Core pid surfaced; clean exit"
+      security_delta: "Loopback-only exact bearer auth, per-launch non-persisted token, fail-closed web development, canonical errors, and no configured telemetry."
+      full_outcome_complete: false
+      next_allowed_task: T005
+  - id: T005
+    type: worker
+    assignee: Worker
+    status: active
+    reasoning_hint: max
+    objective: "Settle the shared ZANA domain, SQLite, job/event, and typed API foundations under one owner so later runtime, build, evaluation, artifact, and UI lanes can fan out without interface drift."
+    inputs:
+      - "Completed T004 receipt"
+      - "03_DOMAIN_MODEL_AND_TERMINOLOGY.md"
+      - "08_ZANA_IMAGE_SPECIFICATION.md"
+      - "09_CAPABILITY_SOURCE_SPECIFICATION.md"
+      - "13_BUILD_LIFECYCLE.md"
+      - "18_BACKEND_API_CONTRACT.md"
+      - "19_STORAGE_AND_DATABASE_SCHEMA.md"
+    constraints:
+      - "One owner for domain types, schema version, database lifecycle, API registration, and job event envelope."
+      - "Persist real state only; no demo rows, fake runtimes, or success placeholders."
+      - "SQLite must enable WAL, foreign keys, migrations, deterministic local paths, and test isolation."
+      - "Do not implement runtime adapters, document ingestion, training, evaluation engines, export archives, or product UI yet."
+    expected_output:
+      - "Canonical typed enums/entities and API models"
+      - "SQLite schema/migration runner covering the specified durable entities"
+      - "Repository/unit-of-work primitives and real CRUD behavior"
+      - "Persistent job/event state with cancellation-safe transitions"
+      - "Focused contract, migration, persistence, and API tests"
+    delegated_lanes:
+      - id: T005-contracts
+        agent: router_opencode_go_deepseek_v4_pro
+        worktree: /private/tmp/zana-worktrees/T005-contracts
+        owns: "core/zana_core/domain/**, core/zana_core/db/**, core/zana_core/jobs/**, core/zana_core/api/**, core/zana_core/main.py, core/tests/domain/**, core/tests/db/**, core/tests/jobs/**, core/tests/api/**, .agent-work/handoffs/T005.md"
+    allowed_files:
+      - "core/zana_core/domain/**"
+      - "core/zana_core/db/**"
+      - "core/zana_core/jobs/**"
+      - "core/zana_core/api/**"
+      - "core/zana_core/main.py"
+      - "core/tests/domain/**"
+      - "core/tests/db/**"
+      - "core/tests/jobs/**"
+      - "core/tests/api/**"
+      - ".agent-work/handoffs/T005.md"
+    verify:
+      - "core/.venv/bin/python -m pytest core/tests"
+      - "core/.venv/bin/ruff check core"
+      - "core/.venv/bin/ruff format --check core"
+      - "core/.venv/bin/pyright core/zana_core"
+      - "Fresh-database migration plus WAL/foreign-key inspection"
+    stop_if:
+      - "A schema or public contract conflicts with the controlling specification."
+      - "Any write is required outside allowed_files."
+      - "The same verification cause fails twice."
     receipt: null
   - id: T900
     type: pm
