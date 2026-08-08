@@ -329,8 +329,11 @@ tasks:
       - id: T005-contracts
         agent: router_opencode_go_deepseek_v4_pro
         worktree: /private/tmp/zana-worktrees/T005-contracts
-        owns: "core/zana_core/domain/**, core/zana_core/db/**, core/zana_core/jobs/**, core/zana_core/api/**, core/zana_core/main.py, core/tests/domain/**, core/tests/db/**, core/tests/jobs/**, core/tests/api/**, .agent-work/handoffs/T005.md"
+        owns: "core/pyproject.toml, core/alembic.ini, core/migrations/**, core/zana_core/domain/**, core/zana_core/db/**, core/zana_core/jobs/**, core/zana_core/api/**, core/zana_core/main.py, core/tests/domain/**, core/tests/db/**, core/tests/jobs/**, core/tests/api/**, .agent-work/handoffs/T005.md"
     allowed_files:
+      - "core/pyproject.toml"
+      - "core/alembic.ini"
+      - "core/migrations/**"
       - "core/zana_core/domain/**"
       - "core/zana_core/db/**"
       - "core/zana_core/jobs/**"
