@@ -1,0 +1,41 @@
+# macOS
+.DS_Store
+*.swp
+
+# Editors
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+*.egg-info/
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+
+# Rust
+target/
+
+# Tauri / desktop builds
+apps/desktop/src-tauri/target/
+apps/desktop/dist/
+
+# Local runtime data and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Transient coordination state
+*.tmp
+.agent-work/locks/*.tmp

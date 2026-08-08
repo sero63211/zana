@@ -1,0 +1,286 @@
+# GoalBuddy v2 state.yaml
+version: 2
+
+goal:
+  title: "ZANA MVP End-to-End Build"
+  slug: "zana-mvp"
+  kind: existing_plan
+  tranche: "continuous execution through complete mandatory acceptance"
+  status: active
+  intake:
+    original_request: "Execute the controlling ZANA build plan end to end after adopting Appoint Me agent-management architecture, using real DeepSeek agents and real local functionality until all mandatory acceptance criteria pass."
+    interpreted_outcome: "A verified functional ZANA desktop MVP with backend, real local-model discovery, capability build/evaluation, ZANA Image/instance lifecycle, and export/import."
+    input_shape: existing_plan
+    audience: "ZANA desktop users and owner/operator"
+    authority: approved
+    proof_type: test
+    completion_proof: "All mandatory criteria in 25_ACCEPTANCE_CRITERIA.md pass with reproducible real end-to-end verification and a final audit declaring full_outcome_complete: true."
+    likely_misfire: "Stopping at architecture, scaffolding, mocks, fake data, or a polished UI that does not complete the real local-model and artifact lifecycle."
+    blind_spots_considered:
+      - "External plan compatibility with current repository state"
+      - "Actual installed DeepSeek profile names and availability"
+      - "Cross-workstream interface and merge hazards"
+      - "Desktop/runtime prerequisites and missing local model runtimes"
+      - "Export/import safety and acceptance-test coverage"
+    existing_plan_facts:
+      - "00_READ_FIRST.md is controlling and all referenced ZANA files must be followed recursively."
+      - "Inspect and adopt relevant Appoint Me Agent Instructions and Handoffs before implementation."
+      - "Expose installed DeepSeek V4/Flash/Max profiles as visible first-class Codex agents where available."
+      - "Parallel agents require strict disjoint ownership/worktrees/handoffs and quiet status reporting."
+      - "No mockups, placeholders, or fake data."
+      - "Continue until every mandatory criterion in 25_ACCEPTANCE_CRITERIA.md passes."
+
+rules:
+  pm_owns_state: true
+  one_active_task: true
+  max_write_workers: 6
+  parallel_workers_require_disjoint_scopes: true
+  no_implementation_without_worker_or_pm_task: true
+  no_completion_without_judge_or_pm_audit: true
+  planning_is_not_completion: true
+  queued_required_worker_blocks_completion: true
+  continuous_until_full_outcome: true
+  missing_input_or_credentials_do_not_stop_goal: true
+  preserve_and_validate_existing_plan: true
+  intake_misfire_must_be_audited: true
+
+agents:
+  scout: installed
+  worker: installed
+  judge: installed
+  deepseek_v4_flash: available_as_router_profile
+  deepseek_v4_pro: available_as_router_profile
+  deepseek_max: unavailable_not_configured_max_is_reasoning_effort
+
+environment:
+  implementation_state: M0_agent_foundation_complete
+  repo_is_git: true
+  host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
+  disk_free_gib_observed: 6.5
+  toolchains_present:
+    - "Python 3.12 + uv"
+    - "Node + pnpm"
+    - "Rust/Cargo"
+    - "Xcode"
+  live_runtime_state: "No Ollama, LM Studio, llama.cpp, MLX server, local model, or embedding provider detected."
+  acquisition_rule: "Measure disk headroom and require a safety reserve before downloads or training; block only the affected task."
+
+active_task: T004
+
+tasks:
+  - id: T001
+    type: judge
+    assignee: Judge
+    status: done
+    reasoning_hint: high
+    objective: "Inspect and validate the full controlling ZANA specification and the relevant Appoint Me Agent Instructions/Handoffs architecture, then define exact adoption decisions, repo constraints, acceptance map, and safe non-overlapping implementation workstreams."
+    inputs:
+      - "/Users/sero/Downloads/ZANA_BUILD_PLAN/00_READ_FIRST.md"
+      - "Every recursively referenced ZANA build-plan file"
+      - "/Users/sero/Documents/Appoint Me Agent Instructions and Handoffs"
+      - "Current /Users/sero/Documents/zana repository state"
+      - "Installed Codex/OpenRouter/OpenCode agent profiles"
+    constraints:
+      - "Read-only except for a durable note under docs/goals/zana-mvp/notes owned by the PM."
+      - "Do not edit implementation files."
+      - "Treat the ZANA plan as controlling but identify contradictions or infeasible assumptions explicitly."
+      - "Record exact paths and interface boundaries."
+    expected_output:
+      - "Complete recursive specification inventory"
+      - "Mandatory acceptance checklist mapped to components and verification"
+      - "Appoint Me architecture adoption decisions"
+      - "Available DeepSeek profile mapping"
+      - "Current repo/runtime map and verification commands"
+      - "Disjoint workstream ownership and handoff contracts"
+      - "Exact next Worker/PM task with allowed_files, verify, and stop_if"
+    receipt:
+      result: done
+      decision: "The corrected specification is coherent enough to implement; complete mandatory agent adoption and serial M0 contracts before parallel feature work."
+      note: notes/T001-spec-architecture-judge.md
+      summary: "Read the complete corrected ZANA specification graph and Appoint Me agent architecture; resolved path/profile/interface conflicts; mapped mandatory acceptance and safe M0-first sequencing."
+      evidence:
+        - "/Users/sero/Downloads/ZANA_BUILD_PLAN_DETAILED/00_READ_FIRST.md"
+        - "/Users/sero/Downloads/ZANA_BUILD_PLAN_DETAILED/25_ACCEPTANCE_CRITERIA.md"
+        - "/Users/sero/Documents/appointMe/AGENTS.md"
+        - "/Users/sero/Documents/appointMe/.agents/instructions/handoff-protocol.md"
+        - "/Users/sero/.codex/agents/router-model-opencode-go-deepseek-v4-flash.toml"
+        - "/Users/sero/.codex/agents/router-model-opencode-go-deepseek-v4-pro.toml"
+  - id: T002
+    type: pm
+    assignee: PM
+    status: done
+    reasoning_hint: high
+    objective: "Operationalize T001 into a safe implementation wave with explicit file ownership, interfaces, integration order, and bounded verification."
+    inputs:
+      - "T001 receipt and note"
+    constraints:
+      - "Only update GoalBuddy control files."
+      - "Do not invent tasks not grounded in the controlling spec."
+    expected_output:
+      - "Executable delegated work wave"
+      - "Non-overlapping file scopes/worktrees"
+      - "Integration and verification order"
+    receipt:
+      result: done
+      summary: "Corrected controlling paths and profile facts, recorded T001 discovery/runtime constraints, and operationalized serial M0 as T003 agent adoption followed by T004 authenticated Core/Tauri health."
+      next_allowed_task: T003
+      implementation_wave_rule: "No feature fan-out until T003 and T004 pass; later parallel work must use disjoint scopes/worktrees and explicit handoffs."
+  - id: T003
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: max
+    objective: "Create the mandatory ZANA agent-adoption and coordination foundation, faithfully adapting approved Appoint Me practices before product code."
+    inputs:
+      - "T001 receipt and note"
+      - "/Users/sero/Downloads/ZANA_BUILD_PLAN_DETAILED/23_AGENT_ORCHESTRATION.md"
+      - "/Users/sero/Documents/appointMe/AGENTS.md"
+      - "/Users/sero/Documents/appointMe/.agents/instructions/handoff-protocol.md"
+    constraints:
+      - "No application/source implementation."
+      - "Do not copy Appoint Me product-domain rules."
+      - "GoalBuddy state.yaml remains board truth."
+    expected_output:
+      - "ZANA agent adoption map and root agent rules"
+      - "Operational ledger, handoff, decisions, and locks convention"
+      - "Initialized Git foundation suitable for isolated worktrees"
+    allowed_files:
+      - "AGENTS.md"
+      - "docs/agent-adoption-map.md"
+      - ".agent-work/ledger.md"
+      - ".agent-work/handoffs/T003.md"
+      - ".agent-work/decisions/README.md"
+      - ".agent-work/decisions/0001-adopt-appointme-agent-structure.md"
+      - ".agent-work/locks/README.md"
+      - ".gitignore"
+    verify:
+      - "test -f AGENTS.md"
+      - "test -f docs/agent-adoption-map.md"
+      - "test -f .agent-work/ledger.md"
+      - "rg -n 'PASS|BLOCK|ESCALATE|ownership|handoff|DeepSeek|state.yaml' AGENTS.md docs/agent-adoption-map.md .agent-work/ledger.md"
+      - "git diff --check once Git is initialized"
+    stop_if:
+      - "Any application/source file is required."
+      - "Appoint Me product-domain rules would be copied into ZANA."
+      - "Another file would become authoritative over GoalBuddy state.yaml."
+      - "Unrecognized concurrent edits overlap allowed files."
+    receipt:
+      result: done
+      changed_files:
+        - "AGENTS.md"
+        - "docs/agent-adoption-map.md"
+        - ".agent-work/ledger.md"
+        - ".agent-work/handoffs/T003.md"
+        - ".agent-work/decisions/README.md"
+        - ".agent-work/decisions/0001-adopt-appointme-agent-structure.md"
+        - ".agent-work/locks/README.md"
+        - ".gitignore"
+      commands:
+        - cmd: "Required file existence and adoption/verdict/profile/authority rg scan"
+          status: pass
+        - cmd: "git diff --check"
+          status: pass
+        - cmd: "git init"
+          status: pass
+      summary: "Created the mandatory ZANA agent-adoption map, root policy/router, coordination ledger, decision/lock conventions, PASS handoff, ignore rules, and initialized Git without touching product code."
+      security_delta: "No application security surface changed; secret/env artifacts are ignored."
+      unrelated_dirty_changes_preserved: true
+  - id: T004
+    type: worker
+    assignee: Worker
+    status: active
+    reasoning_hint: max
+    objective: "Establish the reproducible monorepo and a real authenticated FastAPI Core plus Tauri/React health surface, satisfying the M0 gate without placeholder business data."
+    inputs:
+      - "Completed T003 receipt"
+      - "04_SYSTEM_ARCHITECTURE.md"
+      - "05_TECH_STACK.md"
+      - "18_BACKEND_API_CONTRACT.md"
+      - "21_REPOSITORY_STRUCTURE.md"
+    constraints:
+      - "No placeholder business data or fake health success."
+      - "Single ownership for shared manifests, API boundary, and generated types."
+    expected_output:
+      - "Reproducible monorepo"
+      - "Authenticated real Core health"
+      - "Tauri/React UI surfaces real Core success and failure"
+      - "Focused backend/frontend/native verification"
+    allowed_files:
+      - "README.md"
+      - "package.json"
+      - "pnpm-workspace.yaml"
+      - "pnpm-lock.yaml"
+      - "core/pyproject.toml"
+      - "core/uv.lock"
+      - "core/zana_core/__init__.py"
+      - "core/zana_core/main.py"
+      - "core/zana_core/api/**"
+      - "core/tests/api/**"
+      - "apps/desktop/**"
+      - "scripts/dev.sh"
+      - "scripts/test.sh"
+      - "scripts/package-core.sh"
+      - ".github/workflows/**"
+      - ".agent-work/handoffs/T004.md"
+    verify:
+      - "uv run --project core pytest core/tests/api"
+      - "uv run --project core ruff check core"
+      - "uv run --project core pyright core/zana_core"
+      - "pnpm lint"
+      - "pnpm typecheck"
+      - "pnpm test"
+      - "cargo fmt --check --manifest-path apps/desktop/src-tauri/Cargo.toml"
+      - "cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml -- -D warnings"
+      - "Authenticated Core health smoke plus unauthenticated rejection"
+    stop_if:
+      - "Dependency/model acquisition exceeds measured disk-safe capacity."
+      - "Network/download approval is required."
+      - "Per-launch token/port bootstrap contract is unresolved."
+      - "A required file falls outside allowed_files."
+      - "Verification fails twice for the same cause."
+    receipt: null
+  - id: T900
+    type: pm
+    assignee: PM
+    status: queued
+    reasoning_hint: high
+    objective: "Integrate delegated slices, resolve interface mismatches without overwriting user or agent work, and run the complete real end-to-end validation flow."
+    inputs:
+      - "All implementation receipts and handoffs"
+      - "25_ACCEPTANCE_CRITERIA.md"
+    constraints:
+      - "No mocks, placeholder success paths, or fake data."
+      - "Preserve unrelated user changes."
+    expected_output:
+      - "Integrated working application"
+      - "Full test and runtime evidence"
+      - "Acceptance criterion results"
+    receipt: null
+  - id: T999
+    type: judge
+    assignee: Judge
+    status: queued
+    reasoning_hint: xhigh
+    objective: "Audit the complete implementation and current verification against the original request and every mandatory acceptance criterion."
+    inputs:
+      - "All done task receipts"
+      - "Current dirty diff"
+      - "Fresh full verification"
+      - "25_ACCEPTANCE_CRITERIA.md"
+    constraints:
+      - "Do not implement."
+      - "Reject completion for planning-only, mock, fake-data, UI-only, stale, or partial evidence."
+      - "Reject completion while any required Worker task remains queued or active."
+    expected_output:
+      - "complete | not_complete"
+      - "full_outcome_complete: true | false"
+      - "Criterion-by-criterion evidence"
+      - "Missing evidence and exact next task if not complete"
+    receipt: null
+
+checks:
+  dirty_fingerprint: unknown
+  last_verification:
+    result: unknown
+    task: null
+    commands: []
