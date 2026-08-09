@@ -405,7 +405,7 @@ class LanceDBRecordStore:
         )
         table = self._open_table()
         try:
-            results = table.search(list(vector), metric="cosine").limit(int(limit)).to_list()
+            results = table.search(list(vector)).distance_type("cosine").limit(int(limit)).to_list()
         except Exception:
             raise IndexCorruptionError("LanceDB search failed safely.") from None
         candidates: list[tuple[VectorRecord, float]] = []

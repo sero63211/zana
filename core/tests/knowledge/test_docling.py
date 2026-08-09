@@ -177,14 +177,19 @@ class _FakeDocument:
         self.texts = items
 
 
-class _FakeConverter:
+class _FakeConversionResult:
     def __init__(self, document) -> None:  # noqa: ANN001
-        self._document = document
+        self.document = document
+
+
+class _FakeConverter:
+    def __init__(self, conversion_result) -> None:  # noqa: ANN001
+        self._conversion_result = conversion_result
         self.calls = 0
 
-    def convert(self, path: str) -> _FakeDocument:  # noqa: ARG002
+    def convert(self, path: str) -> _FakeConversionResult:  # noqa: ARG002
         self.calls += 1
-        return self._document
+        return self._conversion_result
 
 
 class _InfiniteItems:
@@ -205,11 +210,13 @@ class TestDoclingAdapterCalls:
         path.write_bytes(b"%PDF-1.4 fake")
         source = _source(path, DocumentKind.PDF)
         converter = _FakeConverter(
-            _FakeDocument(
-                [
-                    _FakeItem("Intro paragraph.", label="text", page=1),
-                    _FakeItem("Second section body.", label="section-heading", page=2),
-                ]
+            _FakeConversionResult(
+                _FakeDocument(
+                    [
+                        _FakeItem("Intro paragraph.", label="text", page=1),
+                        _FakeItem("Second section body.", label="section-heading", page=2),
+                    ]
+                )
             )
         )
         parser = DoclingParser(converter=converter)
@@ -232,14 +239,25 @@ class TestDoclingAdapterCalls:
                 raise RuntimeError("boom")
 
         with pytest.raises(ParserIOError):
-            DoclingParser(converter=_FakeConverter(BadDocument())).parse(source)
+            DoclingParser(converter=_FakeConverter(_FakeConversionResult(BadDocument()))).parse(
+                source
+            )
 
     def test_injected_converter_none_document_fails_closed(self, tmp_path) -> None:  # noqa: ANN001
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4 fake")
         source = _source(path, DocumentKind.PDF)
         with pytest.raises(ParserIOError):
-            DoclingParser(converter=_FakeConverter(None)).parse(source)
+            DoclingParser(converter=_FakeConverter(_FakeConversionResult(None))).parse(source)
+
+    def test_injected_converter_bare_document_rejected(self, tmp_path) -> None:  # noqa: ANN001
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 fake")
+        source = _source(path, DocumentKind.PDF)
+        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        with pytest.raises(ParserIOError):
+            DoclingParser(converter=converter).parse(source)
+        assert converter.calls == 1
 
     def test_injected_reader_used_for_text(self, tmp_path) -> None:  # noqa: ANN001
         path = tmp_path / "doc.txt"
@@ -259,7 +277,7 @@ class TestDoclingReviewFixes:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"%PDF-1.4 fake")
         source = _source(path, DocumentKind.PDF).model_copy(update={"approved": False})
-        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        converter = _FakeConverter(_FakeConversionResult(_FakeDocument([_FakeItem("x")])))
         with pytest.raises(ParserIOError):
             DoclingParser(converter=converter).parse(source)
         assert converter.calls == 0
@@ -268,7 +286,7 @@ class TestDoclingReviewFixes:
         path = tmp_path / "scan.pdf"
         path.write_bytes(b"A" * 10)
         source = _source(path, DocumentKind.PDF).model_copy(update={"size_bytes": 5})
-        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        converter = _FakeConverter(_FakeConversionResult(_FakeDocument([_FakeItem("x")])))
         with pytest.raises(ParserLimitExceededError):
             DoclingParser(converter=converter).parse(source)
         assert converter.calls == 0
@@ -283,7 +301,7 @@ class TestDoclingReviewFixes:
             max_query_bytes=16,
             max_chunk_text_bytes=32,
         )
-        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        converter = _FakeConverter(_FakeConversionResult(_FakeDocument([_FakeItem("x")])))
         with pytest.raises(ParserLimitExceededError):
             DoclingParser(converter=converter, limits=small).parse(source)
         assert converter.calls == 0
@@ -294,7 +312,7 @@ class TestDoclingReviewFixes:
         source = _source(path, DocumentKind.PDF)
         small = KnowledgeLimits(max_section_count=3)
         infinite = _InfiniteItems()
-        converter = _FakeConverter(_FakeDocument(infinite))
+        converter = _FakeConverter(_FakeConversionResult(_FakeDocument(infinite)))
         with pytest.raises(ResourceLimitError):
             DoclingParser(converter=converter, limits=small).parse(source)
         assert infinite.count == small.max_section_count + 1

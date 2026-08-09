@@ -62,7 +62,12 @@ class ParserLimitExceededError(ParserIOError):
 
 
 class DoclingConverter(Protocol):
-    """Narrow adapter contract for the Docling document converter."""
+    """Narrow adapter contract for the Docling converter.
+
+    Official Docling usage returns a conversion result whose parsed document is
+    exposed as ``result.document``.  This adapter stays exactly on that
+    contract and does not guess a different result shape.
+    """
 
     def convert(self, path: str) -> Any: ...
 
@@ -249,9 +254,10 @@ class DoclingParser:
             )
         resolved = _validated_path(source.original_path, limits=active)
         _preflight_source(source, path=resolved, limits=active)
-        converted = self._converter.convert(str(resolved))
+        conversion_result = self._converter.convert(str(resolved))
         check_deadline(deadline, label="document parsing")
-        return _docling_document_to_normalised(converted, source=source, limits=active)
+        document = _unwrap_docling_document(conversion_result)
+        return _docling_document_to_normalised(document, source=source, limits=active)
 
     def _read_source(self, source: SourceMetadata) -> str:
         resolved = _validated_path(source.original_path, limits=self.limits)
@@ -315,14 +321,25 @@ def _verify_source_digest(
         raise ParserIOError("Source content changed since intake; parsing refused.")
 
 
+def _unwrap_docling_document(conversion_result: Any) -> Any:
+    """Return the parsed document from a Docling conversion result, fail-closed."""
+    if conversion_result is None:
+        raise ParserIOError("Docling returned no conversion result.")
+    try:
+        document = conversion_result.document
+    except Exception:
+        raise ParserIOError("Docling conversion result did not expose a parsed document.") from None
+    if document is None:
+        raise ParserIOError("Docling returned no parsed document.")
+    return document
+
+
 def _docling_document_to_normalised(
     document: Any,
     *,
     source: SourceMetadata,
     limits: KnowledgeLimits,
 ) -> NormalizedDocument:
-    if document is None:
-        raise ParserIOError("Docling returned no document.")
     try:
         texts = document.texts
     except Exception:

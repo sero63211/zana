@@ -301,7 +301,7 @@ class _FakeLanceTable:
     def __init__(self, rows=None, count=None) -> None:  # noqa: ANN001
         self.rows = rows if rows is not None else []
         self.count = len(self.rows) if count is None else count
-        self.metrics: list[str] = []
+        self.distance_types: list[str] = []
         self.merge_called = False
         self.merge_raise = None
         self.materialized = False
@@ -319,8 +319,12 @@ class _FakeLanceTable:
         self.materialized = True
         return self.rows
 
-    def search(self, vector, *, metric):  # noqa: ANN001, ARG002
-        self.metrics.append(metric)
+    def search(self, vector):  # noqa: ANN001, ARG002
+        # Match the real LanceDB Table.search signature: no metric keyword.
+        return self
+
+    def distance_type(self, distance):  # noqa: ANN001
+        self.distance_types.append(distance)
         return self
 
     def limit(self, limit):  # noqa: ANN001, ARG002
@@ -436,8 +440,17 @@ class TestLanceDBRecordStoreAdapter:
             backend=backend,
         )
         results = store.search([1.0, 0.0], limit=5)
-        assert table.metrics == ["cosine"]
+        assert table.distance_types == ["cosine"]
         assert results == [(record("a"), 0.75)]
+
+    def test_search_rejects_invented_metric_keyword(self, tmp_path) -> None:  # noqa: ANN001
+        rows = [{**_row("a"), "_distance": 0.25}]
+        table = _FakeLanceTable(rows=rows, count=1)
+        backend = _FakeLanceBackend({"vectors": table})
+        LanceDBRecordStore(tmp_path, identity=index_identity(), backend=backend)
+        with pytest.raises(TypeError):
+            table.search([1.0, 0.0], metric="cosine")  # type: ignore[call-arg]
+        assert table.distance_types == []
 
     def test_search_out_of_range_distance_rejected(self, tmp_path) -> None:  # noqa: ANN001
         rows = [{**_row("a"), "_distance": 3.0}]
