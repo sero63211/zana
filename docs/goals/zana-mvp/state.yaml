@@ -479,6 +479,7 @@ tasks:
     constraints:
       - "DeepSeek Flash performs implementation only; no product research, evaluation, or documentation planning."
       - "No model start, inference, download, training, native bundle build, or memory-heavy command."
+      - "Strict lightweight portability: no new dependency without PM approval; bound memory, disk, batch, recursion, time, and concurrency; stream large I/O; use platform-neutral paths; probe before use; fail explicitly on low-resource macOS/Linux/Windows instead of crashing."
       - "All lanes start from the same integrated master commit and have exclusive disjoint ownership."
       - "No lane may edit API registration, database/domain contracts, root manifests, lockfiles, desktop source, GoalBuddy state, or the ledger."
       - "Test fixtures may emulate external protocols only inside automated tests; runtime/demo/product state may never use fake data."
@@ -500,6 +501,7 @@ tasks:
       - "Typed trusted built-in tool registry and safe calculator execution with default-deny permission decisions and no arbitrary code/shell"
       - "Exact-identity Ollama embedding adapter, vector validation, deterministic retrieval/ranking/provenance, and index-provider boundary without starting an embedding model"
       - "Atomic real-filesystem export/import orchestration with temporary workspace cleanup, OCI verification, content-addressed registration, and honest codec availability"
+      - "Cross-platform resource admission governor with conservative memory/disk/concurrency leases and zero background worker overhead"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -603,12 +605,14 @@ tasks:
         owns: "core/zana_core/memory/**, core/tests/memory/**, .agent-work/handoffs/T007-memory.md"
       - id: T007-planning
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
         worktree: /Users/sero/.codex/worktrees/9529/zana
         branch: agent/T007-planning
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 4c199ce
+        handoff_commit: 14175bf
         owns: "core/zana_core/planning/**, core/tests/planning/**, .agent-work/handoffs/T007-planning.md"
       - id: T007-training
         agent: router_opencode_go_deepseek_v4_flash
@@ -679,6 +683,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/portability/**, core/tests/portability/**, .agent-work/handoffs/T007-portability.md"
+      - id: T007-resources
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
+        worktree: /Users/sero/.codex/worktrees/9529/zana
+        branch: agent/T007-resources
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/resources/**, core/tests/resources/**, .agent-work/handoffs/T007-resources.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -719,6 +732,8 @@ tasks:
       - "core/tests/knowledge/test_retrieval.py"
       - "core/zana_core/portability/**"
       - "core/tests/portability/**"
+      - "core/zana_core/resources/**"
+      - "core/tests/resources/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -736,6 +751,7 @@ tasks:
       - ".agent-work/handoffs/T007-tools.md"
       - ".agent-work/handoffs/T007-embeddings.md"
       - ".agent-work/handoffs/T007-portability.md"
+      - ".agent-work/handoffs/T007-resources.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
