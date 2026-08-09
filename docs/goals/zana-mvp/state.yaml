@@ -459,7 +459,7 @@ tasks:
     assignee: Worker
     status: active
     reasoning_hint: max
-    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, and mutable instance-memory primitives."
+    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, and deterministic resource-safe build planning."
     inputs:
       - "Completed T005 receipt and frozen domain/database/API contracts"
       - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
@@ -471,7 +471,9 @@ tasks:
       - "22_TESTING_AND_QA.md"
       - "25_ACCEPTANCE_CRITERIA.md"
       - "10_KNOWLEDGE_PIPELINE.md"
+      - "11_LIGHT_TRAINING_PIPELINE.md"
       - "12_EVALUATION_AND_VERIFICATION.md"
+      - "13_BUILD_LIFECYCLE.md"
       - "14_RUNTIME_EXECUTION_AND_CHAT.md"
       - "15_MEMORY_STATE_AND_VERSIONING.md"
     constraints:
@@ -491,6 +493,7 @@ tasks:
       - "Deterministic built-in scorers, real metric aggregation, and fail-closed verification gates"
       - "OCI-compatible image layout plus traversal-safe digest-verifying archive import/export primitives"
       - "Explicit mutable memory/reset/snapshot/update/rollback primitives separated from immutable images"
+      - "Immutable explainable BuildPolicy and BuildPlan decisions with explicit approvals, blockers, estimates, and no execution"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -517,12 +520,14 @@ tasks:
         owns: "core/zana_core/hardware/**, core/tests/hardware/**, .agent-work/handoffs/T007-hardware.md"
       - id: T007-capabilities
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
         worktree: /Users/sero/.codex/worktrees/9529/zana
         branch: agent/T007-capabilities
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 215055d
+        handoff_commit: 230bbaf
         owns: "core/zana_core/capabilities/**, core/tests/capabilities/**, schemas/capability.schema.json, schemas/evaluation.schema.json, .agent-work/handoffs/T007-capabilities.md"
       - id: T007-artifacts
         agent: router_opencode_go_deepseek_v4_flash
@@ -582,6 +587,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/memory/**, core/tests/memory/**, .agent-work/handoffs/T007-memory.md"
+      - id: T007-planning
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
+        worktree: /Users/sero/.codex/worktrees/9529/zana
+        branch: agent/T007-planning
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/planning/**, core/tests/planning/**, .agent-work/handoffs/T007-planning.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -605,6 +619,8 @@ tasks:
       - "schemas/image-config.schema.json"
       - "core/zana_core/memory/**"
       - "core/tests/memory/**"
+      - "core/zana_core/planning/**"
+      - "core/tests/planning/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -614,6 +630,7 @@ tasks:
       - ".agent-work/handoffs/T007-evaluation.md"
       - ".agent-work/handoffs/T007-images.md"
       - ".agent-work/handoffs/T007-memory.md"
+      - ".agent-work/handoffs/T007-planning.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
