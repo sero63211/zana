@@ -695,14 +695,17 @@ tasks:
       - id: T007-portability
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         codex_thread: 019fe78f-c167-7b83-924b-a533cf01ed6b
         worktree: /Users/sero/.codex/worktrees/438c/zana
         branch: detached recovery from agent/T007-portability
         source_head: 17fe2186539fee32afba2ea8eb63bc40445751e5
+        implementation_commit: 863a84e
+        handoff_commit: 5eec7d2
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/archive.py, core/zana_core/images/oci.py, core/zana_core/images/import_plan.py, core/zana_core/images/secrets.py, core/zana_core/images/__init__.py, core/tests/images/**, .agent-work/handoffs/T007-portability.md"
+        verification: "224 focused image/portability tests passed before final cleanup; Ruff check/format and Pyright passed; final cleanup removed a truthiness fallback and dead absolute unlink guard. Reference only: divergent from canonical, no broad merge/cherry-pick; images/models.py interface delta requires fresh canonical integration."
+        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/archive.py, core/zana_core/images/oci.py, core/zana_core/images/import_plan.py, core/zana_core/images/secrets.py, core/zana_core/images/__init__.py, core/zana_core/images/models.py, core/tests/images/**, .agent-work/handoffs/T007-portability.md"
       - id: T007-resources
         agent: router_opencode_go_deepseek_v4_flash
         status: done
@@ -777,14 +780,29 @@ tasks:
       - id: T007-jobs-sse
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         codex_thread: 019fe827-beb6-7b92-bd3e-bca20dda1198
         worktree: /Users/sero/.codex/worktrees/715b/zana
         branch: agent/T007-jobs-sse-canonical-integration
         source_reference: agent/T007-jobs-sse@2dd18db03201cc1df7e8bb54c3e341745bc23049
+        integration_commit: c75e89b4a89b3ac3475fc5d2883d9341d652ed98
+        receipt_commit: 0c63112e698b5b1067d464b1544d83a73f4b431a
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        verification: "83 focused API/jobs tests plus 6 main integration tests; Ruff check/format; Pyright; direct lead inspection; clean; pushed origin/main at receipt commit."
         owns: "core/zana_core/api/jobs.py, core/zana_core/db/repositories.py, core/zana_core/jobs/services.py, core/tests/api/test_api_contracts.py, core/tests/api/test_job_event_stream.py, core/tests/jobs/test_job_services.py, .agent-work/handoffs/T007-jobs-sse-canonical-integration.md"
+      - id: T007-portability-canonical-integration
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        codex_thread: 019fe827-beb6-7b92-bd3e-bca20dda1198
+        worktree: /Users/sero/.codex/worktrees/715b/zana
+        branch: agent/t007-portability-canonical-715b
+        base_head: 0c63112e698b5b1067d464b1544d83a73f4b431a
+        source_reference: "detached recovery 863a84e in /Users/sero/.codex/worktrees/438c/zana"
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/__init__.py, core/zana_core/images/archive.py, core/zana_core/images/import_plan.py, core/zana_core/images/models.py, core/zana_core/images/oci.py, core/zana_core/images/secrets.py, core/tests/images/**, .agent-work/handoffs/T007-portability-canonical-integration.md"
       - id: T007-platform-wiring
         agent: router_opencode_go_deepseek_v4_flash
         status: done
@@ -883,6 +901,7 @@ tasks:
       - "core/zana_core/images/import_plan.py"
       - "core/zana_core/images/secrets.py"
       - "core/zana_core/images/__init__.py"
+      - "core/zana_core/images/models.py"
       - "core/tests/images/**"
       - "core/zana_core/resources/**"
       - "core/tests/resources/**"
@@ -941,6 +960,7 @@ tasks:
       - ".agent-work/handoffs/T007-observability-integration-retry.md"
       - ".agent-work/handoffs/T007-knowledge-canonical-integration.md"
       - ".agent-work/handoffs/T007-jobs-sse-canonical-integration.md"
+      - ".agent-work/handoffs/T007-portability-canonical-integration.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
