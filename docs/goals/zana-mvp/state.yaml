@@ -459,7 +459,7 @@ tasks:
     assignee: Worker
     status: active
     reasoning_hint: max
-    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking plus local embedding/retrieval adapter contracts, evaluation gates, OCI image integrity/import-export and atomic portability services, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, a persistent-safe build lifecycle state machine, fail-closed instance/runtime orchestration contracts, and a trusted permission-gated built-in calculator tool boundary."
+    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery and native acquisition, hardware profiling, cross-platform storage/path policy, capability validation, artifact and permission foundations, knowledge intake/chunking plus local embedding/retrieval adapter contracts, evaluation gates, OCI image integrity/import-export and atomic portability services, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, a persistent-safe build lifecycle state machine, fail-closed instance/runtime orchestration contracts, and a trusted permission-gated built-in calculator tool boundary."
     inputs:
       - "Completed T005 receipt and frozen domain/database/API contracts"
       - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
@@ -505,6 +505,8 @@ tasks:
       - "Cross-platform resource admission governor with conservative memory/disk/concurrency leases and zero background worker overhead"
       - "Cheap bounded cross-platform diagnostics that report real optional capability/runtime/storage readiness and actionable recovery without starting services"
       - "Local-only structured redacted bounded logging/event sinks with deterministic rotation and no telemetry/background worker"
+      - "Native-runtime model acquisition contracts that stream progress directly from the runtime, reserve disk first, never proxy model bytes, and remain cancellable and bounded"
+      - "One cross-platform platform-path policy for config/data/cache/log/temp roots with no hard-coded host paths and bounded filesystem probes"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -692,21 +694,25 @@ tasks:
         owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/archive.py, core/zana_core/images/oci.py, core/zana_core/images/import_plan.py, core/zana_core/images/secrets.py, core/zana_core/images/__init__.py, core/tests/images/**, .agent-work/handoffs/T007-portability.md"
       - id: T007-resources
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
         worktree: /Users/sero/.codex/worktrees/9529/zana
         branch: agent/T007-resources
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 0d3829f
+        handoff_commit: ae5b41d
         owns: "core/zana_core/resources/**, core/tests/resources/**, .agent-work/handoffs/T007-resources.md"
       - id: T007-diagnostics
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
         worktree: /Users/sero/.codex/worktrees/216c/zana
         branch: agent/T007-diagnostics
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: a93b32f
+        handoff_commit: f6f5737
         owns: "core/zana_core/diagnostics/**, core/tests/diagnostics/**, .agent-work/handoffs/T007-diagnostics.md"
       - id: T007-observability
         agent: router_opencode_go_deepseek_v4_flash
@@ -717,6 +723,24 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/observability/**, core/tests/observability/**, .agent-work/handoffs/T007-observability.md"
+      - id: T007-acquisition
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
+        worktree: /Users/sero/.codex/worktrees/216c/zana
+        branch: agent/T007-acquisition
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/acquisition/**, core/tests/acquisition/**, .agent-work/handoffs/T007-acquisition.md"
+      - id: T007-platform
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
+        worktree: /Users/sero/.codex/worktrees/9529/zana
+        branch: agent/T007-platform
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/platform/**, core/tests/platform/**, .agent-work/handoffs/T007-platform.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -769,6 +793,10 @@ tasks:
       - "core/tests/diagnostics/**"
       - "core/zana_core/observability/**"
       - "core/tests/observability/**"
+      - "core/zana_core/acquisition/**"
+      - "core/tests/acquisition/**"
+      - "core/zana_core/platform/**"
+      - "core/tests/platform/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -789,6 +817,8 @@ tasks:
       - ".agent-work/handoffs/T007-resources.md"
       - ".agent-work/handoffs/T007-diagnostics.md"
       - ".agent-work/handoffs/T007-observability.md"
+      - ".agent-work/handoffs/T007-acquisition.md"
+      - ".agent-work/handoffs/T007-platform.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
