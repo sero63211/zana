@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zana_core.domain.enums import ModelIdentityStrength, RuntimeKind, RuntimeSource, RuntimeStatus
 from zana_core.runtimes.base import (
@@ -21,7 +22,18 @@ from zana_core.runtimes.base import (
     parse_parameter_label,
     require_http_ok,
 )
-from zana_core.runtimes.transport import UrllibTransport
+from zana_core.runtimes.inference import (
+    BaseRuntimeInferenceAdapter,
+    EngineResult,
+    InferenceLimits,
+    bind_tool_requests_ollama,
+    parse_json_line,
+    verify_identity,
+)
+from zana_core.runtimes.transport import StreamTransport, UrllibTransport
+
+if TYPE_CHECKING:
+    from zana_core.instances import GenerationSettings, SessionBinding
 
 OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 
@@ -321,3 +333,97 @@ def _as_int(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         return None
     return value
+
+
+class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
+    """Bounded ``/api/chat`` streaming inference over the runtime transport."""
+
+    runtime_id = "ollama-local"
+
+    def __init__(
+        self,
+        *,
+        endpoint: str = OLLAMA_DEFAULT_ENDPOINT,
+        limits: InferenceLimits | None = None,
+        transport: StreamTransport | None = None,
+        clock: Callable[[], float] | None = None,
+        timeout_seconds: float | None = None,
+        bearer_token: str | None = None,
+    ) -> None:
+        super().__init__(
+            endpoint=endpoint,
+            limits=limits,
+            transport=transport,
+            clock=clock,
+            timeout_seconds=timeout_seconds,
+            bearer_token=bearer_token,
+        )
+
+    def build_request(
+        self,
+        *,
+        context: str,
+        message: str,
+        settings: GenerationSettings,
+        binding: SessionBinding,
+    ) -> tuple[str, dict[str, str], bytes]:
+        url = f"{self.endpoint}/api/chat"
+        headers = {"Content-Type": "application/json"}
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        body = {
+            "model": binding.model_key,
+            "messages": [
+                {"role": "system", "content": context},
+                {"role": "user", "content": message},
+            ],
+            "stream": True,
+            "options": {
+                "temperature": settings.temperature,
+                "num_predict": settings.max_tokens,
+                "top_p": settings.top_p,
+                "stop": list(settings.stop),
+            },
+        }
+        return url, headers, UrllibTransport.json_body(body)
+
+    def parse_event(
+        self,
+        line: str,
+        *,
+        settings: GenerationSettings,
+        binding: SessionBinding,
+    ) -> EngineResult | None:
+        payload = parse_json_line(line, "Ollama chat stream")
+        verify_identity(payload_model=payload.get("model"), binding=binding)
+        error = payload.get("error")
+        if isinstance(error, str) and error:
+            return EngineResult(
+                status="failed",
+                content="",
+                error_code="RUNTIME_ERROR",
+                error_message="Ollama reported a runtime error.",
+            )
+        done = payload.get("done")
+        if done is True:
+            message = payload.get("message")
+            message_dict: dict[str, Any] = message if isinstance(message, dict) else {}
+            tool_calls = bind_tool_requests_ollama(
+                message_dict.get("tool_calls"),
+                limits=self.limits,
+            )
+            final_content = message_dict.get("content")
+            return EngineResult(
+                status="completed",
+                content=final_content if isinstance(final_content, str) else "",
+                tool_requests=tool_calls,
+            )
+        message = payload.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                return EngineResult(status="streaming", content=content)
+        response = payload.get("response")
+        if isinstance(response, str) and response:
+            return EngineResult(status="streaming", content=response)
+        return None

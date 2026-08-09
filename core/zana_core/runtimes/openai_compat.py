@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
 from zana_core.domain.enums import ModelIdentityStrength, RuntimeKind, RuntimeSource, RuntimeStatus
 from zana_core.runtimes.base import (
@@ -16,7 +17,18 @@ from zana_core.runtimes.base import (
     parse_json_object,
     require_http_ok,
 )
-from zana_core.runtimes.transport import UrllibTransport
+from zana_core.runtimes.inference import (
+    BaseRuntimeInferenceAdapter,
+    EngineResult,
+    InferenceLimits,
+    bind_tool_requests,
+    parse_json_line,
+    verify_identity,
+)
+from zana_core.runtimes.transport import StreamTransport, UrllibTransport
+
+if TYPE_CHECKING:
+    from zana_core.instances import GenerationSettings, SessionBinding
 
 
 class OpenAICompatAdapter:
@@ -177,3 +189,109 @@ class OpenAICompatAdapter:
             warnings=warnings,
             error=error,
         )
+
+
+class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
+    """Bounded ``/v1/chat/completions`` SSE inference adapter."""
+
+    runtime_id = "openai-compatible"
+
+    def __init__(
+        self,
+        *,
+        endpoint: str,
+        limits: InferenceLimits | None = None,
+        transport: StreamTransport | None = None,
+        clock: Callable[[], float] | None = None,
+        timeout_seconds: float | None = None,
+        bearer_token: str | None = None,
+    ) -> None:
+        super().__init__(
+            endpoint=endpoint,
+            limits=limits,
+            transport=transport,
+            clock=clock,
+            timeout_seconds=timeout_seconds,
+            bearer_token=bearer_token,
+        )
+
+    def build_request(
+        self,
+        *,
+        context: str,
+        message: str,
+        settings: GenerationSettings,
+        binding: SessionBinding,
+    ) -> tuple[str, dict[str, str], bytes]:
+        url = self.chat_url()
+        headers = {"Content-Type": "application/json"}
+        if self.bearer_token:
+            headers["Authorization"] = f"Bearer {self.bearer_token}"
+        body = {
+            "model": binding.model_key,
+            "messages": [
+                {"role": "system", "content": context},
+                {"role": "user", "content": message},
+            ],
+            "stream": True,
+            "temperature": settings.temperature,
+            "max_tokens": settings.max_tokens,
+            "top_p": settings.top_p,
+            "stop": list(settings.stop),
+        }
+        return url, headers, UrllibTransport.json_body(body)
+
+    def chat_url(self) -> str:
+        if self.endpoint.endswith("/chat/completions"):
+            return self.endpoint
+        if self.endpoint.endswith("/v1"):
+            return f"{self.endpoint}/chat/completions"
+        return f"{self.endpoint}/v1/chat/completions"
+
+    def parse_event(
+        self,
+        line: str,
+        *,
+        settings: GenerationSettings,
+        binding: SessionBinding,
+    ) -> EngineResult | None:
+        if not line.startswith("data:"):
+            return None
+        payload_text = line[len("data:") :].lstrip()
+        if payload_text == "[DONE]":
+            return EngineResult(status="completed", content="")
+        if not payload_text:
+            return None
+        payload = parse_json_line(payload_text, "OpenAI-compatible stream")
+        verify_identity(payload_model=payload.get("model"), binding=binding)
+        if isinstance(payload.get("error"), dict):
+            return EngineResult(
+                status="failed",
+                content="",
+                error_code="RUNTIME_ERROR",
+                error_message="The runtime reported an error.",
+            )
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return None
+        choice = choices[0]
+        if not isinstance(choice, dict):
+            return None
+        finish = choice.get("finish_reason")
+        delta = choice.get("delta")
+        delta_dict: dict[str, Any] = delta if isinstance(delta, dict) else {}
+        content = delta_dict.get("content")
+        content_str = content if isinstance(content, str) else ""
+        tool_calls = bind_tool_requests(delta_dict.get("tool_calls"), limits=self.limits)
+        if finish is not None:
+            if finish == "length":
+                return EngineResult(
+                    status="partial",
+                    content="",
+                    error_code="OUTPUT_LENGTH_LIMIT",
+                    error_message="Output reached the model generation limit.",
+                )
+            return EngineResult(status="completed", content="", tool_requests=tool_calls)
+        if content_str or tool_calls:
+            return EngineResult(status="streaming", content=content_str, tool_requests=tool_calls)
+        return None
