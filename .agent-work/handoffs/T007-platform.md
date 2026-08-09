@@ -44,16 +44,50 @@ hard-coded `/Users`, HOME, drive, slash, or host-specific path.
   (`is_dir`, `os.access`, `shutil.disk_usage`). Failures produce honest
   unknown fields plus an error string, never fake zero/success. `probe_roots`
   probes exactly the six approved roots.
-- `core/zana_core/platform/ensure.py` - explicit, shallow, idempotent
-  `ensure_roots` that creates only the exact approved roots (one `mkdir`
-  per root) and never recursively scans; failures raise `PlatformPathError`.
-- `core/tests/platform/**` - 34 focused tests covering the three OS layouts
+- `core/zana_core/platform/ensure.py` - explicit, idempotent `ensure_roots`
+  that validates the full root set first (zero partial creation on invalid
+  sets), rejects existing symlink and non-directory roots, and creates only
+  the exact approved roots with honest `mkdir(parents=True)` semantics for
+  platformdirs parent chains; it never recursively scans.
+- `core/tests/platform/**` - 46 focused tests covering the three OS layouts
   (macOS/Linux/Windows) via injected locators, explicit overrides, unsafe
   broad roots, traversal, NUL, alias/parent-child collisions, confinement,
   idempotent ensure, permission/stat failures, unknown free space, zero
   creation during resolution, symlink escape, depth/length budgets, strict
   model frozenness, and injected probe usage. No `pytest.MonkeyPatch` is
   used; all OS/probe simulation is constructor injection.
+
+## Strict-policy rework (lead gate)
+
+The integration gate found that override validation was not applied to the
+final canonical root set. Reworked the owned package as follows:
+
+- `PathResolver.resolve()` now runs `validate_root_set()` on all six resolved
+  roots before returning, regardless of whether each root came from the
+  locator or an explicit override. The final validator applies structural
+  checks, unsafe-root/home/cwd rejection, confinement, alias-collision
+  rejection, and parent/child rejection to every root.
+- `PathPolicy.allowed_containment` is the single truthful exception:
+  `(WORKSPACE, DATA)` means workspace may live inside data. Every other
+  alias or parent/child relation is rejected with stable codes
+  (`PATH_ALIAS_COLLISION`, `PATH_PARENT_CHILD`), including reversed
+  containment.
+- `PlatformdirsLocator` documents that platformdirs nests cache/log under
+  data or cache on some OSes; ZANA requires disjoint roots, so nested roots
+  are relocated to sibling directories under the same OS base directory.
+  The Windows canonical test layout was updated to the disjoint canonical
+  shape (data/cache/log siblings, workspace under data).
+- `ensure_roots` now validates the full root set before any mutation,
+  rejects existing symlink roots (`PATH_SYMLINK_ROOT`) and non-directory
+  roots (`PATH_TYPE`), and therefore produces zero partial creation for an
+  invalid, symlinked, or non-directory set. `mkdir(parents=True)` is kept
+  and documented honestly as creating the exact platformdirs parent chains,
+  not as a shallow/non-recursive guarantee of any other kind.
+
+New tests cover locator defaults returning filesystem root, home, cwd,
+duplicates, unsafe parent/child, reversed containment, allowed
+workspace-under-data, symlink/non-directory ensure refusal, and zero partial
+creation after invalid sets.
 
 ## Checks run and evidence
 
@@ -63,8 +97,8 @@ and no venv was created.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Focused platform tests | `core/.venv/bin/python -m pytest core/tests/platform -q` | 34 passed |
-| Full Core suite | `core/.venv/bin/python -m pytest core/tests -q` (escalated for loopback/network) | 734 passed |
+| Focused platform tests | `core/.venv/bin/python -m pytest core/tests/platform -q` | 46 passed |
+| Full Core suite | `core/.venv/bin/python -m pytest core/tests -q` (escalated for loopback/network) | 746 passed |
 | Ruff lint | `core/.venv/bin/ruff check core/zana_core/platform core/tests/platform` | clean |
 | Ruff format | `core/.venv/bin/ruff format --check core/zana_core/platform core/tests/platform` | clean |
 | Pyright | `core/.venv/bin/pyright core/zana_core/platform` | 0 errors, 0 warnings |
@@ -102,8 +136,11 @@ None.
 - Implementation commit: `2dc004f` (`feat: add canonical platform path boundary`)
   on branch `agent/T007-platform`, started exactly at integrated commit
   `045b0e9`.
-- This handoff is committed separately on the same branch.
-- Cherry-pick both commits onto the integration lane. No lockfiles, DB
+- Strict-policy rework commit: `bdc1133` (`fix: enforce strict final root-set validation`)
+  on the same branch.
+- This handoff update is committed separately on the same branch.
+- Cherry-pick in this order: `2dc004f`, `9f517a0`, `bdc1133`, then the
+  updated handoff commit. No lockfiles, DB
   schema, API registration, desktop files, or GoalBuddy state are included.
   After integration, rerun the focused platform suite and the full Core
   suite with loopback permission.
