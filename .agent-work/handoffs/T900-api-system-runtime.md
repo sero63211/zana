@@ -64,11 +64,11 @@ no venv was created.
 
 | Check | Result |
 | --- | --- |
-| Focused API suite (`core/tests/api`) | 67 passed |
-| New system/runtime/model tests (`test_system_runtime_models.py`) | 9 passed |
-| Platform main integration (`test_main_integration.py`) | 7 passed |
-| Platform/runtimes/jobs/acquisition suites | 281 passed |
-| Full Core suite (`core/tests`) | 1598 passed |
+| Focused API suite (`core/tests/api`) | 78 passed |
+| Focused db suite (`core/tests/db`) | 11 passed |
+| Platform suite (`core/tests/platform`) | 53 passed |
+| API/db/runtime/diagnostic/platform/jobs/acquisition suites | 392 passed |
+| Full Core suite (`core/tests`) | 1611 passed |
 | Ruff check (owned files) | PASS |
 | Ruff format check (owned files) | PASS |
 | Pyright (owned implementation modules) | 0 errors, 0 warnings |
@@ -91,14 +91,13 @@ no venv was created.
 
 ## Residual risk
 
-- `/system/doctor` intentionally wires the deterministic read-only probes and
-  excludes `RuntimeDiscoveryProbe` and `StorageRootProbe`, which require injected
-  transports or path wiring this API boundary does not own; the report honestly
-  reflects the probes that are wired.
-- `/runtimes/refresh` does not prune stale model/runtime rows after discovery;
-  it upserts only, which is conservative and avoids deleting other owners' data.
+- `/runtimes/refresh` prunes stale models only for online, registered runtimes;
+  stale models for offline/failed/unregistered descriptors are retained
+  conservatively.
 - Remote manual runtime reachability is recorded but not probed because the
   canonical registry enforces loopback-only probing.
+- The doctor's runtime probe uses the injected registry; production performs
+  bounded loopback discovery only, never external network or model starts.
 - No live runtime/model/network operation was exercised; verification used the
   injected fake registry and protocol fixtures only.
 
@@ -117,8 +116,44 @@ suite with loopback permission.
 ## Accepted commits and clean proof
 
 - Implementation commit: `9176532`
+- Review-fix commit: `48b89cb`
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`).
 - Branch: `agent/t900-api-system-runtime`
 - Remote: none; no push attempted (explicit push blocker is lead integration).
 - Clean proof after all commits: `git status --porcelain` empty and
   `git diff --check` pass; verified with index and worktree diffs both clean.
+
+## Review-fix addendum
+
+Lead review `BLOCK` was repaired with one focused product commit `48b89cb`
+(no history rewrite):
+
+1. `/system/doctor` now covers runtime, storage, and training diagnostics:
+   resolved data root is stored on `app.state` for production and injected DB
+   paths; `RuntimeDiscoveryProbe(app.state.runtime_registry)` and
+   `StorageRootProbe(data_root/artifacts, data_root/images)` are wired alongside
+   the existing optional-dependency training readiness probes. Tests assert the
+   required check ids and use the injected fake registry only.
+2. Runtime persistence identity now uses exact `(kind, endpoint, source)` via a
+   bounded `RuntimeRepository.get_by_kind_endpoint`; llama.cpp and MLX candidates
+   sharing `127.0.0.1:8080` remain separate across refreshes. Manual duplicate
+   behavior is unchanged.
+3. Online registered discovery is authoritative: models that disappeared from an
+   online runtime are pruned; offline/failed/unregistered descriptors never
+   prune. Tests cover both directions.
+4. Failed refresh persists and returns a `FAILED` job with canonical
+   error/action data. Discovery sync runs inside a session savepoint, so partial
+   runtime/model writes roll back while the failed job/event commits; the job
+   remains fetchable from `/jobs/{id}` and no partial discovery persists.
+5. Model pull now requires explicit `user_approved=true`, uses a strict
+   extra-forbid `ModelPullCreate`, validates/normalizes the runtime endpoint
+   through the canonical local-only acquisition validator, and persists the
+   complete bounded `NativeAcquisitionRequest` plus plan. Approval, coercion,
+   extra-field, remote-endpoint, and path-endpoint tests were added.
+6. Model detail routing supports full path keys via `/{model_key:path}` without
+   shadowing the static `POST /pull`; retrieval through a `/`-containing key is
+   tested.
+
+Review-fix verification: 45 focused API/db/platform tests, 392 related
+API/db/runtime/diagnostic/platform/jobs/acquisition tests, 1611 full Core tests,
+Ruff check/format PASS, Pyright 0 errors/warnings, `git diff --check` PASS.
