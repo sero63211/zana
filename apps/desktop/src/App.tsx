@@ -1,62 +1,53 @@
-import { CoreStatus } from "./components/CoreStatus";
-import "./styles/app.css";
+import type { ComponentType } from "react";
 
-const NAVIGATION = ["Home", "Models", "Capabilities", "Images", "Instances", "Evaluations", "Settings"] as const;
+import { Shell } from "./components/Shell";
+import { useCoreHealth } from "./hooks/useCoreHealth";
+import { useHashRoute } from "./hooks/useHashRoute";
+import type { ViewId } from "./navigation";
+import "./styles/app.css";
+import { BuildEvaluationView } from "./views/BuildEvaluationView";
+import { CapabilitiesView } from "./views/CapabilitiesView";
+import { HomeView } from "./views/HomeView";
+import { ImagesView } from "./views/ImagesView";
+import { InstancesChatView } from "./views/InstancesChatView";
+import { RuntimesModelsView } from "./views/RuntimesModelsView";
+import { SettingsDoctorView } from "./views/SettingsDoctorView";
+
+const VIEW_COMPONENTS: Record<ViewId, ComponentType> = {
+  home: HomeView,
+  "runtimes-models": RuntimesModelsView,
+  capabilities: CapabilitiesView,
+  "build-evaluation": BuildEvaluationView,
+  images: ImagesView,
+  "instances-chat": InstancesChatView,
+  "settings-doctor": SettingsDoctorView,
+};
 
 export function App() {
+  const activeView = useHashRoute();
+  const healthQuery = useCoreHealth();
+  const View = VIEW_COMPONENTS[activeView];
+  const coreStatus = healthQuery.isPending ? "pending" : healthQuery.isSuccess ? "connected" : "unavailable";
+
+  function handleNavigate(view: ViewId) {
+    const nextHash = `#/${view}`;
+    if (window.location.hash === nextHash) {
+      window.scrollTo({ top: 0, behavior: "auto" });
+      return;
+    }
+    window.location.hash = nextHash;
+  }
+
   return (
-    <div className="app-frame">
-      <aside className="sidebar" aria-label="ZANA navigation">
-        <div className="brand-block">
-          <span className="brand-sigil" aria-hidden="true">Z</span>
-          <div>
-            <p className="brand-name">ZANA</p>
-            <p className="brand-note">Local capability studio</p>
-          </div>
-        </div>
-
-        <nav>
-          <ul className="nav-list">
-            {NAVIGATION.map((item) => (
-              <li key={item} className={item === "Home" ? "nav-item nav-item--active" : "nav-item nav-item--future"}>
-                <span>{item}</span>
-                {item === "Home" ? <span className="nav-indicator" aria-label="Current page" /> : <span className="nav-soon">Later</span>}
-              </li>
-            ))}
-          </ul>
-        </nav>
-
-        <div className="privacy-note">
-          <span className="privacy-dot" aria-hidden="true" />
-          <div><strong>Local mode</strong><span>Telemetry is off</span></div>
-        </div>
-      </aside>
-
-      <main className="workspace">
-        <header className="workspace-header">
-          <div>
-            <p className="eyebrow">Foundation check</p>
-            <h1>Build knowledge you can inspect.</h1>
-          </div>
-          <p className="header-copy">
-            ZANA turns models already under your control into verified, portable AI instances.
-          </p>
-        </header>
-
-        <CoreStatus />
-
-        <section className="principles" aria-labelledby="principles-title">
-          <div className="principles-heading">
-            <p className="eyebrow">Operating contract</p>
-            <h2 id="principles-title">Trust is built into the lifecycle.</h2>
-          </div>
-          <ol>
-            <li><span>01</span><div><strong>Discover</strong><p>Ask local runtimes what models they actually expose.</p></div></li>
-            <li><span>02</span><div><strong>Measure</strong><p>Capture a real baseline before specialization begins.</p></div></li>
-            <li><span>03</span><div><strong>Verify</strong><p>Promote only when declared evaluation gates pass.</p></div></li>
-          </ol>
-        </section>
-      </main>
-    </div>
+    <>
+      <a className="skip-link" href="#main-content">Skip to content</a>
+      <Shell
+        activeView={activeView}
+        onNavigate={handleNavigate}
+        coreStatus={coreStatus}
+      >
+        <View />
+      </Shell>
+    </>
   );
 }
