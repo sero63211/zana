@@ -487,18 +487,43 @@ tasks:
     delegated_lanes:
       - id: T007-runtimes
         agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
+        worktree: /Users/sero/.codex/worktrees/216c/zana
+        branch: agent/T007-runtimes
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/runtimes/**, core/tests/runtimes/**, .agent-work/handoffs/T007-runtimes.md"
       - id: T007-hardware
         agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
+        worktree: /Users/sero/.codex/worktrees/d795/zana
+        branch: agent/T007-hardware
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/hardware/**, core/tests/hardware/**, .agent-work/handoffs/T007-hardware.md"
       - id: T007-capabilities
         agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
+        worktree: /Users/sero/.codex/worktrees/9529/zana
+        branch: agent/T007-capabilities
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/capabilities/**, core/tests/capabilities/**, schemas/capability.schema.json, schemas/evaluation.schema.json, .agent-work/handoffs/T007-capabilities.md"
       - id: T007-artifacts
         agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
+        worktree: /Users/sero/.codex/worktrees/b8bd/zana
+        branch: agent/T007-artifacts
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/artifacts/**, core/tests/artifacts/**, .agent-work/handoffs/T007-artifacts.md"
       - id: T007-permissions
         agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
+        worktree: /Users/sero/.codex/worktrees/ba7c/zana
+        branch: agent/T007-permissions
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/permissions/**, core/tests/permissions/**, schemas/permissions.schema.json, .agent-work/handoffs/T007-permissions.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
