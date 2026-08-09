@@ -31,6 +31,7 @@ MAX_NODES = 32
 MAX_INTEGER_DIGITS = 18
 MAX_RESULT_MAGNITUDE = 1e12
 ZERO = 1e-12
+MAX_DEADLINE_SECONDS = 1.0
 
 
 class MonotonicClock(Protocol):
@@ -178,6 +179,14 @@ class CalculatorTool:
 
     def invoke(self, call: ToolCall) -> ToolResult:
         started = self.clock.now()
+        elapsed = self.clock.now() - started
+        if elapsed >= MAX_DEADLINE_SECONDS:
+            return self._error_result(
+                call,
+                ToolErrorCode.DEADLINE_EXCEEDED,
+                "calculator deadline was already exceeded",
+                started,
+            )
         expression = call.arguments.get("expression")
         if not isinstance(expression, str):
             return self._error_result(
@@ -194,7 +203,11 @@ class CalculatorTool:
                 started,
             )
         try:
+            if self.clock.now() - started >= MAX_DEADLINE_SECONDS:
+                raise ValueError("expression deadline exceeded")
             tree = _parse_expression(expression)
+            if self.clock.now() - started >= MAX_DEADLINE_SECONDS:
+                raise ValueError("expression deadline exceeded")
             value = _evaluate(tree)
             rendered = _render_number(value)
             expression_digest = _digest(expression)
@@ -203,7 +216,13 @@ class CalculatorTool:
                 ToolErrorCode.LIMIT_EXCEEDED
                 if any(
                     marker in str(error)
-                    for marker in ("too many", "too deeply", "too large", "magnitude")
+                    for marker in (
+                        "too many",
+                        "too deeply",
+                        "too large",
+                        "magnitude",
+                        "deadline",
+                    )
                 )
                 else ToolErrorCode.CALCULATION_ERROR
             )
