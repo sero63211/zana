@@ -494,9 +494,7 @@ class ChatOrchestrator:
             )
             for chunk in retrieved
         ]
-        history = (
-            context_history if context_history is not None else instance.state.conversation
-        )
+        history = context_history if context_history is not None else instance.state.conversation
         conversation_items = [
             ContextItem(
                 id=f"turn-{index}",
