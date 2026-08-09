@@ -1143,7 +1143,7 @@ tasks:
         thread: 019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8
         worktree: /Users/sero/.codex/worktrees/4a22/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/acquisition/**, core/zana_core/jobs/**, core/zana_core/api/models.py, core/zana_core/api/jobs.py, core/zana_core/main.py, focused acquisition/job/API tests, .agent-work/handoffs/T900-model-acquisition-execution.md"
+        owns: "core/zana_core/acquisition/**, core/zana_core/jobs/**, core/zana_core/runtimes/discovery_service.py, core/zana_core/api/models.py, core/zana_core/api/jobs.py, core/zana_core/api/runtimes.py, core/zana_core/main.py, focused acquisition/job/runtime/API tests, .agent-work/handoffs/T900-model-acquisition-execution.md"
         gates: "Focused injected-transport acquisition/job/API pytest only; Ruff/format; Pyright; import/diff/lifecycle/disk/cancel/redaction review; no live runtime/network/model/download, broad suite, app, browser, build, or install; one product commit plus receipt; clean; no push."
     expected_output:
       - "Integrated working application"
