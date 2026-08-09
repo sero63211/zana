@@ -60,7 +60,7 @@ agents:
   deepseek_max: required_flash_reasoning_effort_not_a_separate_model
 
 environment:
-  implementation_state: T900_api_knowledge_and_runtime_inference_integrated
+  implementation_state: T900_api_knowledge_runtime_inference_and_models_system_desktop_integrated
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 23.0
@@ -1078,13 +1078,23 @@ tasks:
       - id: T900-desktop-models
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-desktop-models
         thread: 019fe89b-5366-7100-9728-7cc6ca5c8444
         worktree: /Users/sero/.codex/worktrees/0436/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "apps/desktop/src/api/**, apps/desktop/src/hooks/**, apps/desktop/src/views/HomeView.tsx, apps/desktop/src/views/RuntimesModelsView.tsx, apps/desktop/src/views/SettingsDoctorView.tsx, apps/desktop/src/styles/app.css, apps/desktop/src/test/**, apps/desktop/src/views/RuntimesModelsView.test.tsx, .agent-work/handoffs/T900-desktop-models.md"
+        owns: "apps/desktop/src/api/**, apps/desktop/src/hooks/**, apps/desktop/src/views/HomeView.tsx, apps/desktop/src/views/RuntimesModelsView.tsx, apps/desktop/src/views/SettingsDoctorView.tsx, apps/desktop/src/styles/app.css, focused view/component tests and test render helper, .agent-work/handoffs/T900-desktop-models.md"
         gates: "Focused Vitest plus TypeScript/ESLint/format only; API/token/error/action/accessibility inspection; no Vite build, app, browser, bundle, or live runtime; one implementation commit plus receipt; clean; no push."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: a1c87f4115b54699220ca248e8fc28feb7fedef3
+          source_commits: "278a1e9, 0f698f7, 3901d53, cd2e05c, 5769a6e"
+          verification: "Lead source/design/security review PASS; 31 focused Vitest tests; ESLint; TypeScript; git diff --check. No lead Vite build or live app/browser verification."
+          security_delta: "Authenticated runtime-validated Core client, fixed sanitized transport errors, token non-rendering, fail-closed doctor/hardware contracts, explicit destructive/download approval, portable path redaction, and no background polling."
+          residual_risk: "Model pull is honestly queue-only; no live Core/runtime/model/browser/app/native bundle proof ran. One bounded worker Vite build ran before the host correction, was not repeated, and its generated worktree artifact was removed."
+          remote_proof: "Non-force origin/main push confirmed; local HEAD and origin/main both a1c87f4115b54699220ca248e8fc28feb7fedef3 before this receipt update."
+          clean_proof: "Canonical index/worktree and source agent worktree were clean; worker-created temporary symlinks/dist were removed."
       - id: T900-capability-authoring-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max

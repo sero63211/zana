@@ -67,7 +67,7 @@ operational coordination only and never supersedes it.
 | T900-api-system-runtime | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe868-40ad-7cd3-b026-5980b0d49978`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-api-system-runtime` at `/Users/sero/.codex/worktrees/90b6/zana` | single-owner system/runtime/model API boundary and exact tests/handoff | done, PASS; integrated/pushed `8342881` | canonical T007 domain/services | lead 96 focused + 1611 full Core; Ruff/format/Pyright/diff; auth, exact identity, savepoint, pruning, approval and route review PASS; no model start/download |
 | T900-runtime-inference | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe870-59d1-74f2-98b2-13d3d0dd9561`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-runtime-inference` at `/Users/sero/.codex/worktrees/2aa0/zana` | runtime inference adapters plus exact instance identity/selection/lifecycle files/tests/handoff | done, PASS; integrated/pushed `6d43efe` | canonical runtime transport + instance inference protocol | lead 71 focused fixture tests; Ruff/format/Pyright/import/diff; no live model/server/network |
 | T900-knowledge-providers | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe870-ce4c-7c71-8e2b-afe450a0a6f3`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-knowledge-providers` at `/Users/sero/.codex/worktrees/934f/zana` | exact Docling/LanceDB adapter files/tests/handoff | done, PASS; integrated/pushed `d84c22f` | canonical knowledge models/limits | lead 6 exact provider-contract tests; Ruff/format/Pyright/diff; real optional adapters; live provider install/execution deferred |
-| T900-desktop-models | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe89b-5366-7100-9728-7cc6ca5c8444`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-desktop-models` at `/Users/sero/.codex/worktrees/0436/zana`, base `6812372` | typed desktop API/client/hooks plus Home/Models/Doctor views/styles/tests/handoff | active | frozen integrated backend API contract | complete real discovery/manual/refresh/pull/system UI vertical; focused unit/type/lint/format only; no app/browser/build/live runtime |
+| T900-desktop-models | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe89b-5366-7100-9728-7cc6ca5c8444`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-desktop-models` at `/Users/sero/.codex/worktrees/0436/zana`, base `6812372` | typed desktop API/client/hooks plus Home/Models/Doctor views/styles/tests/handoff | done, PASS; integrated/pushed `a1c87f4` | frozen integrated backend API contract | lead 31 focused Vitest + ESLint/TypeScript/diff; cool model-first real-data UI; no lead build/app/browser/live runtime |
 | T900-capability-authoring-api | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8b6-af8f-76e1-b818-49a3dccebd47`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `codex/zana-t900-capability-authoring-api` at `/Users/sero/.codex/worktrees/f2c9/zana`, base `48a016c` | complete capability draft/source/reopen/validation API vertical and focused tests/handoff | active | canonical capability/source validator and existing authenticated route contract | bounded behavior/document/eval persistence with containment, atomicity and honest validation; no build/training/model/live execution |
 | T900-mlx-training-execution | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8bb-fe02-7340-97c5-fa915f4ba840`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `codex/zana-t900-mlx-training-execution` at `/Users/sero/.codex/worktrees/3858/zana`, base `87e10a8` | complete real MLX-LM invocation/staging/executor/adapter-verification vertical and focused tests/handoff | active | canonical training identities/datasets/resources/cancellation; official current mlx_lm.lora CLI | injected-process code only; held-out isolation and bounded failure cleanup; no MLX import/process/model/training run |
 | T900-tauri-core-package | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8a6-6bba-7791-bbfb-cbec9b48b0d0`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-tauri-core-package` at `/Users/sero/.codex/worktrees/edc1/zana`, base `c995466` | Tauri/core sidecar/package scripts and handoff | active | canonical M0 Tauri supervisor | robust lightweight sidecar packaging/lifecycle/auth/path errors; source/static checks only; no compile/bundle/app launch |
@@ -83,6 +83,28 @@ root manifests and lockfiles, `core/pyproject.toml`, migrations, backend API
 boundary, generated TypeScript API types, build orchestrator, and this ledger.
 
 ## Integration receipts
+
+### T900 Models and System desktop vertical
+
+- accepted integration head: `a1c87f4115b54699220ca248e8fc28feb7fedef3`
+- source commits: `278a1e9`, `0f698f7`, `3901d53`, `cd2e05c`, `5769a6e`
+- changed paths: authenticated validated Core client/hooks, model-first Home and
+  Runtime/Models surfaces, real Doctor/hardware view, focused tests, cool
+  graphite/slate styling, and handoff
+- gates: direct lead source/design/security/error review PASS; 31 focused
+  Vitest tests PASS; ESLint PASS; TypeScript PASS; `git diff --check` PASS
+- security delta: token is header-only and never rendered; raw transport
+  exception text is suppressed; untrusted responses fail closed; destructive
+  runtime deletion and pull queueing require explicit confirmation; Windows
+  and POSIX host paths reduce to basename
+- residual risk: the model pull endpoint remains honestly queue-only; no live
+  Core/runtime/model/browser/app/native bundle proof ran under host safety. One
+  bounded worker Vite build ran before the correction, was not repeated, and
+  its generated worktree artifact was removed
+- remote proof: non-force push succeeded; local HEAD and `origin/main` both
+  resolved to `a1c87f4115b54699220ca248e8fc28feb7fedef3` before this receipt update
+- clean proof: canonical and source worktrees were clean; worker-created
+  temporary dependency symlinks and generated `dist` were removed
 
 ### T900 bounded runtime inference
 
