@@ -46,6 +46,7 @@ rules:
   planning_is_not_completion: true
   queued_required_worker_blocks_completion: true
   continuous_until_full_outcome: true
+  current_host_safety_policy: "Code completion only with the smallest focused unit tests plus bounded static/type/lint/format checks; no broad/full, live API/provider, browser, device, app, bundle, runtime, model, download, inference, training, load, GPU/RAM, container, or performance verification until the owner explicitly re-enables it."
   missing_input_or_credentials_do_not_stop_goal: true
   preserve_and_validate_existing_plan: true
   intake_misfire_must_be_audited: true
@@ -1010,6 +1011,7 @@ tasks:
       - "No mocks, placeholder success paths, or fake data."
       - "Preserve unrelated user changes."
       - "Current parallel wave is code-only and lightweight: no model start/download, inference execution, training run, dependency install, native bundle build, or desktop launch."
+      - "Current host-safety override forbids broad/full suites and every live provider/API/browser/device/app/runtime/model/load test; use only smallest focused unit tests and bounded static/type/lint/format checks, and record deferred live evidence honestly."
       - "All implementation workers use visible local worktrees and only opencode-go/deepseek-v4-flash with reasoning max; DeepSeek V4 Pro is forbidden."
       - "Shared API and desktop client contracts each have one owner until integrated."
     delegated_lanes:
@@ -1056,8 +1058,10 @@ tasks:
       - id: T900-desktop-models
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-desktop-models
+        thread: 019fe89b-5366-7100-9728-7cc6ca5c8444
+        worktree: /Users/sero/.codex/worktrees/0436/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "apps/desktop/src/api/**, apps/desktop/src/hooks/**, apps/desktop/src/views/HomeView.tsx, apps/desktop/src/views/RuntimesModelsView.tsx, apps/desktop/src/views/SettingsDoctorView.tsx, apps/desktop/src/styles/app.css, apps/desktop/src/test/**, apps/desktop/src/views/RuntimesModelsView.test.tsx, .agent-work/handoffs/T900-desktop-models.md"
         gates: "Focused Vitest; TypeScript/ESLint/format/build only if already installed and bounded; API/token/error/action/accessibility inspection; no app launch; one implementation commit plus receipt; clean; no push."
