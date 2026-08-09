@@ -16,6 +16,8 @@ Remote: `origin` (`https://github.com/sero63211/zana.git`); no push attempted.
 Only exclusive owned paths were changed:
 
 - `apps/desktop/src/api/client.ts`, `client.test.ts`, `format.ts`, `types.ts`
+- `apps/desktop/src/api/format.test.ts`
+- `apps/desktop/src/api/core.ts`
 - `apps/desktop/src/hooks/useCoreApi.ts`, `useCoreHealth.ts`
 - `apps/desktop/src/views/HomeView.tsx`, `HomeView.test.tsx`
 - `apps/desktop/src/views/RuntimesModelsView.tsx`, `RuntimesModelsView.test.tsx`
@@ -36,6 +38,9 @@ or coordination source was modified.
   slash-preserving model keys; endpoints for system profile/doctor, runtimes,
   runtime refresh, manual add, manual-only delete, models with filters, model
   detail, and approved model pull.
+- `apps/desktop/src/api/core.ts`: transport failures map to fixed actionable
+  messages and never include raw fetch exception text; `AbortError` passes
+  through unchanged.
 - `apps/desktop/src/api/types.ts` and `format.ts`: typed response models and
   read-only formatting/status helpers; unknown fields are never rendered.
 - `apps/desktop/src/hooks/useCoreApi.ts`: React Query hooks/mutations for all
@@ -54,9 +59,10 @@ or coordination source was modified.
   returned check, redacted evidence, issues, safe recovery actions, and the
   hardware profile; token is never rendered.
 - `apps/desktop/src/styles/app.css`: removed warm/orange tokens and replaced
-  them with a restrained cool blue on cool white/graphite/slate surfaces; added
-  dashboard, runtime/model, form, notice, badge, doctor, and accessibility
-  styles; reduced-motion support retained.
+  them with a restrained cool blue on cool white/graphite/slate surfaces,
+  including cool sidebar neutrals, cool shadows, and a cool slate warning
+  badge; added dashboard, runtime/model, form, notice, badge, doctor, and
+  accessibility styles; reduced-motion support retained.
 - `apps/desktop/src/hooks/useCoreHealth.ts`: removed the background 5s poll;
   health is fetched on mount and refetched on explicit actions only.
 
@@ -84,6 +90,11 @@ not required evidence, and will not be repeated. Its generated ignored
 Focused tests cover real-data, loading, empty, canonical error/recovery,
 refresh invalidation, manual add/delete, explicit pull confirmation and
 payload, safe path encoding, doctor checks, and token non-rendering.
+
+Correction verification after lead review: 31 focused Vitest tests passed
+(client/core sanitization, format, CoreStatus, Home, Runtimes & Models, and
+Settings & Doctor); `pnpm --filter @zana/desktop lint` and typecheck PASS;
+`git diff --check` PASS. No Vite build was run during the correction.
 
 ## Intentionally not run
 
@@ -130,15 +141,40 @@ None.
 Integrate the single implementation commit and this handoff commit separately
 onto the canonical lane at base `6812372`. No lockfile, manifest, Core/Python,
 Tauri/Rust, navigation, icon, or GoalBuddy control file is included. After
-integration, rerun the focused desktop tests plus bounded typecheck/lint/build
-with the normal installed toolchain.
+integration, rerun the focused desktop tests plus the existing lightweight
+typecheck/lint with the normal installed toolchain. Under the active host
+safety rule, do NOT run the Vite build; the one accidental Vite build remains
+historical evidence only.
 
 ## Accepted commits and clean proof
 
 - Product implementation commit: `278a1e91b779a1cb329f8315256278d5047acd90`
   (`feat: wire desktop models dashboard to Core API`)
+- Correction commit: `cd2e05c2d0efbe3800ccc34b1098ae3683355890`
+  (`fix: harden desktop API sanitization and validation`)
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`).
 - Clean proof: `git status --porcelain` empty and `git diff --check` pass after
   the product commit; the receipt commit is the only additional change.
 - Remote: `origin`; no push attempted. Explicit push blocker: lead
   integration owns remote promotion per ZANA policy.
+
+## Review-fix addendum
+
+Lead review `BLOCK` was repaired with one focused correction commit
+`cd2e05c`:
+
+1. Forbidden warm/yellow/amber badge colors were replaced with a cool
+   slate/blue neutral warning treatment; sidebar green-beige neutrals and
+   green-cast shadows were replaced with coherent cool graphite/slate
+   equivalents while semantic success green and danger red are preserved.
+2. `api/client.ts` and `api/core.ts` no longer interpolate raw fetch exception
+   text into `CORE_UNREACHABLE`/health errors. Transport failures use fixed
+   actionable messages, `AbortError` is preserved, and hostile-error tests
+   prove a fake token and host path never render.
+3. `basename` now splits on both `/` and `\`, with a focused test.
+4. Required doctor/hardware arrays (`checks`, `issues`,
+   `feature_readiness`, `notes`, accelerators/backends) now fail closed when
+   missing or malformed instead of becoming empty arrays; nullable fields
+   remain nullable. Client tests cover missing doctor and hardware arrays.
+5. The handoff Merge instructions no longer direct the lead to run the Vite
+   build; the accidental build stays historical-only evidence.
