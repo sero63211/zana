@@ -6,7 +6,10 @@ import {
   encodeModelKey,
   fetchModels,
   fetchRuntimes,
+  fetchSystemDoctor,
+  fetchSystemProfile,
 } from "./client";
+import { fetchCoreHealth } from "./core";
 
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 
@@ -120,6 +123,81 @@ describe("Core API client", () => {
     const call = vi.mocked(fetch).mock.calls[0];
     expect(callUrl(call[0])).toBe("http://127.0.0.1:59421/api/v1/models?runtime=2&capability=completion");
     expect(call[1]?.method).toBe("GET");
+  });
+
+  it("sanitizes transport failures from the typed client", async () => {
+    invoke.mockResolvedValue({
+      baseUrl: "http://127.0.0.1:59421",
+      token: "hostile-token-value",
+      launchError: null,
+    });
+    vi.mocked(fetch).mockRejectedValue(
+      new Error("fetch failed at /private/var/zana/host-path?token=hostile-token-value"),
+    );
+
+    try {
+      await fetchRuntimes();
+      throw new Error("expected rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(CoreApiError);
+      const rendered = `${String(error)} ${JSON.stringify(error)}`;
+      expect(rendered).not.toContain("hostile-token-value");
+      expect(rendered).not.toContain("/private/var/zana/host-path");
+      expect(rendered).not.toContain("fetch failed at");
+    }
+  });
+
+  it("sanitizes transport failures from Core health and preserves AbortError", async () => {
+    invoke.mockResolvedValue({
+      baseUrl: "http://127.0.0.1:59421",
+      token: "hostile-token-value",
+      launchError: null,
+    });
+    vi.mocked(fetch).mockRejectedValue(
+      new Error("boom at C:\\Users\\zana\\host\\path token=hostile-token-value"),
+    );
+
+    try {
+      await fetchCoreHealth();
+      throw new Error("expected rejection");
+    } catch (error) {
+      const rendered = String(error);
+      expect(rendered).toContain("ZANA Core is not reachable on this computer.");
+      expect(rendered).not.toContain("hostile-token-value");
+      expect(rendered).not.toContain("C:\\Users\\zana\\host\\path");
+      expect(rendered).not.toContain("boom at");
+    }
+
+    vi.mocked(fetch).mockRejectedValue(new DOMException("aborted", "AbortError"));
+    await expect(fetchCoreHealth()).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("fails closed when canonical doctor arrays are missing", async () => {
+    mockFetch(jsonFixture({
+      generated_at: "2026-08-10T12:00:00Z",
+      budget: {},
+      aggregate_health: "healthy",
+      total_duration_seconds: 0,
+      skipped_or_unavailable_count: 0,
+      error_count: 0,
+      details: {},
+    }));
+
+    await expect(fetchSystemDoctor()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+  });
+
+  it("fails closed when canonical hardware arrays are missing", async () => {
+    mockFetch(jsonFixture({
+      os: "macos",
+      arch: "arm64",
+      cpu: {},
+      memory: {},
+      disk: { path: "/tmp/zana" },
+      collected_at: "2026-08-10T12:00:00Z",
+      notes: [],
+    }));
+
+    await expect(fetchSystemProfile()).rejects.toMatchObject({ code: "INVALID_RESPONSE" });
   });
 });
 

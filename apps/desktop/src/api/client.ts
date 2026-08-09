@@ -103,8 +103,7 @@ function optionalRecord(value: unknown, field: string): Record<string, unknown> 
   return requireRecord(value, field);
 }
 
-function optionalArray(value: unknown, field: string): unknown[] | null {
-  if (value === null || value === undefined) return null;
+function requireArray(value: unknown, field: string): unknown[] {
   if (!Array.isArray(value)) {
     throw new ResponseValidationError(field, "expected an array");
   }
@@ -250,7 +249,7 @@ function parseRecoveryAction(value: unknown) {
 
 function parseEvidence(value: unknown) {
   const record = requireRecord(value, "evidence");
-  const notes = optionalArray(record.notes, "evidence.notes");
+  const notes = requireStringArray(record.notes, "evidence.notes");
   let scalarValue: string | number | boolean | null = null;
   if (record.value !== null && record.value !== undefined) {
     if (typeof record.value === "string" || typeof record.value === "number" || typeof record.value === "boolean") {
@@ -265,18 +264,18 @@ function parseEvidence(value: unknown) {
     basename: optionalString(record.basename, "evidence.basename"),
     digest_prefix: optionalString(record.digest_prefix, "evidence.digest_prefix"),
     boolean_presence: optionalBoolean(record.boolean_presence, "evidence.boolean_presence"),
-    notes: notes === null ? [] : notes.filter((item): item is string => typeof item === "string"),
+    notes,
   };
 }
 
 function parseIssue(value: unknown) {
   const record = requireRecord(value, "issue");
-  const actions = optionalArray(record.recovery_actions, "issue.recovery_actions");
+  const actions = requireArray(record.recovery_actions, "issue.recovery_actions");
   return {
     code: requireString(record.code, "issue.code"),
     severity: requireString(record.severity, "issue.severity"),
     message: requireString(record.message, "issue.message"),
-    recovery_actions: actions === null ? [] : actions.map(parseRecoveryAction),
+    recovery_actions: actions.map(parseRecoveryAction),
   };
 }
 
@@ -297,8 +296,8 @@ function parseCheck(value: unknown) {
   if (!["pass", "warn", "fail", "unavailable", "skipped"].includes(status)) {
     throw new ResponseValidationError("check.status", "unsupported check status");
   }
-  const issues = optionalArray(record.issues, "check.issues");
-  const readiness = optionalArray(record.feature_readiness, "check.feature_readiness");
+  const issues = requireArray(record.issues, "check.issues");
+  const readiness = requireArray(record.feature_readiness, "check.feature_readiness");
   return {
     check_id: requireString(record.check_id, "check.check_id"),
     name: requireString(record.name, "check.name"),
@@ -308,8 +307,8 @@ function parseCheck(value: unknown) {
     observed_source: requireString(record.observed_source, "check.observed_source"),
     observed_at: requireString(record.observed_at, "check.observed_at"),
     evidence: parseEvidence(record.evidence),
-    issues: issues === null ? [] : issues.map(parseIssue),
-    feature_readiness: readiness === null ? [] : readiness.map(parseFeatureReadiness),
+    issues: issues.map(parseIssue),
+    feature_readiness: readiness.map(parseFeatureReadiness),
   };
 }
 
@@ -319,11 +318,11 @@ function parseDoctorReport(value: unknown): DiagnosticReport {
   if (!["healthy", "pass_with_limited_features", "failed"].includes(aggregate)) {
     throw new ResponseValidationError("doctor.aggregate_health", "unsupported aggregate health");
   }
-  const checks = optionalArray(record.checks, "doctor.checks");
+  const checks = requireArray(record.checks, "doctor.checks");
   return {
     generated_at: requireString(record.generated_at, "doctor.generated_at"),
     budget: requireRecord(record.budget, "doctor.budget"),
-    checks: checks === null ? [] : checks.map(parseCheck),
+    checks: checks.map(parseCheck),
     aggregate_health: aggregate as DiagnosticReport["aggregate_health"],
     total_duration_seconds: requireNumber(record.total_duration_seconds, "doctor.total_duration_seconds"),
     skipped_or_unavailable_count: requireNumber(record.skipped_or_unavailable_count, "doctor.skipped_or_unavailable_count"),
@@ -337,10 +336,10 @@ function parseHardwareProfile(value: unknown): HardwareProfile {
   const cpu = requireRecord(record.cpu, "hardware_profile.cpu");
   const memory = requireRecord(record.memory, "hardware_profile.memory");
   const disk = requireRecord(record.disk, "hardware_profile.disk");
-  const accelerators = optionalArray(record.accelerators, "hardware_profile.accelerators");
-  const training = optionalArray(record.training_backends, "hardware_profile.training_backends");
-  const runtime = optionalArray(record.runtime_backends, "hardware_profile.runtime_backends");
-  const notes = optionalArray(record.notes, "hardware_profile.notes");
+  const accelerators = requireArray(record.accelerators, "hardware_profile.accelerators");
+  const training = requireArray(record.training_backends, "hardware_profile.training_backends");
+  const runtime = requireArray(record.runtime_backends, "hardware_profile.runtime_backends");
+  const notes = requireStringArray(record.notes, "hardware_profile.notes");
 
   function parseAccelerator(item: unknown) {
     const value = requireRecord(item, "accelerator");
@@ -389,11 +388,11 @@ function parseHardwareProfile(value: unknown): HardwareProfile {
       free_bytes: optionalNumber(disk.free_bytes, "hardware_profile.disk.free_bytes"),
       error: optionalString(disk.error, "hardware_profile.disk.error"),
     },
-    accelerators: accelerators === null ? [] : accelerators.map(parseAccelerator),
-    training_backends: training === null ? [] : training.map(parseBackend),
-    runtime_backends: runtime === null ? [] : runtime.map(parseBackend),
+    accelerators: accelerators.map(parseAccelerator),
+    training_backends: training.map(parseBackend),
+    runtime_backends: runtime.map(parseBackend),
     collected_at: requireString(record.collected_at, "hardware_profile.collected_at"),
-    notes: notes === null ? [] : notes.filter((item): item is string => typeof item === "string"),
+    notes,
   };
 }
 
@@ -483,8 +482,7 @@ async function requestCore(
     return await fetch(url, requestInit);
   } catch (error) {
     if (isAbortError(error)) throw error;
-    const cause = error instanceof Error ? error.message : "connection failed";
-    throw new CoreApiError("CORE_UNREACHABLE", `ZANA Core is not reachable (${cause}).`, 0, {
+    throw new CoreApiError("CORE_UNREACHABLE", "ZANA Core is not reachable on this computer.", 0, {
       recoverable: true,
       actions: ["restart_core", "retry_request"],
     });

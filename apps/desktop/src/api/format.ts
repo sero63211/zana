@@ -33,7 +33,7 @@ export function formatDateTime(value: string | null | undefined): string {
 }
 
 export function basename(path: string): string {
-  return path.split("/").filter(Boolean).at(-1) ?? path;
+  return path.split(/[\\/]+/).filter(Boolean).at(-1) ?? path;
 }
 
 export function runtimeKindLabel(kind: RuntimeRead["kind"]): string {

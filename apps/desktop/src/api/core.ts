@@ -72,9 +72,9 @@ export async function fetchCoreHealth(signal?: AbortSignal): Promise<CoreHealth>
       signal,
     });
   } catch (error) {
-    const cause = error instanceof Error ? error.message : "connection failed";
+    if (error instanceof DOMException && error.name === "AbortError") throw error;
     throw new CoreUnavailableError(
-      `ZANA Core is not reachable on this computer (${cause}).`,
+      "ZANA Core is not reachable on this computer.",
       "Check the Core process, then retry the connection.",
     );
   }
