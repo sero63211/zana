@@ -1,6 +1,6 @@
 # T900 Knowledge Providers Handoff - Docling and LanceDB Local Providers
 
-Verdict: PASS (lead review BLOCK addressed in `d7e9a56`)
+Verdict: PASS (lead review BLOCKs addressed in `d7e9a56` and `4bf42d3`)
 
 ## Scope
 
@@ -75,6 +75,27 @@ review-fix commit within the same owned paths:
    set; arbitrary provider text/actions (including secrets or raw tracebacks)
    are never echoed.  A hostile-exception test covers this.
 
+## Provider-contract fix (`4bf42d3`)
+
+Lead verified the current official provider APIs and found two real contract
+defects that the injected fakes had hidden.  This focused commit fixes only
+those adapter contracts:
+
+- LanceDB: `Table.search` does not accept `metric="cosine"`.  The production
+  adapter now calls `table.search(vector).distance_type("cosine").limit(...).to_list()`,
+  matching the current LanceDB vector-query builder.  The injected fake query
+  builder now exposes `distance_type(...)` (recorded and asserted), and its
+  `search` accepts no `metric` keyword so the old invented call fails the test.
+- Docling: `DocumentConverter().convert(source)` returns a conversion result;
+  the parsed document is `result.document`.  The narrow converter protocol and
+  adapter now unwrap `result.document` and sanitise missing/malformed
+  conversion results.  The injected fake returns a conversion-result object
+  with `.document`, and a converter returning a bare document is rejected, so
+  the test fails on the old behavior.
+
+All prior bounds, score mapping, error sanitization, ownership, and
+no-overwrite behavior are preserved.
+
 ## Checks run and evidence
 
 | Check | Command | Result |
@@ -88,6 +109,26 @@ review-fix commit within the same owned paths:
 | Pyright knowledge package | `pyright zana_core/knowledge` | 0 errors, 0 warnings |
 | Import smoke | `import zana_core.knowledge`, `import zana_core.main`, public provider imports | pass |
 | Diff hygiene | `git diff --check` | pass |
+
+### Host-safety-scoped re-verification for `4bf42d3`
+
+Per SERO's host-safety rule, only the smallest focused provider tests plus
+static/type/format checks were run for the provider-contract fix:
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused Docling conversion-result tests | 3 `test_docling.py::TestDoclingAdapterCalls` cases | 3 passed |
+| Focused LanceDB builder tests | 2 `test_lancedb_index.py::TestLanceDBRecordStoreAdapter` cases | 2 passed |
+| Ruff lint | `ruff check` on the four changed files | clean |
+| Ruff format | `ruff format --check` on the four changed files | clean |
+| Pyright | `pyright zana_core/knowledge/docling.py zana_core/knowledge/lancedb_index.py` | 0 errors, 0 warnings |
+| Diff hygiene | `git diff --check` | pass |
+
+Intentionally skipped under the host-safety rule: full knowledge, full Core,
+resources/portability suites, LanceDB installation, live provider execution,
+model/runtime startup, and browser/app/bundle/network/load tests.  Prior full
+Core (1641) and full knowledge (257) results remain from the `d7e9a56` run and
+were not rerun for this narrow contract correction.
 
 Test coverage includes real Markdown/TXT fixture parsing, unapproved sources,
 content-changed-since-intake rejection, oversize/symlink/non-regular/
@@ -141,6 +182,8 @@ None.
   (`feat: add Docling and LanceDB local knowledge providers`).
 - Review-fix commit: `d7e9a56`
   (`fix: harden Docling and LanceDB provider integrity`).
+- Provider-contract fix: `4bf42d3`
+  (`fix: align Docling and LanceDB provider contracts`).
 - This handoff is the final docs-only commit on the same branch.
 - Merge the eight owned source/test files and this handoff through the PM
   integration lane.  No lockfile, manifest, existing shared contract, API, DB,
@@ -148,8 +191,9 @@ None.
 
 ## Clean proof
 
-After the implementation and review-fix commits, `git status --porcelain` was
-empty.  The handoff docs commit lands last; final index and worktree are clean.
+After the implementation, review-fix, and provider-contract-fix commits,
+`git status --porcelain` was empty.  The handoff docs commit lands last; final
+index and worktree are clean.
 
 ## Push state
 
