@@ -141,19 +141,29 @@ def parse_sources(
             check_deadline(deadline, label="document parsing")
         except DeadlineExceededError:
             raise
-        except Exception:
-            errors.append(
-                ParserError(
-                    code="PARSE_FAILED",
-                    message="The parser provider failed to process this source.",
-                    recoverable=True,
-                    actions=("retry_source",),
-                )
-            )
+        except Exception as exc:
+            errors.append(_parser_failure(exc))
             _account_error(retained, errors[-1])
         if len(documents) > active.max_source_count or len(errors) > active.max_source_count:
             raise ResourceLimitError("Parsed output exceeded the configured source count limit.")
     return documents, errors
+
+
+def _parser_failure(exc: Exception) -> ParserError:
+    """Map a parser exception to a structured error, preserving honest states."""
+    if getattr(exc, "code", None) == "PARSER_UNAVAILABLE":
+        return ParserError(
+            code="PARSER_UNAVAILABLE",
+            message=str(exc) or "The configured parser is not available for this source.",
+            recoverable=bool(getattr(exc, "recoverable", True)),
+            actions=tuple(getattr(exc, "actions", ())),
+        )
+    return ParserError(
+        code="PARSE_FAILED",
+        message="The parser provider failed to process this source.",
+        recoverable=True,
+        actions=("retry_source",),
+    )
 
 
 def _account_document(

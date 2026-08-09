@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import UTC, datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -385,6 +386,38 @@ class RetrievalService:
             raise BackendUnavailableError(
                 "Vector backend does not match the required index contract."
             )
+
+    @classmethod
+    def open_persistent(
+        cls,
+        location: str,
+        *,
+        provider: EmbeddingProvider,
+        expected_identity: IndexIdentity | None = None,
+        store: Any | None = None,
+        max_top_k: int | None = None,
+        limits: KnowledgeLimits | None = None,
+    ) -> RetrievalService:
+        """Open a persisted local index and bind it to a retrieval provider.
+
+        The index is opened lazily and honestly through the persistent provider
+        adapter; an unavailable, corrupt, or incompatible backend surfaces as a
+        structured error rather than a silent fallback.
+        """
+        from zana_core.knowledge.lancedb_index import LanceDBIndex
+
+        index = LanceDBIndex.open(
+            location,
+            expected_identity=expected_identity,
+            store=store,
+            limits=limits,
+        )
+        return cls(
+            provider=provider,
+            index=index,
+            max_top_k=max_top_k,
+            limits=limits,
+        )
 
     def _validate_candidate(self, record: VectorRecord, score: float) -> None:
         if type(record) is not VectorRecord:
