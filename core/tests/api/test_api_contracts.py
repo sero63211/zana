@@ -17,6 +17,9 @@ from zana_core.domain.enums import (
     RuntimeStatus,
 )
 from zana_core.jobs.services import JobService
+from zana_core.main import create_app
+
+from .test_system_runtime_models import FakeRegistry
 
 
 def _parse_sse(text: str) -> list[dict[str, object]]:
@@ -292,10 +295,17 @@ class TestImagesApi:
 class TestDoctorApi:
     def test_doctor_reports_bounded_diagnostic_report(
         self,
-        client: TestClient,
+        database,
+        valid_token: str,
         auth_header: dict[str, str],
     ) -> None:
-        response = client.get("/api/v1/system/doctor", headers=auth_header)
+        app = create_app(
+            token=valid_token,
+            database_path=database.path,
+            runtime_registry=FakeRegistry(),
+        )
+        with TestClient(app) as client:
+            response = client.get("/api/v1/system/doctor", headers=auth_header)
         assert response.status_code == 200
         body = response.json()
         assert body["aggregate_health"] in {

@@ -53,6 +53,7 @@ def create_app(
 
     if database_path is not None:
         resolved_db_path = database_path
+        resolved_data_root = database_path.parent
     else:
         try:
             if platform_paths is not None:
@@ -63,11 +64,13 @@ def create_app(
                 paths = PathResolver().resolve()
             ensure_roots(paths, kinds=(PathRoot.DATA,))
             resolved_db_path = derive_child(paths.data_root, "db", "zana.sqlite3")
+            resolved_data_root = paths.data_root
         except PlatformPathError:
             raise
     database = Database(resolved_db_path)
     database.upgrade()
     app.state.database = database
+    app.state.data_root = resolved_data_root
     app.state.session_factory = database.session_factory
 
     # Strict CORS: only loopback and Tauri origins

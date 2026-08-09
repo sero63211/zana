@@ -23,6 +23,7 @@ def test_explicit_database_path_bypasses_resolver_and_ensure(tmp_path):
     db_path = tmp_path / "explicit" / "zana.sqlite3"
     app = create_app(token="tok", database_path=db_path)
     assert app.state.database.path == db_path
+    assert app.state.data_root == db_path.parent
     assert db_path.exists()
     # No platform roots were created.
     assert not (tmp_path / "Library").exists()
@@ -34,6 +35,7 @@ def test_injected_platform_paths_creates_only_data_and_db(tmp_path):
     app = create_app(token="tok", platform_paths=paths)
     database: Database = app.state.database
     assert database.path == paths.data_root / "db" / "zana.sqlite3"
+    assert app.state.data_root == paths.data_root
     assert database.path.exists()
     # Only the data root was ensured; config/cache/log/temp/workspace stay absent.
     assert paths.data_root.is_dir()

@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from pydantic import ValidationError
 
+from zana_core.acquisition.endpoints import EndpointError, validate_endpoint
 from zana_core.acquisition.models import (
     AcquisitionKind,
     AcquisitionPolicy,
@@ -33,7 +34,7 @@ def _prepare_pull_plan(
     expected_size_bytes: int | None,
     user_approved: bool,
     deadline_seconds: float,
-) -> NativeAcquisitionPlan:
+) -> tuple[NativeAcquisitionRequest, NativeAcquisitionPlan]:
     """Build and validate the typed native acquisition request/plan."""
     request = NativeAcquisitionRequest(
         kind=AcquisitionKind.OLLAMA_PULL,
@@ -44,12 +45,13 @@ def _prepare_pull_plan(
         user_approved=user_approved,
         deadline_seconds=deadline_seconds,
     )
-    return NativeAcquisitionPlan(
+    plan = NativeAcquisitionPlan(
         kind=AcquisitionKind.OLLAMA_PULL,
         endpoint=request.endpoint,
         model_reference=request.model_reference,
         body=OllamaPullBody(model=request.model_reference, stream=True),
     )
+    return request, plan
 
 
 @router.post("/pull", response_model=JobRead, status_code=201)
@@ -78,9 +80,30 @@ def pull_model(
             recoverable=True,
             actions=["select_ollama_runtime", "refresh_discovery"],
         )
+    if not payload.user_approved:
+        raise http_error(
+            422,
+            "USER_APPROVAL_REQUIRED",
+            "Native model acquisition requires explicit user approval.",
+            recoverable=True,
+            actions=["confirm_model_download"],
+        )
     try:
-        plan = _prepare_pull_plan(
-            endpoint=runtime.endpoint,
+        normalized_endpoint = validate_endpoint(
+            runtime.endpoint,
+            AcquisitionPolicy.LOCAL_ONLY,
+        )
+    except EndpointError:
+        raise http_error(
+            422,
+            "INVALID_ENDPOINT",
+            "The runtime endpoint is not valid for a local native pull.",
+            recoverable=True,
+            actions=["fix_runtime_endpoint", "select_local_runtime"],
+        ) from None
+    try:
+        request, plan = _prepare_pull_plan(
+            endpoint=normalized_endpoint,
             model_reference=payload.model_reference,
             expected_size_bytes=payload.expected_size_bytes,
             user_approved=payload.user_approved,
@@ -104,6 +127,7 @@ def pull_model(
     job.error_json = {
         "code": "ACQUISITION_QUEUED",
         "message": "Native model acquisition queued; not started.",
+        "request": request.model_dump(mode="json"),
         "plan": plan.model_dump(mode="json"),
     }
     return job
@@ -125,7 +149,7 @@ def list_models(
     return uow.models.list()
 
 
-@router.get("/{model_key}", response_model=ModelRead)
+@router.get("/{model_key:path}", response_model=ModelRead)
 def get_model(model_key: str, uow: UnitOfWorkDep) -> Model:
     model = uow.models.get(model_key)
     if model is None:

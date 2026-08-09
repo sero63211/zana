@@ -14,7 +14,9 @@ from zana_core.diagnostics.probes import (
     MemoryDiskProbe,
     OptionalDependencyProbe,
     PlatformProbe,
+    RuntimeDiscoveryProbe,
     SqliteReachabilityProbe,
+    StorageRootProbe,
 )
 from zana_core.hardware.models import HardwareProfile
 from zana_core.hardware.profile import collect_profile
@@ -33,8 +35,7 @@ def system_profile(request: Request) -> HardwareProfile:
     The disk report is captured relative to the Core data root so it reflects
     the same volume used for durable artifacts.
     """
-    database = request.app.state.database
-    return collect_profile(database.path.parent)
+    return collect_profile(request.app.state.data_root)
 
 
 @router.get("/doctor", response_model=DiagnosticReport)
@@ -42,18 +43,19 @@ def system_doctor(
     request: Request,
     config: Annotated[ServerConfig, Depends(verify_token)],
 ) -> DiagnosticReport:
-    """Run the bounded read-only diagnostic probe set.
-
-    Runtime discovery and storage-root probes are intentionally excluded here
-    because they require injected transports or path wiring that this API
-    boundary does not own; the wired probes are deterministic and cheap.
-    """
+    """Run the bounded read-only diagnostic probe set."""
     database = request.app.state.database
+    data_root = request.app.state.data_root
     sqlite_checker = database.pragma_state
     probes = [
         PlatformProbe(),
-        MemoryDiskProbe(path=database.path.parent),
+        MemoryDiskProbe(path=data_root),
         SqliteReachabilityProbe(checker=sqlite_checker),
+        RuntimeDiscoveryProbe(request.app.state.runtime_registry),
+        StorageRootProbe(
+            artifact_root=data_root / "artifacts",
+            image_root=data_root / "images",
+        ),
         OptionalDependencyProbe(),
         LoopbackAuthProbe(base_url="http://127.0.0.1", token_present=bool(config.token)),
     ]

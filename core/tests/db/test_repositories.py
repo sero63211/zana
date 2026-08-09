@@ -70,6 +70,41 @@ class TestRuntimeAndModelRepositories:
         assert uow.models.list_by_capability("completion") == [model]
         assert uow.models.list() == [model]
 
+    def test_runtime_identity_includes_kind_for_shared_endpoint(self, uow: UnitOfWork) -> None:
+        endpoint = "http://127.0.0.1:8080"
+        llama = uow.runtimes.add(
+            Runtime(
+                kind=RuntimeKind.LLAMA_CPP,
+                endpoint=endpoint,
+                source=RuntimeSource.AUTO,
+                status=RuntimeStatus.UNKNOWN,
+            )
+        )
+        mlx = uow.runtimes.add(
+            Runtime(
+                kind=RuntimeKind.MLX_LM,
+                endpoint=endpoint,
+                source=RuntimeSource.AUTO,
+                status=RuntimeStatus.UNKNOWN,
+            )
+        )
+        uow.commit()
+
+        found_llama = uow.runtimes.get_by_kind_endpoint(
+            RuntimeKind.LLAMA_CPP, endpoint, RuntimeSource.AUTO
+        )
+        found_mlx = uow.runtimes.get_by_kind_endpoint(
+            RuntimeKind.MLX_LM, endpoint, RuntimeSource.AUTO
+        )
+        assert found_llama is llama
+        assert found_mlx is mlx
+
+    def test_runtime_identity_query_is_bounded(self, uow: UnitOfWork) -> None:
+        with pytest.raises(TypeError):
+            uow.runtimes.get_by_kind_endpoint("ollama", "http://127.0.0.1:1", RuntimeSource.AUTO)
+        with pytest.raises(ValueError):
+            uow.runtimes.get_by_kind_endpoint(RuntimeKind.OLLAMA, "x" * 2001, RuntimeSource.AUTO)
+
     def test_foreign_key_prevents_orphan_model(self, uow: UnitOfWork) -> None:
         uow.models.add(
             Model(

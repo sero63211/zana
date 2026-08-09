@@ -27,7 +27,7 @@ from zana_core.db.models import (
     Runtime,
     StateSnapshot,
 )
-from zana_core.domain.enums import RuntimeSource, RuntimeStatus
+from zana_core.domain.enums import RuntimeKind, RuntimeSource, RuntimeStatus
 
 EntityT = TypeVar("EntityT", bound=Base)
 
@@ -73,6 +73,33 @@ class RuntimeRepository(RepositoryBase[Runtime]):
 
     def get_by_endpoint(self, endpoint: str, source: RuntimeSource) -> Runtime | None:
         stmt = select(Runtime).where(Runtime.endpoint == endpoint, Runtime.source == source)
+        return self.session.scalar(stmt)
+
+    def get_by_kind_endpoint(
+        self,
+        kind: RuntimeKind,
+        endpoint: str,
+        source: RuntimeSource,
+    ) -> Runtime | None:
+        """Find a runtime by exact kind/endpoint/source identity.
+
+        Discovery candidates can share a loopback port, so endpoint alone is
+        not a stable identity.  Inputs are exact-typed and endpoint length is
+        bounded before the query is built.
+        """
+        if type(kind) is not RuntimeKind:
+            raise TypeError("kind must be a RuntimeKind")
+        if type(endpoint) is not str or not endpoint:
+            raise ValueError("endpoint must be a non-empty string")
+        if len(endpoint) > 2000:
+            raise ValueError("endpoint exceeds the configured length limit")
+        if type(source) is not RuntimeSource:
+            raise TypeError("source must be a RuntimeSource")
+        stmt = select(Runtime).where(
+            Runtime.kind == kind,
+            Runtime.endpoint == endpoint,
+            Runtime.source == source,
+        )
         return self.session.scalar(stmt)
 
     def list_manual(self) -> list[Runtime]:

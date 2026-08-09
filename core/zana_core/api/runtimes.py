@@ -128,12 +128,21 @@ def _probe_targets(
 
 
 def _sync_discovery(uow: UnitOfWork, descriptors: list[RuntimeDescriptor]) -> int:
-    """Upsert discovered runtimes and their bounded model descriptors."""
+    """Upsert discovered runtimes and their bounded model descriptors.
+
+    An online, registered runtime's returned model set is authoritative for
+    that runtime, so models that disappeared from discovery are removed.
+    Offline/failed/unregistered descriptors never prune persisted models.
+    """
     model_count = 0
     for descriptor in descriptors:
         if type(descriptor) is not RuntimeDescriptor:
             continue
-        runtime = uow.runtimes.get_by_endpoint(descriptor.endpoint, descriptor.source)
+        runtime = uow.runtimes.get_by_kind_endpoint(
+            descriptor.kind,
+            descriptor.endpoint,
+            descriptor.source,
+        )
         if runtime is None:
             runtime = Runtime(
                 kind=descriptor.kind,
@@ -186,12 +195,22 @@ def _sync_discovery(uow: UnitOfWork, descriptors: list[RuntimeDescriptor]) -> in
                 existing.metadata_json = _model_metadata(model)
                 existing.last_seen_at = model.last_seen_at
             model_count += 1
+        if descriptor.status == RuntimeStatus.ONLINE and descriptor.registered:
+            retained_keys = {f"{runtime.id}:{model.model_id}" for model in descriptor.models}
+            for existing_model in uow.models.list_by_runtime(runtime.id):
+                if existing_model.key not in retained_keys:
+                    uow.models.delete(existing_model)
     return model_count
 
 
 @router.post("/refresh", response_model=JobRead)
 def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
-    """Run bounded runtime discovery and persist the real results as a job."""
+    """Run bounded runtime discovery and persist the real results as a job.
+
+    Discovery persistence runs inside a savepoint so a failed probe cannot
+    leave partial runtime/model rows, while the FAILED job and its event still
+    commit and remain fetchable from the jobs API.
+    """
     registry: RuntimeProbeRegistry = request.app.state.runtime_registry
     service = JobService(uow)
     job = service.create_job(
@@ -201,8 +220,9 @@ def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
     )
     service.transition_job(job.id, JobStatus.RUNNING, phase="discovery")
     try:
-        descriptors = registry.probe(_probe_targets(uow, registry))
-        _sync_discovery(uow, descriptors)
+        with uow.session.begin_nested():
+            descriptors = registry.probe(_probe_targets(uow, registry))
+            _sync_discovery(uow, descriptors)
         return service.transition_job(
             job.id,
             JobStatus.SUCCEEDED,
@@ -210,7 +230,7 @@ def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
             message=f"Runtime discovery complete; {len(descriptors)} candidate(s) probed.",
         )
     except Exception:  # noqa: BLE001 - failures are sanitized below
-        service.transition_job(
+        return service.transition_job(
             job.id,
             JobStatus.FAILED,
             phase="failed",
@@ -218,15 +238,10 @@ def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
             error={
                 "code": "RUNTIME_REFRESH_FAILED",
                 "message": "Runtime discovery could not complete.",
+                "recoverable": True,
+                "actions": ["retry_refresh"],
             },
         )
-        raise http_error(
-            500,
-            "RUNTIME_REFRESH_FAILED",
-            "Runtime discovery could not complete.",
-            recoverable=True,
-            actions=["retry_refresh"],
-        ) from None
 
 
 @router.get("", response_model=list[RuntimeRead])
