@@ -71,7 +71,7 @@ environment:
   live_runtime_state: "Ollama 0.32.6 and three compact local model blobs are installed, but the service is stopped after the host watchdog restart; no model, inference, build, or training process is running."
   acquisition_rule: "Measure disk headroom and require a safety reserve before downloads or training; block only the affected task."
 
-active_task: T007
+active_task: T900
 
 tasks:
   - id: T001
@@ -463,7 +463,7 @@ tasks:
   - id: T007
     type: worker
     assignee: Worker
-    status: active
+    status: done
     reasoning_hint: max
     objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery and native acquisition, hardware profiling, cross-platform storage/path policy, capability validation, artifact and permission foundations, knowledge intake/chunking plus local embedding/retrieval adapter contracts, evaluation gates, OCI image integrity/import-export and atomic portability services, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, a persistent-safe build lifecycle state machine, fail-closed instance/runtime orchestration contracts, and a trusted permission-gated built-in calculator tool boundary."
     inputs:
@@ -794,14 +794,18 @@ tasks:
       - id: T007-portability-canonical-integration
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         codex_thread: 019fe827-beb6-7b92-bd3e-bca20dda1198
         worktree: /Users/sero/.codex/worktrees/715b/zana
         branch: agent/t007-portability-canonical-715b
         base_head: 0c63112e698b5b1067d464b1544d83a73f4b431a
         source_reference: "detached recovery 863a84e in /Users/sero/.codex/worktrees/438c/zana"
+        worker_implementation_commit: 7cc22330206f13d82fe8291da171ed4d90e472f5
+        worker_handoff_commit: 0e2497f22a8cc14440f1ca1d2b34bcb37a678a62
+        integration_commit: f4d58e90f5e0535616908c4ac3df3e9a26aace2b
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        verification: "Worker: 227 focused and 1588 full Core; lead: 235 focused and 1588 full Core; Ruff/format all green; Pyright 0 errors/warnings; import/diff/security/serialization inspection PASS; pushed origin/main."
         owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/__init__.py, core/zana_core/images/archive.py, core/zana_core/images/import_plan.py, core/zana_core/images/models.py, core/zana_core/images/oci.py, core/zana_core/images/secrets.py, core/tests/images/**, core/tests/instances/test_runtime_selection.py, .agent-work/handoffs/T007-portability-canonical-integration.md"
       - id: T007-platform-wiring
         agent: router_opencode_go_deepseek_v4_flash
@@ -973,11 +977,30 @@ tasks:
       - "A frozen T005 interface or another lane's contract must change."
       - "Implementation would start/download/run a model or execute training."
       - "The same verification failure occurs twice."
-    receipt: null
+    receipt:
+      result: done
+      summary: "Completed and canonically integrated the bounded low-memory Core architecture wave: runtime/model discovery and acquisition, hardware/platform/resources/diagnostics, capability/artifact/permission/knowledge/evaluation/build/training contracts, jobs/SSE, image/instance/memory/tool boundaries, observability, and atomic OCI portability."
+      integration_commit: f4d58e90f5e0535616908c4ac3df3e9a26aace2b
+      changed_files:
+        - "core/zana_core/portability/**"
+        - "core/tests/portability/**"
+        - "core/zana_core/images/models.py"
+        - "core/tests/instances/test_runtime_selection.py"
+        - ".agent-work/handoffs/T007-portability-canonical-integration.md"
+      commands:
+        - cmd: "Focused canonical portability/image/instance tests"
+          status: pass
+        - cmd: "Full canonical Core suite"
+          status: pass
+          evidence: "1588 passed"
+        - cmd: "Ruff check/format and Pyright"
+          status: pass
+      full_outcome_complete: false
+      next_allowed_task: T900
   - id: T900
     type: pm
     assignee: PM
-    status: queued
+    status: active
     reasoning_hint: high
     objective: "Integrate delegated slices, resolve interface mismatches without overwriting user or agent work, and run the complete real end-to-end validation flow."
     inputs:
@@ -986,6 +1009,50 @@ tasks:
     constraints:
       - "No mocks, placeholder success paths, or fake data."
       - "Preserve unrelated user changes."
+      - "Current parallel wave is code-only and lightweight: no model start/download, inference execution, training run, dependency install, native bundle build, or desktop launch."
+      - "All implementation workers use visible local worktrees and only opencode-go/deepseek-v4-flash with reasoning max; DeepSeek V4 Pro is forbidden."
+      - "Shared API and desktop client contracts each have one owner until integrated."
+    delegated_lanes:
+      - id: T900-api-system-runtime
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t900-api-system-runtime
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/api/doctor.py, core/zana_core/api/runtimes.py, core/zana_core/api/models.py, core/zana_core/api/system.py, core/zana_core/api/schemas.py, core/zana_core/api/deps.py, core/zana_core/main.py, core/tests/api/test_api_contracts.py, core/tests/api/test_system_runtime_models.py, core/tests/platform/test_main_integration.py, .agent-work/handoffs/T900-api-system-runtime.md"
+        gates: "Focused API/platform pytest; Ruff/format; Pyright; auth/error/bounds inspection; full Core compatibility; one implementation commit plus receipt; clean; no push."
+      - id: T900-runtime-inference
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t900-runtime-inference
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/runtimes/inference.py, core/zana_core/runtimes/ollama.py, core/zana_core/runtimes/openai_compat.py, core/zana_core/runtimes/transport.py, core/zana_core/runtimes/__init__.py, core/tests/runtimes/test_inference.py, .agent-work/handoffs/T900-runtime-inference.md"
+        gates: "Focused runtime tests with local protocol fixtures only; Ruff/format; Pyright; bounded streaming/error/secret inspection; no live server/model; one implementation commit plus receipt; clean; no push."
+      - id: T900-knowledge-providers
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t900-knowledge-providers
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/knowledge/docling.py, core/zana_core/knowledge/lancedb_index.py, core/zana_core/knowledge/parsers.py, core/zana_core/knowledge/snapshots.py, core/zana_core/knowledge/retrieval.py, core/zana_core/knowledge/__init__.py, core/tests/knowledge/test_docling.py, core/tests/knowledge/test_lancedb_index.py, .agent-work/handoffs/T900-knowledge-providers.md"
+        gates: "Focused knowledge tests; Ruff/format; Pyright; file/symlink/size/index-identity inspection; optional dependency unavailability honest; no install/model/network; one implementation commit plus receipt; clean; no push."
+      - id: T900-desktop-models
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t900-desktop-models
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "apps/desktop/src/api/**, apps/desktop/src/hooks/**, apps/desktop/src/views/HomeView.tsx, apps/desktop/src/views/RuntimesModelsView.tsx, apps/desktop/src/views/SettingsDoctorView.tsx, apps/desktop/src/styles/app.css, apps/desktop/src/test/**, apps/desktop/src/views/RuntimesModelsView.test.tsx, .agent-work/handoffs/T900-desktop-models.md"
+        gates: "Focused Vitest; TypeScript/ESLint/format/build only if already installed and bounded; API/token/error/action/accessibility inspection; no app launch; one implementation commit plus receipt; clean; no push."
+      - id: T900-tauri-core-package
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t900-tauri-core-package
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "apps/desktop/src-tauri/**, scripts/package-core.sh, scripts/dev.sh, .agent-work/handoffs/T900-tauri-core-package.md"
+        gates: "Rust unit tests/rustfmt/clippy and script syntax checks only if bounded; sidecar auth/lifecycle/path/error inspection; no dependency install/native bundle/app launch; one implementation commit plus receipt; clean; no push."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
