@@ -81,15 +81,27 @@ class TestRuntimeAvailability:
 
     def test_incompatible_runtime_blocks_start(self) -> None:
         config = make_image_config()
-        config = config.model_copy(deep=True)
-        config.base_model.runtime_compatibility = ["openai-compatible"]
+        config = config.model_copy(
+            deep=True,
+            update={
+                "base_model": config.base_model.model_copy(
+                    update={"runtime_compatibility": ("openai-compatible",)}
+                )
+            },
+        )
         with pytest.raises(RuntimeIncompatibleError):
             _select(config)
 
     def test_required_capability_missing_blocks_start(self) -> None:
         config = make_image_config()
-        config = config.model_copy(deep=True)
-        config.base_model.required_capabilities = ["tool_use"]
+        config = config.model_copy(
+            deep=True,
+            update={
+                "base_model": config.base_model.model_copy(
+                    update={"required_capabilities": ("tool_use",)}
+                )
+            },
+        )
         model = make_model()
         model = model.model_copy(update={"capabilities": ["completion"]})
         with pytest.raises(ModelCapabilityMismatchError):

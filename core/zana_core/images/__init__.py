@@ -4,10 +4,14 @@ from zana_core.images.archive import (
     ArchiveCodecError,
     ArchiveFormat,
     CodecUnavailableError,
+    GzipTarCodec,
     ImageCodec,
     TarCodec,
     ZstdTarCodec,
     available_codecs,
+    codec_for_extension,
+    codec_for_format,
+    extension_for_format,
     safe_extract_tar,
 )
 from zana_core.images.import_plan import (
@@ -36,7 +40,13 @@ from zana_core.images.oci import (
     canonical_json_bytes,
     validate_oci_layout,
 )
-from zana_core.images.secrets import ExclusionScanner
+from zana_core.images.secrets import (
+    ExclusionError,
+    ExclusionScanner,
+    reject_mutable_member_names,
+    scan_layout_payloads,
+    scan_payload_for_secrets,
+)
 
 __all__ = [
     "Adapter",
@@ -47,7 +57,9 @@ __all__ = [
     "BuildMetadata",
     "CodecUnavailableError",
     "Evaluation",
+    "ExclusionError",
     "ExclusionScanner",
+    "GzipTarCodec",
     "ImageCodec",
     "ImageImportResult",
     "ImageRegistrationPlan",
@@ -64,8 +76,14 @@ __all__ = [
     "assemble_oci_layout",
     "available_codecs",
     "canonical_json_bytes",
+    "codec_for_extension",
+    "codec_for_format",
+    "extension_for_format",
     "plan_import",
     "register_into_store",
+    "reject_mutable_member_names",
     "safe_extract_tar",
+    "scan_layout_payloads",
+    "scan_payload_for_secrets",
     "validate_oci_layout",
 ]
