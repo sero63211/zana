@@ -459,7 +459,7 @@ tasks:
     assignee: Worker
     status: active
     reasoning_hint: max
-    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, and deterministic resource-safe build planning."
+    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, deterministic resource-safe build planning, and non-executing training-provider/dataset safety contracts."
     inputs:
       - "Completed T005 receipt and frozen domain/database/API contracts"
       - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
@@ -494,6 +494,7 @@ tasks:
       - "OCI-compatible image layout plus traversal-safe digest-verifying archive import/export primitives"
       - "Explicit mutable memory/reset/snapshot/update/rollback primitives separated from immutable images"
       - "Immutable explainable BuildPolicy and BuildPlan decisions with explicit approvals, blockers, estimates, and no execution"
+      - "Safe training-provider probes, dataset split/integrity contracts, and adapter provenance validation without running training"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -562,12 +563,14 @@ tasks:
         owns: "core/zana_core/knowledge/**, core/tests/knowledge/**, .agent-work/handoffs/T007-knowledge.md"
       - id: T007-evaluation
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
         worktree: /Users/sero/.codex/worktrees/ba7c/zana
         branch: agent/T007-evaluation
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 48e4081
+        handoff_commit: b70c94c
         owns: "core/zana_core/evaluation/**, core/tests/evaluation/**, .agent-work/handoffs/T007-evaluation.md"
       - id: T007-images
         agent: router_opencode_go_deepseek_v4_flash
@@ -596,6 +599,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/planning/**, core/tests/planning/**, .agent-work/handoffs/T007-planning.md"
+      - id: T007-training
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
+        worktree: /Users/sero/.codex/worktrees/ba7c/zana
+        branch: agent/T007-training
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/training/**, core/tests/training/**, .agent-work/handoffs/T007-training.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -621,6 +633,8 @@ tasks:
       - "core/tests/memory/**"
       - "core/zana_core/planning/**"
       - "core/tests/planning/**"
+      - "core/zana_core/training/**"
+      - "core/tests/training/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -631,6 +645,7 @@ tasks:
       - ".agent-work/handoffs/T007-images.md"
       - ".agent-work/handoffs/T007-memory.md"
       - ".agent-work/handoffs/T007-planning.md"
+      - ".agent-work/handoffs/T007-training.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
