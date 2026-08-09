@@ -768,13 +768,24 @@ tasks:
         owns: "core/zana_core/api/jobs.py, core/zana_core/db/repositories.py, core/zana_core/jobs/services.py, core/tests/api/test_api_contracts.py, core/tests/api/test_job_event_stream.py, core/tests/jobs/test_job_services.py, .agent-work/handoffs/T007-jobs-sse.md"
       - id: T007-platform-wiring
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
         worktree: /Users/sero/.codex/worktrees/9529/zana
         branch: agent/T007-platform-wiring
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 72dc76d
+        handoff_commit: 3e96e51
         owns: "core/zana_core/main.py, core/tests/platform/test_main_integration.py, .agent-work/handoffs/T007-platform-wiring.md"
+      - id: T007-runtime-hardening
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe5f7-08a9-7972-baaa-95df844cb977
+        worktree: /Users/sero/.codex/worktrees/9529/zana
+        branch: agent/T007-runtime-hardening
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/runtimes/registry.py, core/zana_core/runtimes/limits.py, core/tests/runtimes/test_registry.py, core/tests/runtimes/test_limits.py, .agent-work/handoffs/T007-runtime-hardening.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -841,6 +852,10 @@ tasks:
       - "core/tests/jobs/test_job_services.py"
       - "core/zana_core/main.py"
       - "core/tests/platform/test_main_integration.py"
+      - "core/zana_core/runtimes/registry.py"
+      - "core/zana_core/runtimes/limits.py"
+      - "core/tests/runtimes/test_registry.py"
+      - "core/tests/runtimes/test_limits.py"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -866,6 +881,7 @@ tasks:
       - ".agent-work/handoffs/T007-streaming.md"
       - ".agent-work/handoffs/T007-jobs-sse.md"
       - ".agent-work/handoffs/T007-platform-wiring.md"
+      - ".agent-work/handoffs/T007-runtime-hardening.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
