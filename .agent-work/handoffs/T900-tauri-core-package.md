@@ -135,3 +135,70 @@ safety policy is lifted.
 - Remote: none; no push attempted (explicit push blocker is lead integration).
 - Clean proof after implementation commit: `git status --porcelain` empty and
   `git diff --check` clean; the handoff commit adds only this file.
+
+## Lead correction addendum
+
+Focused lead lifecycle/security review found and repaired direct defects in the
+same exclusive scope. No compile/build/test/live execution was performed.
+
+### Repairs
+
+1. Stale watcher race: unexpected exits now go through one
+   lifecycle-serialized, generation-checked transition (`on_unexpected_exit`).
+   The watcher never clears the slot and then writes the connection in two
+   separate steps; a stale generation is a no-op for both.
+2. `CommandEvent::Error`: the watcher records a sanitized failure for the same
+   generation through `on_event_error` and keeps draining the bounded channel.
+   On channel closure, `on_channel_closed` performs best-effort cleanup for
+   exactly that generation. A kill that cannot be confirmed sets
+   `replacement_blocked`, and `launch` then refuses to spawn a replacement.
+3. Post-spawn state publication: `lock()` recovers poisoned mutexes, and there
+   are no fallible operations after a successful sidecar spawn, so a spawned
+   child is never orphaned by an early return. An invariant comment documents
+   that any future early return must kill the child first.
+4. Non-Unix token fallback now concatenates three independent OS-backed
+   UUIDv4 draws (366 random bits, at least 256). The Unix 32-byte
+   `/dev/urandom` path is unchanged.
+5. Real uv execution now uses `--no-sync` in both `package-core.sh`
+   (toolchain probe and PyInstaller) and `dev.sh` (Core serve), preserving the
+   offline/lightweight contract.
+6. `package-core.sh` no longer prints the PyInstaller log tail or absolute
+   root/destination paths; failures and success use fixed, actionable,
+   repo-relative messages only.
+7. Publication containment: canonical path resolution rejects symlinked Core
+   entry and sidecar directory paths that escape the repository; publication
+   uses an exclusive same-directory `mktemp` file (no predictable `.tmp.$$`);
+   cleanup traps cover EXIT/INT/TERM/HUP and remove only the exact temp file
+   and staging directory; atomic `mv` and executable mode are preserved.
+
+### Correction checks
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --check` (owned Rust modules) | PASS |
+| `bash -n scripts/package-core.sh scripts/dev.sh` | PASS |
+| `git diff --check` | PASS |
+| JSON sanity parse of touched config | PASS |
+| dev.sh invalid host/port/leading-zero cases | exit 1 with sanitized errors |
+| package-core symlinked Core entry | exit 1, sanitized symlink rejection |
+| package-core symlinked binaries directory escaping repo | exit 1, sanitized containment rejection |
+| grep invariants: generation-checked transitions, no stale `forget_exited_child`, `replacement_blocked`, `--no-sync` on real executions, no raw log tail/absolute path prints | PASS |
+
+### Residual risk after correction
+
+- The sidecar API still cannot pass a pre-bound socket, so the OS-chosen port
+  is released immediately before spawn. The existing API provides no way to
+  remove that small window; no port scanning is performed.
+- If `CommandChild::kill` returns an error, cleanup is conservatively treated
+  as uncertain: the connection stays failed and no replacement is spawned
+  until the app is restarted.
+- Cargo compilation, clippy, Rust unit tests, Tauri build/bundle/dev launch,
+  PyInstaller packaging, and live Core health remain intentionally deferred
+  under the host-safety override.
+
+### Correction commits
+
+- Correction commit: `4a611b7e977b42d44f5db81ed8a19a6cfa70abb7`
+- Handoff update commit: this handoff commit (resolve with `git rev-parse HEAD`).
+- The handoff update commit also restores the owned packaging script's
+  executable mode (`100755`).
