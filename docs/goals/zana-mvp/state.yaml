@@ -459,7 +459,7 @@ tasks:
     assignee: Worker
     status: active
     reasoning_hint: max
-    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, deterministic resource-safe build planning, and non-executing training-provider/dataset safety contracts."
+    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, and a persistent-safe build lifecycle state machine."
     inputs:
       - "Completed T005 receipt and frozen domain/database/API contracts"
       - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
@@ -495,6 +495,7 @@ tasks:
       - "Explicit mutable memory/reset/snapshot/update/rollback primitives separated from immutable images"
       - "Immutable explainable BuildPolicy and BuildPlan decisions with explicit approvals, blockers, estimates, and no execution"
       - "Safe training-provider probes, dataset split/integrity contracts, and adapter provenance validation without running training"
+      - "Fail-closed build lifecycle transitions, approvals, cancellation, resumability, and immutable workspace/finalization contracts without executing heavy phases"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -554,12 +555,14 @@ tasks:
         owns: "core/zana_core/permissions/**, core/tests/permissions/**, schemas/permissions.schema.json, .agent-work/handoffs/T007-permissions.md"
       - id: T007-knowledge
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
         worktree: /Users/sero/.codex/worktrees/216c/zana
         branch: agent/T007-knowledge
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 29262c8
+        handoff_commit: 4e8e79c
         owns: "core/zana_core/knowledge/**, core/tests/knowledge/**, .agent-work/handoffs/T007-knowledge.md"
       - id: T007-evaluation
         agent: router_opencode_go_deepseek_v4_flash
@@ -608,6 +611,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/training/**, core/tests/training/**, .agent-work/handoffs/T007-training.md"
+      - id: T007-builds
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
+        worktree: /Users/sero/.codex/worktrees/216c/zana
+        branch: agent/T007-builds
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/builds/**, core/tests/builds/**, .agent-work/handoffs/T007-builds.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -635,6 +647,8 @@ tasks:
       - "core/tests/planning/**"
       - "core/zana_core/training/**"
       - "core/tests/training/**"
+      - "core/zana_core/builds/**"
+      - "core/tests/builds/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -646,6 +660,7 @@ tasks:
       - ".agent-work/handoffs/T007-memory.md"
       - ".agent-work/handoffs/T007-planning.md"
       - ".agent-work/handoffs/T007-training.md"
+      - ".agent-work/handoffs/T007-builds.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
