@@ -33,11 +33,23 @@ reused read-only; no shared module was modified.
   non-finite/magnitude, unknown tool, malformed input, deterministic
   output/digests, and redacted provenance.
 
+Low-resource follow-up (lead constraint `019fe396-2a2d-7493-ac98-a551ec7e4e1a`):
+
+- `core/zana_core/tools/calculator.py` now enforces a bounded monotonic
+  deadline (`MAX_DEADLINE_SECONDS = 1.0`) with injected clock checks before
+  and during parsing/evaluation. No subprocess or thread is used.
+- `core/tests/tools/test_low_resource.py` adds focused tests proving deadline
+  exceeded returns `DEADLINE_EXCEEDED`, fast work still succeeds, the deadline
+  constant is bounded, and expression length/node limits still fail closed.
+- The package remains dependency-free, platform-neutral, and uses only
+  incremental/digest hashing; no whole-file buffering, unbounded threads, or
+  duplicate buffers were introduced.
+
 ## Checks run and evidence
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Focused pytest | `python -m pytest core/tests/tools -q` | 33 passed |
+| Focused pytest | `python -m pytest core/tests/tools -q` | 37 passed |
 | Full Core pytest | `python -m pytest core/tests -q` | 503 passed, 1 unrelated pre-existing hardware probe failure (`test_darwin_metal_real_probe`, not owned surface) |
 | Ruff lint | `ruff check core` | clean |
 | Ruff format | `ruff format --check core` | clean |
@@ -81,10 +93,11 @@ None.
 
 ## Commit and cherry-pick instructions
 
-- Implementation commit: `fc4cb64`
+- Implementation commits: `fc4cb64`
   (`feat: add trusted built-in tool boundary`) on branch `agent/T007-tools`,
-  started exactly at integrated commit `13426e5`.
+  and `dea187a` (`feat: enforce bounded tool deadlines and low-resource
+  limits`), both started exactly at integrated commit `13426e5`.
 - This handoff is committed separately on the same branch.
-- Cherry-pick `fc4cb64` and the handoff commit onto the PM integration branch
-  in that order. No lockfile, manifest, schema file, or other lane path is
-  included.
+- Cherry-pick `fc4cb64`, then `dea187a`, then the handoff commit onto the PM
+  integration branch in that order. No lockfile, manifest, schema file, or
+  other lane path is included.
