@@ -694,10 +694,12 @@ tasks:
         owns: "core/zana_core/knowledge/embeddings.py, core/zana_core/knowledge/retrieval.py, core/tests/knowledge/test_embeddings.py, core/tests/knowledge/test_retrieval.py, .agent-work/handoffs/T007-embeddings.md"
       - id: T007-portability
         agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
         status: active
-        codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
-        worktree: /Users/sero/.codex/worktrees/d795/zana
-        branch: agent/T007-portability
+        codex_thread: 019fe78f-c167-7b83-924b-a533cf01ed6b
+        worktree: /Users/sero/.codex/worktrees/438c/zana
+        branch: detached recovery from agent/T007-portability
+        source_head: 17fe2186539fee32afba2ea8eb63bc40445751e5
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/archive.py, core/zana_core/images/oci.py, core/zana_core/images/import_plan.py, core/zana_core/images/secrets.py, core/zana_core/images/__init__.py, core/tests/images/**, .agent-work/handoffs/T007-portability.md"
@@ -725,13 +727,18 @@ tasks:
         owns: "core/zana_core/diagnostics/**, core/tests/diagnostics/**, .agent-work/handoffs/T007-diagnostics.md"
       - id: T007-observability
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
-        codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
-        worktree: /Users/sero/.codex/worktrees/ba7c/zana
-        branch: agent/T007-observability
+        reasoning_effort: max
+        status: done
+        codex_thread: 019fe7e7-0b58-7a33-9849-0ca5a797e511
+        worktree: /Users/sero/.codex/worktrees/7fac/zana
+        branch: agent/T007-observability-integration-retry
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/observability/**, core/tests/observability/**, core/zana_core/streaming/redaction.py, core/tests/streaming/test_redaction.py, .agent-work/handoffs/T007-observability.md"
+        agent_head: 850be30
+        integration_commit: ea317050505358702fa039bc6a2c20da2dc605b5
+        receipt_commit: 27ecbb939be02a9474983ea5009d8f44bb0baecf
+        verification: "226 focused pytest; Ruff check/format; Pyright 0 errors/warnings; direct lead security/error/type inspection; clean; pushed origin/main"
+        owns: "core/zana_core/observability/**, core/tests/observability/**, core/zana_core/streaming/redaction.py, core/tests/streaming/test_redaction.py, .agent-work/handoffs/T007-observability-integration-retry.md"
       - id: T007-acquisition
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
@@ -769,13 +776,15 @@ tasks:
         owns: "core/zana_core/streaming/**, core/tests/streaming/**, .agent-work/handoffs/T007-streaming.md"
       - id: T007-jobs-sse
         agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
         status: active
-        codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
-        worktree: /Users/sero/.codex/worktrees/b8bd/zana
-        branch: agent/T007-jobs-sse
+        codex_thread: 019fe827-beb6-7b92-bd3e-bca20dda1198
+        worktree: /Users/sero/.codex/worktrees/715b/zana
+        branch: agent/T007-jobs-sse-canonical-integration
+        source_reference: agent/T007-jobs-sse@2dd18db03201cc1df7e8bb54c3e341745bc23049
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/api/jobs.py, core/zana_core/db/repositories.py, core/zana_core/jobs/services.py, core/tests/api/test_api_contracts.py, core/tests/api/test_job_event_stream.py, core/tests/jobs/test_job_services.py, .agent-work/handoffs/T007-jobs-sse.md"
+        owns: "core/zana_core/api/jobs.py, core/zana_core/db/repositories.py, core/zana_core/jobs/services.py, core/tests/api/test_api_contracts.py, core/tests/api/test_job_event_stream.py, core/tests/jobs/test_job_services.py, .agent-work/handoffs/T007-jobs-sse-canonical-integration.md"
       - id: T007-platform-wiring
         agent: router_opencode_go_deepseek_v4_flash
         status: done
@@ -800,17 +809,35 @@ tasks:
         integration_commit: 2f79a9ddffc22291eda50ddf417d4c19d38691c7
         verification: "62 focused pytest; 87 runtime pytest; 987 full Core pytest; Ruff check/format; Pyright; direct lead inspection; clean; pushed origin/main"
         owns: "core/zana_core/runtimes/registry.py, core/zana_core/runtimes/limits.py, core/tests/runtimes/test_registry.py, core/tests/runtimes/test_limits.py, .agent-work/handoffs/T007-runtime-hardening.md"
+      - id: T007-runtime-discovery-integration
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: done
+        codex_thread: 019fe7f1-0e6f-7493-92e4-a2a9bc93957d
+        worktree: /Users/sero/.codex/worktrees/7d3d/zana
+        branch: agent/T007-runtime-discovery-integration
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        agent_head: 129413d4a6de432e85f8ff3d82e45b61ce89c003
+        integration_commit: b86263764988f8af2c6887f382bc3c2b43b03087
+        receipt_commit: f94f01342b06402f1da178e8725f3c58bfd5caed
+        verification: "120 runtime pytest; Ruff check/format; Pyright 0 errors/warnings; direct lead security/error-path inspection; clean; pushed origin/main"
+        owns: "core/zana_core/runtimes/registry.py, core/zana_core/runtimes/limits.py, core/tests/runtimes/test_registry_hardening.py, .agent-work/handoffs/T007-runtime-discovery-integration.md"
       - id: T007-knowledge-hardening
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         codex_thread: 019fe6d7-9e33-7a51-a3f1-918e95e65c1d
         worktree: /Users/sero/.codex/worktrees/9b02/zana
         branch: agent/T007-knowledge-hardening
         base_commit: 8402887
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/knowledge/**, core/tests/knowledge/**, .agent-work/handoffs/T007-knowledge-hardening.md"
+        agent_head: bcb965386ff5ca38b59bcbe01f1d02bfbaafd657
+        integration_commit: 8a64ee8
+        receipt_commit: a5867c136ff100fc8e53a8787ebc1ae22c286ce5
+        verification: "204 focused pytest; Ruff check/format; Pyright 0 errors; direct hostile/serializer/union probes; import smoke; clean; pushed origin/main"
+        owns: "core/zana_core/knowledge/**, core/tests/knowledge/**, .agent-work/handoffs/T007-knowledge-hardening.md, .agent-work/handoffs/T007-knowledge-canonical-integration.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -910,6 +937,10 @@ tasks:
       - ".agent-work/handoffs/T007-platform-wiring.md"
       - ".agent-work/handoffs/T007-runtime-hardening.md"
       - ".agent-work/handoffs/T007-knowledge-hardening.md"
+      - ".agent-work/handoffs/T007-runtime-discovery-integration.md"
+      - ".agent-work/handoffs/T007-observability-integration-retry.md"
+      - ".agent-work/handoffs/T007-knowledge-canonical-integration.md"
+      - ".agent-work/handoffs/T007-jobs-sse-canonical-integration.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
