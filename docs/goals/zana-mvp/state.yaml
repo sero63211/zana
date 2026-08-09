@@ -53,7 +53,7 @@ agents:
   deepseek_max: unavailable_not_configured_max_is_reasoning_effort
 
 environment:
-  implementation_state: M1_authenticated_foundation_plus_static_desktop_surface
+  implementation_state: M2_domain_database_job_and_api_contracts_verified
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 23.0
@@ -65,7 +65,7 @@ environment:
   live_runtime_state: "Ollama 0.32.6 and three compact local model blobs are installed, but the service is stopped after the host watchdog restart; no model, inference, build, or training process is running."
   acquisition_rule: "Measure disk headroom and require a safety reserve before downloads or training; block only the affected task."
 
-active_task: T005
+active_task: T007
 
 tasks:
   - id: T001
@@ -303,7 +303,7 @@ tasks:
   - id: T005
     type: worker
     assignee: Worker
-    status: active
+    status: done
     reasoning_hint: max
     objective: "Settle the shared ZANA domain, SQLite, job/event, and typed API foundations under one owner so later runtime, build, evaluation, artifact, and UI lanes can fan out without interface drift."
     inputs:
@@ -327,8 +327,12 @@ tasks:
       - "Focused contract, migration, persistence, and API tests"
     delegated_lanes:
       - id: T005-contracts
-        agent: router_opencode_go_deepseek_v4_pro
-        worktree: /private/tmp/zana-worktrees/T005-contracts
+        agent: router_opencode_go_deepseek_v4_flash
+        codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        worktree: /Users/sero/.codex/worktrees/216c/zana
+        branch: agent/T005-contracts-flash
+        notification_mode: "silent; direct lead notification only for BLOCK, INTERFACE, or COMPLETE"
         owns: "core/pyproject.toml, core/alembic.ini, core/migrations/**, core/zana_core/domain/**, core/zana_core/db/**, core/zana_core/jobs/**, core/zana_core/api/**, core/zana_core/main.py, core/tests/domain/**, core/tests/db/**, core/tests/jobs/**, core/tests/api/**, .agent-work/handoffs/T005.md"
     allowed_files:
       - "core/pyproject.toml"
@@ -354,7 +358,45 @@ tasks:
       - "A schema or public contract conflicts with the controlling specification."
       - "Any write is required outside allowed_files."
       - "The same verification cause fails twice."
-    receipt: null
+    receipt:
+      result: done
+      summary: "Integrated canonical domain/API types, deterministic Alembic/SQLite lifecycle, WAL and foreign keys, real repositories/unit-of-work behavior, persistent jobs/events, cancellation-safe state transitions, and authenticated DB-backed routes without fake progress."
+      handoff: ".agent-work/handoffs/T005.md"
+      implementation_commit: "e22cba9 feat: add ZANA domain, SQLite, job, and API contracts"
+      handoff_commit: "0ff5db1 docs: add T005 contracts handoff"
+      changed_files:
+        - "core/pyproject.toml"
+        - "core/alembic.ini"
+        - "core/migrations/**"
+        - "core/zana_core/domain/**"
+        - "core/zana_core/db/**"
+        - "core/zana_core/jobs/**"
+        - "core/zana_core/api/**"
+        - "core/zana_core/main.py"
+        - "core/tests/domain/**"
+        - "core/tests/db/**"
+        - "core/tests/jobs/**"
+        - "core/tests/api/**"
+        - ".agent-work/handoffs/T005.md"
+      commands:
+        - cmd: "core/.venv/bin/python -m pytest core/tests -q"
+          status: pass
+        - cmd: "core/.venv/bin/ruff check core"
+          status: pass
+        - cmd: "core/.venv/bin/ruff format --check core"
+          status: pass
+        - cmd: "core/.venv/bin/pyright core/zana_core"
+          status: pass
+        - cmd: "fresh Alembic migration plus SQLite PRAGMA inspection"
+          status: pass
+      evidence:
+        - "37 pytest tests passed"
+        - "Pyright: 0 errors, 0 warnings"
+        - "Fresh migration revision 0001_initial_schema created 15 tables"
+        - "SQLite journal_mode=wal, foreign_keys=1, busy_timeout=30000"
+      security_delta: "All new routes retain per-launch bearer auth; runtime URLs reject embedded credentials; the DB starts empty and stores no tokens or demo rows."
+      full_outcome_complete: false
+      next_allowed_task: T007
   - id: T006
     type: worker
     assignee: Worker
@@ -412,6 +454,83 @@ tasks:
       security_delta: "The UI never renders, persists, or logs the Core token; non-health product surfaces remain honest unavailable/empty states."
       full_outcome_complete: false
       next_allowed_task: T005
+  - id: T007
+    type: worker
+    assignee: Worker
+    status: active
+    reasoning_hint: max
+    objective: "Implement the next disjoint, low-memory architecture wave: real runtime/model discovery, hardware profiling, capability-source validation, content-addressed artifact storage, and permission policy enforcement."
+    inputs:
+      - "Completed T005 receipt and frozen domain/database/API contracts"
+      - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
+      - "07_HARDWARE_PROFILER_AND_BUILD_PLANNER.md"
+      - "09_CAPABILITY_SOURCE_SPECIFICATION.md"
+      - "16_SECURITY_AND_PERMISSIONS.md"
+      - "17_EXPORT_IMPORT_AND_SELF_HOSTING.md"
+      - "21_REPOSITORY_STRUCTURE.md"
+      - "22_TESTING_AND_QA.md"
+      - "25_ACCEPTANCE_CRITERIA.md"
+    constraints:
+      - "DeepSeek Flash performs implementation only; no product research, evaluation, or documentation planning."
+      - "No model start, inference, download, training, native bundle build, or memory-heavy command."
+      - "All lanes start from the same integrated master commit and have exclusive disjoint ownership."
+      - "No lane may edit API registration, database/domain contracts, root manifests, lockfiles, desktop source, GoalBuddy state, or the ledger."
+      - "Test fixtures may emulate external protocols only inside automated tests; runtime/demo/product state may never use fake data."
+      - "Stop before any cross-lane interface change and notify the lead."
+    expected_output:
+      - "Real safe localhost runtime probes and canonical model descriptors"
+      - "Cross-platform non-privileged hardware profile"
+      - "Canonical capability source loading and validation"
+      - "Immutable content-addressed artifact primitives"
+      - "Default-deny permission policy enforcement"
+      - "Focused unit/contract tests and PASS handoffs for every lane"
+    delegated_lanes:
+      - id: T007-runtimes
+        agent: router_opencode_go_deepseek_v4_flash
+        owns: "core/zana_core/runtimes/**, core/tests/runtimes/**, .agent-work/handoffs/T007-runtimes.md"
+      - id: T007-hardware
+        agent: router_opencode_go_deepseek_v4_flash
+        owns: "core/zana_core/hardware/**, core/tests/hardware/**, .agent-work/handoffs/T007-hardware.md"
+      - id: T007-capabilities
+        agent: router_opencode_go_deepseek_v4_flash
+        owns: "core/zana_core/capabilities/**, core/tests/capabilities/**, schemas/capability.schema.json, schemas/evaluation.schema.json, .agent-work/handoffs/T007-capabilities.md"
+      - id: T007-artifacts
+        agent: router_opencode_go_deepseek_v4_flash
+        owns: "core/zana_core/artifacts/**, core/tests/artifacts/**, .agent-work/handoffs/T007-artifacts.md"
+      - id: T007-permissions
+        agent: router_opencode_go_deepseek_v4_flash
+        owns: "core/zana_core/permissions/**, core/tests/permissions/**, schemas/permissions.schema.json, .agent-work/handoffs/T007-permissions.md"
+    allowed_files:
+      - "core/zana_core/runtimes/**"
+      - "core/tests/runtimes/**"
+      - "core/zana_core/hardware/**"
+      - "core/tests/hardware/**"
+      - "core/zana_core/capabilities/**"
+      - "core/tests/capabilities/**"
+      - "core/zana_core/artifacts/**"
+      - "core/tests/artifacts/**"
+      - "core/zana_core/permissions/**"
+      - "core/tests/permissions/**"
+      - "schemas/capability.schema.json"
+      - "schemas/evaluation.schema.json"
+      - "schemas/permissions.schema.json"
+      - ".agent-work/handoffs/T007-runtimes.md"
+      - ".agent-work/handoffs/T007-hardware.md"
+      - ".agent-work/handoffs/T007-capabilities.md"
+      - ".agent-work/handoffs/T007-artifacts.md"
+      - ".agent-work/handoffs/T007-permissions.md"
+    verify:
+      - "Focused pytest for each owned lane"
+      - "core/.venv/bin/ruff check on owned lane files"
+      - "core/.venv/bin/ruff format --check on owned lane files"
+      - "core/.venv/bin/pyright on owned implementation package"
+      - "git diff --check"
+    stop_if:
+      - "Any required write falls outside the lane's exclusive ownership."
+      - "A frozen T005 interface or another lane's contract must change."
+      - "Implementation would start/download/run a model or execute training."
+      - "The same verification failure occurs twice."
+    receipt: null
   - id: T900
     type: pm
     assignee: PM
