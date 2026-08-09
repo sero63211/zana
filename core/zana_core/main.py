@@ -11,7 +11,6 @@ import sys
 from pathlib import Path
 
 import click
-import platformdirs
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -23,9 +22,18 @@ from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 from zana_core import __version__
 from zana_core.api.deps import ServerConfig
 from zana_core.db.database import Database
+from zana_core.platform.ensure import ensure_roots
+from zana_core.platform.models import PathRoot, PlatformPathError, PlatformPaths
+from zana_core.platform.resolve import PathResolver, derive_child
 
 
-def create_app(token: str, database_path: Path | None = None) -> FastAPI:
+def create_app(
+    token: str,
+    database_path: Path | None = None,
+    *,
+    platform_paths: PlatformPaths | None = None,
+    path_resolver_factory: type[PathResolver] | None = None,
+) -> FastAPI:
     """Create and configure a FastAPI application with the given launch token.
 
     ``database_path`` is overridable for tests; production uses the OS data
@@ -40,9 +48,20 @@ def create_app(token: str, database_path: Path | None = None) -> FastAPI:
     )
     app.state.server_config = ServerConfig(token=token, version=__version__)
 
-    resolved_db_path = database_path or (
-        Path(platformdirs.user_data_dir("zana", appauthor=False)) / "db" / "zana.sqlite3"
-    )
+    if database_path is not None:
+        resolved_db_path = database_path
+    else:
+        try:
+            if platform_paths is not None:
+                paths = platform_paths
+            elif path_resolver_factory is not None:
+                paths = path_resolver_factory().resolve()
+            else:
+                paths = PathResolver().resolve()
+            ensure_roots(paths, kinds=(PathRoot.DATA,))
+            resolved_db_path = derive_child(paths.data_root, "db", "zana.sqlite3")
+        except PlatformPathError:
+            raise
     database = Database(resolved_db_path)
     database.upgrade()
     app.state.database = database
