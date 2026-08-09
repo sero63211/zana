@@ -60,7 +60,7 @@ agents:
   deepseek_max: required_flash_reasoning_effort_not_a_separate_model
 
 environment:
-  implementation_state: T900_system_runtime_model_api_integrated
+  implementation_state: T900_system_runtime_model_api_and_knowledge_providers_integrated
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 23.0
@@ -1048,13 +1048,23 @@ tasks:
       - id: T900-knowledge-providers
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-knowledge-providers
         thread: 019fe870-ce4c-7c71-8e2b-afe450a0a6f3
         worktree: /Users/sero/.codex/worktrees/934f/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/knowledge/docling.py, core/zana_core/knowledge/lancedb_index.py, core/zana_core/knowledge/parsers.py, core/zana_core/knowledge/snapshots.py, core/zana_core/knowledge/retrieval.py, core/zana_core/knowledge/__init__.py, core/tests/knowledge/test_docling.py, core/tests/knowledge/test_lancedb_index.py, .agent-work/handoffs/T900-knowledge-providers.md"
         gates: "Focused knowledge tests; Ruff/format; Pyright; file/symlink/size/index-identity inspection; optional dependency unavailability honest; no install/model/network; one implementation commit plus receipt; clean; no push."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: d84c22f9f3c86e8b461b4ae9f68ef3f734e06829
+          source_commits: "3ecadeb, b6371ba, d7e9a56, ecc94c1, 4bf42d3, 36d2975"
+          verification: "Lead contract review PASS; 6 exact Docling/LanceDB provider-contract tests; Ruff check/format; Pyright 0 errors/warnings; git diff --check."
+          security_delta: "Bounded approved-file parsing, exact content integrity checks, fail-closed optional providers, immutable index identity, bounded LanceDB materialization, cosine query-builder correctness, and sanitized provider failures."
+          residual_risk: "Docling and LanceDB were not installed or executed live under the host-safety policy; their real provider paths require later bounded live verification."
+          remote_proof: "Non-force origin/main push confirmed; local HEAD and origin/main both d84c22f9f3c86e8b461b4ae9f68ef3f734e06829 before this receipt update."
+          clean_proof: "Canonical index/worktree and source agent worktree were clean."
       - id: T900-desktop-models
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
@@ -1068,8 +1078,10 @@ tasks:
       - id: T900-tauri-core-package
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
-        branch: agent/t900-tauri-core-package
+        status: active
+        branch: codex/zana-t900-tauri-core-supervisor
+        thread: 019fe8a6-6bba-7791-bbfb-cbec9b48b0d0
+        worktree: /Users/sero/.codex/worktrees/edc1/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "apps/desktop/src-tauri/**, scripts/package-core.sh, scripts/dev.sh, .agent-work/handoffs/T900-tauri-core-package.md"
         gates: "Rust unit tests/rustfmt/clippy and script syntax checks only if bounded; sidecar auth/lifecycle/path/error inspection; no dependency install/native bundle/app launch; one implementation commit plus receipt; clean; no push."
