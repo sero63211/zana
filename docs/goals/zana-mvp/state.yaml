@@ -586,12 +586,14 @@ tasks:
         owns: "core/zana_core/images/**, core/tests/images/**, schemas/image-config.schema.json, .agent-work/handoffs/T007-images.md"
       - id: T007-memory
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
         worktree: /Users/sero/.codex/worktrees/d795/zana
         branch: agent/T007-memory
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: b546388
+        handoff_commit: 08b48d4
         owns: "core/zana_core/memory/**, core/tests/memory/**, .agent-work/handoffs/T007-memory.md"
       - id: T007-planning
         agent: router_opencode_go_deepseek_v4_flash
@@ -620,6 +622,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/builds/**, core/tests/builds/**, .agent-work/handoffs/T007-builds.md"
+      - id: T007-hardware-test
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
+        worktree: /Users/sero/.codex/worktrees/d795/zana
+        branch: agent/T007-hardware-test
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/tests/hardware/test_providers.py, .agent-work/handoffs/T007-hardware-test.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -649,6 +660,7 @@ tasks:
       - "core/tests/training/**"
       - "core/zana_core/builds/**"
       - "core/tests/builds/**"
+      - "core/tests/hardware/test_providers.py"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -661,6 +673,7 @@ tasks:
       - ".agent-work/handoffs/T007-planning.md"
       - ".agent-work/handoffs/T007-training.md"
       - ".agent-work/handoffs/T007-builds.md"
+      - ".agent-work/handoffs/T007-hardware-test.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
