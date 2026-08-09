@@ -16,6 +16,7 @@ from zana_core.platform.models import (
     PlatformPaths,
     PlatformPathValidationError,
 )
+from zana_core.runtimes.registry import RuntimeProbeRegistry
 
 
 def test_explicit_database_path_bypasses_resolver_and_ensure(tmp_path):
@@ -105,3 +106,19 @@ def test_main_no_longer_imports_platformdirs():
     source = Path(module.__file__).read_text(encoding="utf-8")
     assert "import platformdirs" not in source
     assert "platformdirs" not in source
+
+
+def test_system_and_refresh_routes_require_auth_and_registry_is_injected(tmp_path):
+    db_path = tmp_path / "db" / "zana.sqlite3"
+    app = create_app(token="tok", database_path=db_path, runtime_registry=RuntimeProbeRegistry())
+    assert isinstance(app.state.runtime_registry, RuntimeProbeRegistry)
+    with TestClient(app) as client:
+        assert client.get("/api/v1/system/profile").status_code == 401
+        assert client.get("/api/v1/system/doctor").status_code == 401
+        assert client.post("/api/v1/runtimes/refresh").status_code == 401
+        assert (
+            client.post(
+                "/api/v1/models/pull", json={"runtime_id": 1, "model_reference": "x"}
+            ).status_code
+            == 401
+        )

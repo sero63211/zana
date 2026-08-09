@@ -169,3 +169,13 @@ class SystemDoctorRead(BaseModel):
     table_counts: dict[str, int]
     core_pid: int
     core_uptime_seconds: float
+
+
+class ModelPullCreate(BaseModel):
+    """Typed request to record a runtime-native model acquisition job."""
+
+    runtime_id: int = Field(gt=0)
+    model_reference: str = Field(min_length=1, max_length=200)
+    expected_size_bytes: int | None = Field(default=None, ge=0, le=1 << 40)
+    user_approved: bool = False
+    deadline_seconds: float = Field(default=30.0, gt=0, le=3600)

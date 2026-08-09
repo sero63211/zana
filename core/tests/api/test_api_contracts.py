@@ -52,8 +52,10 @@ def _parse_sse(text: str) -> list[dict[str, object]]:
 
 AUTH_PROTECTED_PATHS = [
     ("GET", "/api/v1/runtimes"),
+    ("POST", "/api/v1/runtimes/refresh"),
     ("POST", "/api/v1/runtimes/manual"),
     ("GET", "/api/v1/models"),
+    ("POST", "/api/v1/models/pull"),
     ("GET", "/api/v1/models/ollama:example"),
     ("GET", "/api/v1/capabilities"),
     ("POST", "/api/v1/capabilities"),
@@ -63,6 +65,7 @@ AUTH_PROTECTED_PATHS = [
     ("GET", "/api/v1/jobs/1/events"),
     ("GET", "/api/v1/images"),
     ("GET", "/api/v1/images/sha256:abc"),
+    ("GET", "/api/v1/system/profile"),
     ("GET", "/api/v1/system/doctor"),
 ]
 
@@ -287,7 +290,7 @@ class TestImagesApi:
 
 
 class TestDoctorApi:
-    def test_doctor_reports_real_sqlite_state(
+    def test_doctor_reports_bounded_diagnostic_report(
         self,
         client: TestClient,
         auth_header: dict[str, str],
@@ -295,11 +298,11 @@ class TestDoctorApi:
         response = client.get("/api/v1/system/doctor", headers=auth_header)
         assert response.status_code == 200
         body = response.json()
-        assert body["status"] == "ok"
-        assert body["journal_mode"] == "wal"
-        assert body["foreign_keys"] is True
-        assert body["busy_timeout_ms"] == 30000
-        assert body["migration_revision"] == "0001_initial_schema"
-        assert body["db_path"].endswith("zana.sqlite3")
-        assert body["table_counts"]["capabilities"] == 0
-        assert body["core_pid"] > 0
+        assert body["aggregate_health"] in {
+            "healthy",
+            "pass_with_limited_features",
+            "failed",
+        }
+        assert isinstance(body["checks"], list)
+        sqlite_check = next(check for check in body["checks"] if check["check_id"] == "sqlite")
+        assert sqlite_check["status"] == "pass"

@@ -2,16 +2,28 @@
 
 from __future__ import annotations
 
-from urllib.parse import urlparse
+import ipaddress
+from typing import Any
+from urllib.parse import urlsplit
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Request, Response
 from starlette.status import HTTP_204_NO_CONTENT
 
 from zana_core.api.deps import UnitOfWorkDep, verify_token
 from zana_core.api.errors import http_error
-from zana_core.api.schemas import RuntimeCreate, RuntimeRead
-from zana_core.db.models import Runtime
-from zana_core.domain.enums import RuntimeSource, RuntimeStatus
+from zana_core.api.schemas import JobRead, RuntimeCreate, RuntimeRead
+from zana_core.db.models import Job, Model, Runtime
+from zana_core.db.unit_of_work import UnitOfWork
+from zana_core.domain.enums import (
+    JobKind,
+    JobStatus,
+    RuntimeKind,
+    RuntimeSource,
+    RuntimeStatus,
+)
+from zana_core.jobs.services import JobService
+from zana_core.runtimes.base import AdapterType, ProbeTarget, RuntimeDescriptor
+from zana_core.runtimes.registry import RuntimeProbeRegistry
 
 router = APIRouter(
     prefix="/api/v1/runtimes",
@@ -21,7 +33,7 @@ router = APIRouter(
 
 
 def _validate_manual_endpoint(endpoint: str) -> None:
-    parsed = urlparse(endpoint)
+    parsed = urlsplit(endpoint)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise http_error(
             422,
@@ -38,6 +50,183 @@ def _validate_manual_endpoint(endpoint: str) -> None:
             recoverable=True,
             actions=["store_credentials_separately"],
         )
+
+
+def _adapter_for_kind(kind: RuntimeKind) -> AdapterType:
+    return {
+        RuntimeKind.OLLAMA: AdapterType.OLLAMA,
+        RuntimeKind.LM_STUDIO: AdapterType.LM_STUDIO,
+        RuntimeKind.LLAMA_CPP: AdapterType.LLAMA_CPP,
+        RuntimeKind.MLX_LM: AdapterType.MLX_LM,
+        RuntimeKind.OPENAI_COMPATIBLE: AdapterType.OPENAI_COMPATIBLE,
+        RuntimeKind.UNKNOWN: AdapterType.OPENAI_COMPATIBLE,
+    }[kind]
+
+
+def _is_loopback_endpoint(endpoint: str) -> bool:
+    """Return whether an endpoint is a safe loopback-only probe target."""
+    try:
+        parts = urlsplit(endpoint)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").rstrip(".")
+    if not host:
+        return False
+    if host.lower() == "localhost":
+        return True
+    ip_host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
+    try:
+        return bool(ipaddress.ip_address(ip_host).is_loopback)
+    except ValueError:
+        return False
+
+
+def _descriptor_metadata(descriptor: RuntimeDescriptor) -> dict[str, Any]:
+    return {
+        "identified_vendor": descriptor.identified_vendor,
+        "registered": descriptor.registered,
+        "server_running": descriptor.server_running,
+        "installed": descriptor.installed,
+        "installed_not_running": descriptor.installed_not_running,
+        "evidence": descriptor.evidence,
+        "warnings": descriptor.warnings,
+        "error": descriptor.error,
+    }
+
+
+def _model_metadata(model: Any) -> dict[str, Any]:
+    return {
+        "display_name": model.display_name,
+        "parameter_label": model.parameter_label,
+        "trainability": model.trainability,
+        "metadata_source": model.metadata_source,
+        "runtime_id": model.runtime_id,
+    }
+
+
+def _probe_targets(
+    uow: UnitOfWork,
+    registry: RuntimeProbeRegistry,
+) -> list[ProbeTarget]:
+    """Combine standard loopback candidates with manual loopback runtimes."""
+    targets: list[ProbeTarget] = list(registry.default_targets())
+    for manual in uow.runtimes.list_manual():
+        if not _is_loopback_endpoint(manual.endpoint):
+            continue
+        targets.append(
+            ProbeTarget(
+                runtime_id=f"manual:{manual.id}",
+                kind=manual.kind,
+                endpoint=manual.endpoint,
+                source=RuntimeSource.MANUAL,
+                adapter_type=_adapter_for_kind(manual.kind),
+            )
+        )
+    return targets
+
+
+def _sync_discovery(uow: UnitOfWork, descriptors: list[RuntimeDescriptor]) -> int:
+    """Upsert discovered runtimes and their bounded model descriptors."""
+    model_count = 0
+    for descriptor in descriptors:
+        if type(descriptor) is not RuntimeDescriptor:
+            continue
+        runtime = uow.runtimes.get_by_endpoint(descriptor.endpoint, descriptor.source)
+        if runtime is None:
+            runtime = Runtime(
+                kind=descriptor.kind,
+                endpoint=descriptor.endpoint,
+                source=descriptor.source,
+                status=descriptor.status,
+                metadata_json=_descriptor_metadata(descriptor),
+                last_seen_at=descriptor.last_seen_at,
+            )
+            uow.runtimes.add(runtime)
+        else:
+            runtime.kind = descriptor.kind
+            runtime.status = descriptor.status
+            runtime.metadata_json = _descriptor_metadata(descriptor)
+            runtime.last_seen_at = descriptor.last_seen_at
+        uow.session.flush()
+        for model in descriptor.models:
+            key = f"{runtime.id}:{model.model_id}"
+            existing = uow.models.get(key)
+            if existing is None:
+                uow.models.add(
+                    Model(
+                        key=key,
+                        runtime_id=runtime.id,
+                        model_id=model.model_id,
+                        digest=model.digest,
+                        family=model.family,
+                        format=model.format,
+                        quantization=model.quantization,
+                        parameter_count=model.parameter_count,
+                        size_bytes=model.size_bytes,
+                        context_length=model.context_length,
+                        capabilities_json=model.capabilities,
+                        identity_strength=model.identity_strength,
+                        metadata_json=_model_metadata(model),
+                        last_seen_at=model.last_seen_at,
+                    )
+                )
+            else:
+                existing.model_id = model.model_id
+                existing.digest = model.digest
+                existing.family = model.family
+                existing.format = model.format
+                existing.quantization = model.quantization
+                existing.parameter_count = model.parameter_count
+                existing.size_bytes = model.size_bytes
+                existing.context_length = model.context_length
+                existing.capabilities_json = model.capabilities
+                existing.identity_strength = model.identity_strength
+                existing.metadata_json = _model_metadata(model)
+                existing.last_seen_at = model.last_seen_at
+            model_count += 1
+    return model_count
+
+
+@router.post("/refresh", response_model=JobRead)
+def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
+    """Run bounded runtime discovery and persist the real results as a job."""
+    registry: RuntimeProbeRegistry = request.app.state.runtime_registry
+    service = JobService(uow)
+    job = service.create_job(
+        JobKind.RUNTIME_REFRESH,
+        phase="discovery",
+        message="Refreshing runtime and model discovery.",
+    )
+    service.transition_job(job.id, JobStatus.RUNNING, phase="discovery")
+    try:
+        descriptors = registry.probe(_probe_targets(uow, registry))
+        _sync_discovery(uow, descriptors)
+        return service.transition_job(
+            job.id,
+            JobStatus.SUCCEEDED,
+            phase="complete",
+            message=f"Runtime discovery complete; {len(descriptors)} candidate(s) probed.",
+        )
+    except Exception:  # noqa: BLE001 - failures are sanitized below
+        service.transition_job(
+            job.id,
+            JobStatus.FAILED,
+            phase="failed",
+            message="Runtime discovery could not complete.",
+            error={
+                "code": "RUNTIME_REFRESH_FAILED",
+                "message": "Runtime discovery could not complete.",
+            },
+        )
+        raise http_error(
+            500,
+            "RUNTIME_REFRESH_FAILED",
+            "Runtime discovery could not complete.",
+            recoverable=True,
+            actions=["retry_refresh"],
+        ) from None
 
 
 @router.get("", response_model=list[RuntimeRead])

@@ -25,6 +25,7 @@ from zana_core.db.database import Database
 from zana_core.platform.ensure import ensure_roots
 from zana_core.platform.models import PathRoot, PlatformPathError, PlatformPaths
 from zana_core.platform.resolve import PathResolver, derive_child
+from zana_core.runtimes.registry import RuntimeProbeRegistry
 
 
 def create_app(
@@ -33,6 +34,7 @@ def create_app(
     *,
     platform_paths: PlatformPaths | None = None,
     path_resolver_factory: type[PathResolver] | None = None,
+    runtime_registry: RuntimeProbeRegistry | None = None,
 ) -> FastAPI:
     """Create and configure a FastAPI application with the given launch token.
 
@@ -47,6 +49,7 @@ def create_app(
         openapi_url=None,
     )
     app.state.server_config = ServerConfig(token=token, version=__version__)
+    app.state.runtime_registry = runtime_registry or RuntimeProbeRegistry()
 
     if database_path is not None:
         resolved_db_path = database_path
@@ -123,15 +126,15 @@ def create_app(
     # Register routers
     from zana_core.api.builds import router as builds_router
     from zana_core.api.capabilities import router as capabilities_router
-    from zana_core.api.doctor import router as doctor_router
     from zana_core.api.health import router as health_router
     from zana_core.api.images import router as images_router
     from zana_core.api.jobs import router as jobs_router
     from zana_core.api.models import router as models_router
     from zana_core.api.runtimes import router as runtimes_router
+    from zana_core.api.system import router as system_router
 
     app.include_router(health_router)
-    app.include_router(doctor_router)
+    app.include_router(system_router)
     app.include_router(runtimes_router)
     app.include_router(models_router)
     app.include_router(capabilities_router)
