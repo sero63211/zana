@@ -1135,6 +1135,16 @@ tasks:
           residual_risk: "The shell sidecar API still requires releasing the reserved loopback socket before spawn; Cargo compile/clippy/tests, PyInstaller, Tauri build/bundle/dev, and live sidecar health remain deferred under host safety."
           remote_proof: "Non-force origin/main push confirmed; local HEAD and origin/main both 1bad9e356b9d12e5e822c16c60ad31c8a454054a before this receipt update."
           clean_proof: "Canonical index/worktree and source agent worktree were clean."
+      - id: T900-model-acquisition-execution
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        branch: agent/t900-model-acquisition-execution
+        thread: 019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8
+        worktree: /Users/sero/.codex/worktrees/4a22/zana
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/acquisition/**, core/zana_core/jobs/**, core/zana_core/api/models.py, core/zana_core/api/jobs.py, core/zana_core/main.py, focused acquisition/job/API tests, .agent-work/handoffs/T900-model-acquisition-execution.md"
+        gates: "Focused injected-transport acquisition/job/API pytest only; Ruff/format; Pyright; import/diff/lifecycle/disk/cancel/redaction review; no live runtime/network/model/download, broad suite, app, browser, build, or install; one product commit plus receipt; clean; no push."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
