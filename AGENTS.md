@@ -17,13 +17,14 @@ Before planning or coding, read:
 
 ## First-class agents
 
-The installed Codex Router exposes two visible first-class DeepSeek agents:
+All ZANA implementation delegation MUST use only this visible first-class agent:
 
-- `router_opencode_go_deepseek_v4_flash` -> model `opencode-go/deepseek-v4-flash`
-- `router_opencode_go_deepseek_v4_pro` -> model `opencode-go/deepseek-v4-pro`
+- `router_opencode_go_deepseek_v4_flash` -> model
+  `opencode-go/deepseek-v4-flash` with reasoning effort `max`
 
-Use these exact names when delegating. There is no separate DeepSeek V4 Max
-profile or model. `max` is a reasoning effort, not another agent.
+`router_opencode_go_deepseek_v4_pro` may be installed, but MUST NOT be used for
+ZANA. There is no separate DeepSeek V4 Max profile or model: `max` is the
+required reasoning effort for the Flash agent.
 
 ## Coordination rules
 

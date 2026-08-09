@@ -34,6 +34,7 @@ rules:
   pm_owns_state: true
   one_active_task: true
   max_write_workers: 6
+  implementation_agent_policy: "Only opencode-go/deepseek-v4-flash with reasoning effort max; never DeepSeek V4 Pro."
   parallel_workers_require_disjoint_scopes: true
   no_implementation_without_worker_or_pm_task: true
   no_completion_without_judge_or_pm_audit: true
@@ -49,8 +50,8 @@ agents:
   worker: installed
   judge: installed
   deepseek_v4_flash: available_as_router_profile
-  deepseek_v4_pro: available_as_router_profile
-  deepseek_max: unavailable_not_configured_max_is_reasoning_effort
+  deepseek_v4_pro: installed_but_prohibited_for_zana
+  deepseek_max: required_flash_reasoning_effort_not_a_separate_model
 
 environment:
   implementation_state: M2_domain_database_job_and_api_contracts_verified

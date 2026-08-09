@@ -40,7 +40,7 @@ Nothing in this map or `.agent-work/` supersedes it.
 | Conflict | Resolution |
 | --- | --- |
 | Appoint Me canonical branch (`master`, direct work) vs ZANA isolated worktrees | ZANA wins: use worktrees/branches per parallel task and a single integration lane. |
-| Appoint Me model guidance vs installed router profiles | Installed router profiles win: `router_opencode_go_deepseek_v4_flash` and `router_opencode_go_deepseek_v4_pro` are the first-class agents. |
+| Appoint Me model guidance vs installed router profiles | ZANA's owner policy wins: implementation uses only `router_opencode_go_deepseek_v4_flash` with reasoning effort `max`; the installed Pro profile is prohibited for ZANA. |
 | Appoint Me append-only handoff logs vs bounded coordination | ZANA uses a bounded ledger plus one handoff per task. |
 
 ## DeepSeek profile mapping
@@ -49,8 +49,8 @@ Installed first-class Codex Router agents:
 
 | Agent name | Router model |
 | --- | --- |
-| `router_opencode_go_deepseek_v4_flash` | `opencode-go/deepseek-v4-flash` |
-| `router_opencode_go_deepseek_v4_pro` | `opencode-go/deepseek-v4-pro` |
+| `router_opencode_go_deepseek_v4_flash` | `opencode-go/deepseek-v4-flash`, required reasoning effort `max` |
+| `router_opencode_go_deepseek_v4_pro` | Installed but prohibited for ZANA |
 
 There is no separate installed DeepSeek V4 Max profile. `max` is a reasoning
 effort and must not be presented as another agent.
