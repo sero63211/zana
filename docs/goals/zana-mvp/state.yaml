@@ -507,6 +507,7 @@ tasks:
       - "Local-only structured redacted bounded logging/event sinks with deterministic rotation and no telemetry/background worker"
       - "Native-runtime model acquisition contracts that stream progress directly from the runtime, reserve disk first, never proxy model bytes, and remain cancellable and bounded"
       - "One cross-platform platform-path policy for config/data/cache/log/temp roots with no hard-coded host paths and bounded filesystem probes"
+      - "One canonical bounded SSE/event-stream boundary for resumable job, acquisition, and chat progress without polling threads or unbounded event retention"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -654,12 +655,14 @@ tasks:
         owns: "core/tests/hardware/test_providers.py, .agent-work/handoffs/T007-hardware-test.md"
       - id: T007-instances
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
         worktree: /Users/sero/.codex/worktrees/b8bd/zana
         branch: agent/T007-instances
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 5a95b28
+        handoff_commit: 76e67e3
         owns: "core/zana_core/instances/**, core/tests/instances/**, .agent-work/handoffs/T007-instances.md"
       - id: T007-tools
         agent: router_opencode_go_deepseek_v4_flash
@@ -741,6 +744,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/platform/**, core/tests/platform/**, .agent-work/handoffs/T007-platform.md"
+      - id: T007-streaming
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
+        worktree: /Users/sero/.codex/worktrees/b8bd/zana
+        branch: agent/T007-streaming
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/streaming/**, core/tests/streaming/**, .agent-work/handoffs/T007-streaming.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -797,6 +809,8 @@ tasks:
       - "core/tests/acquisition/**"
       - "core/zana_core/platform/**"
       - "core/tests/platform/**"
+      - "core/zana_core/streaming/**"
+      - "core/tests/streaming/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -819,6 +833,7 @@ tasks:
       - ".agent-work/handoffs/T007-observability.md"
       - ".agent-work/handoffs/T007-acquisition.md"
       - ".agent-work/handoffs/T007-platform.md"
+      - ".agent-work/handoffs/T007-streaming.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
