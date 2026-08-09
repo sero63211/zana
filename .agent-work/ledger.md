@@ -68,3 +68,20 @@ operational coordination only and never supersedes it.
 These files/directories must have one integrator and are not parallel-owned:
 root manifests and lockfiles, `core/pyproject.toml`, migrations, backend API
 boundary, generated TypeScript API types, build orchestrator, and this ledger.
+
+## Integration receipts
+
+### Agent delivery-cycle policy
+
+- accepted commit: `390500c8ce6c9df4702363130c1cc8f6b257bd6e`
+- changed paths: `AGENTS.md`, `docs/agent-adoption-map.md`,
+  `docs/goals/zana-mvp/state.yaml`, `.agent-work/ledger.md`
+- gates: GoalBuddy state validator PASS; `git diff --check` PASS; direct policy
+  inspection PASS; canonical repo/HEAD/branch/remote/status/worktree preflight PASS
+- security delta: no product/runtime surface; delivery policy now forbids Pro,
+  force push, shared writer worktrees, false push claims, and advancing red gates
+- residual risk: already-running T007 lanes began under the prior commit cycle;
+  their next lead integration is subject to the hardened acceptance/push receipt
+- remote proof: local `master` pushed non-force to `origin/main`; confirmed local
+  HEAD and `origin/main` both equal the accepted commit SHA above
+- clean proof: index exit `0`, worktree exit `0`, `git status --porcelain` empty
