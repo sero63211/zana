@@ -62,19 +62,24 @@ or coordination source was modified.
 
 ## Checks run and evidence
 
-Per the binding host-safety rule, only smallest focused unit tests plus bounded
-static/type/lint/format/build checks were run. Existing dependencies were
+Per the binding host-safety rule, only smallest focused unit tests plus
+existing lightweight lint/type checks were run. Existing dependencies were
 reused read-only from the canonical checkout through temporary ignored
 symlinks for local tooling; nothing was installed and the symlinks were removed
 before commit.
+
+Build correction: one bounded Vite build ran accidentally before the
+host-safety correction. It is recorded here only as already-run evidence, is
+not required evidence, and will not be repeated. Its generated ignored
+`apps/desktop/dist` artifact was proven untracked/generated and removed.
 
 | Check | Result |
 | --- | --- |
 | Focused Vitest: `src/api/client.test.ts`, `HomeView.test.tsx`, `RuntimesModelsView.test.tsx`, `SettingsDoctorView.test.tsx` | 23 passed |
 | `pnpm --filter @zana/desktop typecheck` | PASS |
 | `pnpm --filter @zana/desktop lint` | PASS |
-| `pnpm --filter @zana/desktop build` (bounded Vite build) | PASS |
 | `git diff --check` | PASS |
+| Accidental bounded Vite build (already-run evidence only; not required) | Ran once before the correction; generated ignored `apps/desktop/dist` was removed; will not be repeated |
 
 Focused tests cover real-data, loading, empty, canonical error/recovery,
 refresh invalidation, manual add/delete, explicit pull confirmation and
@@ -83,10 +88,11 @@ payload, safe path encoding, doctor checks, and token non-rendering.
 ## Intentionally not run
 
 Per Sero's binding host-safety rule, the following were intentionally not run:
-full desktop test suite, full Core suite, live/provider/browser/app/device
-tests, dev server, desktop launch, Tauri bundle or native build, runtime/model
-start, inference, download, training, load, GPU/RAM, container, or performance
-tests, and any network verification. No Ollama or local model was started.
+Vite build/bundle (after the correction), full desktop test suite, full Core
+suite, live/provider/browser/app/device tests, dev server, desktop launch,
+Tauri bundle or native build, runtime/model start, inference, download,
+training, load, GPU/RAM, container, or performance tests, and any network
+verification. No Ollama or local model was started.
 
 ## Security delta
 
