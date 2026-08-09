@@ -2,6 +2,7 @@
 
 from typing import Any
 
+from fastapi import HTTPException
 from pydantic import BaseModel
 
 
@@ -32,4 +33,28 @@ def error_401(
             recoverable=False,
             actions=["provide_valid_token"],
         )
+    )
+
+
+def http_error(
+    status_code: int,
+    code: str,
+    message: str,
+    *,
+    recoverable: bool = False,
+    actions: list[str] | None = None,
+    details: dict[str, Any] | None = None,
+) -> HTTPException:
+    """Build a canonical HTTPException with the ZANA error envelope."""
+    return HTTPException(
+        status_code=status_code,
+        detail=ErrorResponse(
+            error=ErrorDetail(
+                code=code,
+                message=message,
+                details=details or {},
+                recoverable=recoverable,
+                actions=actions or [],
+            )
+        ).model_dump(),
     )

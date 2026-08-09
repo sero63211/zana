@@ -1,13 +1,15 @@
 """FastAPI auth dependency for per-launch bearer token."""
 
 import hmac
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Annotated
 
-from fastapi import Header, HTTPException, Request
+from fastapi import Depends, Header, HTTPException, Request
 from starlette.status import HTTP_401_UNAUTHORIZED
 
 from zana_core.api.errors import error_401
+from zana_core.db.unit_of_work import UnitOfWork
 
 
 @dataclass(frozen=True)
@@ -55,3 +57,19 @@ def verify_token(
         )
 
     return config
+
+
+def get_unit_of_work(request: Request) -> Iterator[UnitOfWork]:
+    """Provide one database transaction per request, committing on success."""
+    uow = UnitOfWork(request.app.state.session_factory)
+    try:
+        yield uow
+        uow.commit()
+    except Exception:
+        uow.rollback()
+        raise
+    finally:
+        uow.close()
+
+
+UnitOfWorkDep = Annotated[UnitOfWork, Depends(get_unit_of_work)]

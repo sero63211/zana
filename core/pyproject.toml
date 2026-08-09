@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "ZANA Core backend sidecar"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.14,<2",
     "fastapi>=0.115,<0.116",
     "pydantic>=2.10,<3",
+    "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.34,<0.35",
     "click>=8.1,<9",
     "psutil>=7,<8",
