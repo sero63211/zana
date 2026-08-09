@@ -60,7 +60,7 @@ operational coordination only and never supersedes it.
 | T007-streaming | `router_opencode_go_deepseek_v4_flash`, thread `019fe65a-7992-7081-9d8a-3bef3f41e58b`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-streaming` at `/Users/sero/.codex/worktrees/b8bd/zana` | `core/zana_core/streaming/**`, `core/tests/streaming/**`, `T007-streaming.md` | done, PASS; integrated `8282422`, `5d918e2` | jobs/API and chat/acquisition stream contracts; specs 18/22 | 50 integrated focused pytest; Ruff/Pyright; bounded resumable SSE; zero polling/background/event accumulation |
 | T007-jobs-sse | `router_opencode_go_deepseek_v4_flash`, thread `019fe65a-7992-7081-9d8a-3bef3f41e58b`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-jobs-sse` at `/Users/sero/.codex/worktrees/b8bd/zana` | exact jobs API/repository/service/test files, `T007-jobs-sse.md` | active wave | integrated streaming boundary; persisted jobs | focused pytest/Ruff/Pyright; authenticated bounded Last-Event-ID SSE snapshot; paginated DB reads; no polling/background |
 | T007-platform-wiring | `router_opencode_go_deepseek_v4_flash`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-platform-wiring` at `/Users/sero/.codex/worktrees/9529/zana` | `core/zana_core/main.py`, one platform integration test, `T007-platform-wiring.md` | done, PASS; integrated `72dc76d`, `3e96e51` | integrated canonical platform boundary | 69 integrated platform/API pytest; Ruff/Pyright; explicit DB path bypass preserved; safe canonical production DB path |
-| T007-runtime-hardening | `router_opencode_go_deepseek_v4_flash`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-runtime-hardening` at `/Users/sero/.codex/worktrees/9529/zana` | exact runtime registry/limits tests, `T007-runtime-hardening.md` | active wave | integrated runtime discovery + resource policy | focused pytest/Ruff/Pyright; hard target/worker/timeout caps; no unbounded futures; scoped threads only; sanitized failure descriptors |
+| T007-runtime-hardening | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-runtime-hardening` at `/Users/sero/.codex/worktrees/9529/zana` | exact runtime registry/limits tests, `T007-runtime-hardening.md` | done, PASS; integrated `2f79a9d` | integrated runtime discovery + resource policy | 62 focused; 87 runtime; 987 full Core pytest; Ruff/format/Pyright; strict targets/workers/timeouts; cap+1 hostile iterable bound; sanitized failures; zero surviving threads |
 | T007-knowledge-hardening | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe6d7-9e33-7a51-a3f1-918e95e65c1d`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-knowledge-hardening` at `/Users/sero/.codex/worktrees/9b02/zana`, base `8402887` | `core/zana_core/knowledge/**`, `core/tests/knowledge/**`, `T007-knowledge-hardening.md` | active wave | integrated knowledge + embeddings; strict lightweight owner constraint | focused knowledge pytest/Ruff/Pyright; hard document/chunk/vector/retrieval/evidence budgets; bounded iterable collection; no model/network/live backend |
 
 ## Single-owner shared contracts
@@ -101,4 +101,26 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   intentionally excluded; API/job wiring is a later bounded milestone
 - remote proof: non-force push `master:main` succeeded; local HEAD and
   `origin/main` both equal `8eaefc506055c551cb703b1fe0cce5c154015046`
+- clean proof: index exit `0`, worktree exit `0`, `git status --porcelain` empty
+
+### T007 runtime probe hardening
+
+- accepted commit: `2f79a9ddffc22291eda50ddf417d4c19d38691c7`
+- agent delivery head: `5d8c96f2573097d75ee830e9192c2992aae29f1d`
+- changed paths: `.agent-work/handoffs/T007-runtime-hardening.md`,
+  `core/zana_core/runtimes/registry.py`, `core/zana_core/runtimes/limits.py`,
+  `core/tests/runtimes/test_registry_hardening.py`,
+  `core/tests/runtimes/test_limits.py`
+- gates: 62 focused pytest PASS; 87 runtime pytest PASS; 987 full Core pytest
+  PASS; Ruff check PASS; Ruff format check PASS; Pyright zero errors/warnings;
+  `git diff --check` PASS; direct lead security/error/readability inspection PASS
+- security delta: hard target/worker/timeout/string/model/output caps; strict public
+  numeric types; one cap+1 bounded collection path that never trusts
+  `Sequence.__len__`; scoped joined threads only; bounded validated descriptors;
+  credential, bearer, hostile-error, and non-string evidence sanitization
+- residual risk: adapter response parsing remains protected by the integrated
+  1 MiB transport cap but was outside this registry-owned scope; no live runtime,
+  service, model, or network probe was performed
+- remote proof: non-force push `master:main` succeeded; local HEAD and
+  `origin/main` both equal `2f79a9ddffc22291eda50ddf417d4c19d38691c7`
 - clean proof: index exit `0`, worktree exit `0`, `git status --porcelain` empty
