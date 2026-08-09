@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zana.local/schemas/image-config.schema.json",
+  "title": "ZanaImageConfig",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "kind", "name", "version", "baseModel"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "kind": { "const": "ZanaImage" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 300 },
+    "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "baseModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "displayName": { "type": ["string", "null"], "maxLength": 500 },
+        "family": { "type": ["string", "null"], "maxLength": 200 },
+        "identityDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "runtimeCompatibility": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "requiredCapabilities": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "behavior": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "systemPolicyDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "behaviorDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "knowledge": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "snapshotDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "embeddingModelIdentity": { "type": ["string", "null"] },
+        "embeddingModelDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "chunker": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "maxLength": 200 },
+            "version": { "type": "integer" },
+            "configDigest": {
+              "type": ["string", "null"],
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "adapter": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string" },
+        "digest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "baseModelDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "trainingProvider": { "type": ["string", "null"] },
+        "trainingConfigDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "datasetDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    },
+    "tools": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1, "maxLength": 200 },
+          "version": { "type": "integer" },
+          "digest": {
+            "type": ["string", "null"],
+            "pattern": "^sha256:[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "networkOutbound": { "type": "boolean" },
+        "filesystemRead": { "type": "array", "items": { "type": "string" } },
+        "filesystemWrite": { "type": "array", "items": { "type": "string" } },
+        "toolsAllow": { "type": "array", "items": { "type": "string" } },
+        "secretsAllow": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "suiteDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "reportDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "status": { "type": "string" }
+      }
+    },
+    "build": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "zanaVersion": { "type": "string" },
+        "buildPlanDigest": {
+          "type": ["string", "null"],
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "builtAt": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
