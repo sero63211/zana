@@ -1,0 +1,229 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://zana.local/schemas/evaluation.schema.json",
+  "title": "ZANA Evaluation Record",
+  "description": "Canonical schema for one evaluation JSONL record (evals/domain.jsonl or evals/regression.jsonl).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "prompt", "scorer"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scorer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "enum": [
+            "exact_string",
+            "case_normalized_exact",
+            "numeric_exact",
+            "numeric_tolerance",
+            "regex",
+            "contains_all",
+            "json_schema_valid",
+            "classification_label",
+            "citation_required",
+            "source_grounding"
+          ]
+        },
+        "expected": {},
+        "tolerance": {
+          "type": "number",
+          "minimum": 0
+        },
+        "schema": {
+          "type": "object"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "exact_string"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "case_normalized_exact"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "numeric_exact"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "numeric_tolerance"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected", "tolerance"],
+            "properties": {
+              "expected": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "regex"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "contains_all"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "json_schema_valid"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["schema"]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "classification_label"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "source_grounding"
+              }
+            },
+            "required": ["type"]
+          },
+          "then": {
+            "required": ["expected"],
+            "properties": {
+              "expected": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    }
+  }
+}
