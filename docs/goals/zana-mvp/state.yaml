@@ -802,7 +802,7 @@ tasks:
         source_reference: "detached recovery 863a84e in /Users/sero/.codex/worktrees/438c/zana"
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/__init__.py, core/zana_core/images/archive.py, core/zana_core/images/import_plan.py, core/zana_core/images/models.py, core/zana_core/images/oci.py, core/zana_core/images/secrets.py, core/tests/images/**, .agent-work/handoffs/T007-portability-canonical-integration.md"
+        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/__init__.py, core/zana_core/images/archive.py, core/zana_core/images/import_plan.py, core/zana_core/images/models.py, core/zana_core/images/oci.py, core/zana_core/images/secrets.py, core/tests/images/**, core/tests/instances/test_runtime_selection.py, .agent-work/handoffs/T007-portability-canonical-integration.md"
       - id: T007-platform-wiring
         agent: router_opencode_go_deepseek_v4_flash
         status: done
@@ -876,6 +876,7 @@ tasks:
       - "core/tests/evaluation/**"
       - "core/zana_core/images/**"
       - "core/tests/images/**"
+      - "core/tests/instances/test_runtime_selection.py"
       - "schemas/image-config.schema.json"
       - "core/zana_core/memory/**"
       - "core/tests/memory/**"
