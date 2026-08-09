@@ -746,13 +746,24 @@ tasks:
         owns: "core/zana_core/platform/**, core/tests/platform/**, .agent-work/handoffs/T007-platform.md"
       - id: T007-streaming
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
         worktree: /Users/sero/.codex/worktrees/b8bd/zana
         branch: agent/T007-streaming
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 8282422
+        handoff_commit: 5d918e2
         owns: "core/zana_core/streaming/**, core/tests/streaming/**, .agent-work/handoffs/T007-streaming.md"
+      - id: T007-jobs-sse
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe65a-7992-7081-9d8a-3bef3f41e58b
+        worktree: /Users/sero/.codex/worktrees/b8bd/zana
+        branch: agent/T007-jobs-sse
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/api/jobs.py, core/zana_core/db/repositories.py, core/zana_core/jobs/services.py, core/tests/api/test_api_contracts.py, core/tests/api/test_job_event_stream.py, core/tests/jobs/test_job_services.py, .agent-work/handoffs/T007-jobs-sse.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -811,6 +822,12 @@ tasks:
       - "core/tests/platform/**"
       - "core/zana_core/streaming/**"
       - "core/tests/streaming/**"
+      - "core/zana_core/api/jobs.py"
+      - "core/zana_core/db/repositories.py"
+      - "core/zana_core/jobs/services.py"
+      - "core/tests/api/test_api_contracts.py"
+      - "core/tests/api/test_job_event_stream.py"
+      - "core/tests/jobs/test_job_services.py"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -834,6 +851,7 @@ tasks:
       - ".agent-work/handoffs/T007-acquisition.md"
       - ".agent-work/handoffs/T007-platform.md"
       - ".agent-work/handoffs/T007-streaming.md"
+      - ".agent-work/handoffs/T007-jobs-sse.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
