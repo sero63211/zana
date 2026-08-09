@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
@@ -14,11 +15,12 @@ from zana_core.runtimes.base import (
     AdapterType,
     ModelDescriptor,
     ProbeTarget,
+    RuntimeDescriptor,
     RuntimeProbeError,
 )
 from zana_core.runtimes.executables import ExecutableDiscovery
 from zana_core.runtimes.limits import RuntimeProbeLimits
-from zana_core.runtimes.registry import RuntimeProbeRegistry, _truncate_text
+from zana_core.runtimes.registry import RuntimeProbeRegistry, _TargetSnapshot, _truncate_text
 
 
 def _target(
@@ -49,6 +51,18 @@ def _routes(*endpoints: str) -> dict:
     return {
         ("GET", f"{endpoint}/api/tags"): json_response({"models": []}) for endpoint in endpoints
     }
+
+
+def _snapshot(runtime_id: str = "runtime-a") -> _TargetSnapshot:
+    return _TargetSnapshot(
+        runtime_id=runtime_id,
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        adapter_type=AdapterType.OLLAMA,
+        bearer_token=None,
+        timeout=None,
+    )
 
 
 def test_constructor_rejects_invalid_timeout_and_workers():
@@ -224,7 +238,7 @@ def test_hostile_str_error_never_invoked_and_genericized():
             return "hostile-secret " + ("x" * 1_000_000)
 
     registry = RuntimeProbeRegistry()
-    sanitized = registry._sanitize_error(HostileError(object()))
+    sanitized = registry._sanitize_error(HostileError(object()), limits=registry.limits)
     assert "hostile-secret" not in sanitized
     assert sanitized == "Unexpected probe failure; details are not exposed."
     assert invoked["calls"] == 0
@@ -239,7 +253,7 @@ def test_non_string_evidence_and_warnings_genericized_without_str():
             return "leaked-raw"
 
     registry = RuntimeProbeRegistry()
-    bounded = registry._bounded_strings([HostileObject()])
+    bounded = registry._bounded_strings([HostileObject()], limits=registry.limits)
     assert bounded == ["[non-string]"]
     assert invoked["calls"] == 0
 
@@ -298,7 +312,7 @@ def test_bracketed_ipv6_and_valid_paths_still_accepted():
     for endpoint in (
         "http://[::1]:8080",
         "http://[::1]",
-        "http://127.0.0.1:11434/v1/models?q=1",
+        "http://127.0.0.1:11434/v1/models",
     ):
         descriptor = registry.probe(
             [_target("ok", endpoint=endpoint, adapter=AdapterType.OPENAI_COMPATIBLE)]
@@ -416,7 +430,7 @@ def test_constructor_rejects_bool_and_wrong_types_with_value_error():
 def test_bounded_strings_stops_at_item_cap_even_with_empty_strings():
     registry = RuntimeProbeRegistry()
     empty_list = ["" for _ in range(100_000)]
-    bounded = registry._bounded_strings(empty_list)
+    bounded = registry._bounded_strings(empty_list, limits=registry.limits)
     assert len(bounded) <= registry.limits.max_evidence_items
     assert len(bounded) == registry.limits.max_evidence_items
 
@@ -424,7 +438,7 @@ def test_bounded_strings_stops_at_item_cap_even_with_empty_strings():
 def test_warnings_are_item_capped():
     registry = RuntimeProbeRegistry()
     warnings = [f"w-{index}" for index in range(100_000)]
-    bounded = registry._bounded_strings(warnings)
+    bounded = registry._bounded_strings(warnings, limits=registry.limits)
     assert len(bounded) <= registry.limits.max_evidence_items
 
 
@@ -432,7 +446,7 @@ def test_projected_model_runtime_id_is_bounded_and_counted():
     registry = RuntimeProbeRegistry()
     model = _synthetic_model("m", capabilities=0)
     model = model.model_copy(update={"runtime_id": "\U0001f600" * 5000})
-    projected = registry._bound_models([model])[0]
+    projected = registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())[0]
     assert len(projected.runtime_id.encode("utf-8")) <= registry.limits.max_model_field_bytes
 
 
@@ -452,7 +466,7 @@ def test_identified_vendor_bounded_before_final_reconstruction():
         evidence=[],
     )
     original = original.model_copy(update={"identified_vendor": "\U0001f600" * 5000})
-    rebuilt = registry._bound_descriptor(original)
+    rebuilt = registry._bound_descriptor(original, _target("adapter-id"), limits=registry.limits)
     assert len(rebuilt.identified_vendor.encode("utf-8")) <= registry.limits.max_model_field_bytes
     assert rebuilt is not original
 
@@ -461,7 +475,7 @@ def test_error_boundary_never_leaks_partial_credential():
     registry = RuntimeProbeRegistry()
     # The @ boundary sits just beyond the retained prefix.
     text = "http://user:pass" + "@" + ("x" * 1000)
-    sanitized = registry._sanitize_text(text)
+    sanitized = registry._sanitize_text(text, registry.limits)
     assert "user" not in sanitized
     assert "pass" not in sanitized
 
@@ -469,7 +483,7 @@ def test_error_boundary_never_leaks_partial_credential():
 def test_boundary_sanitization_remains_fixed_work():
     registry = RuntimeProbeRegistry()
     huge = "http://u:p@" + ("y" * 1_000_000)
-    sanitized = registry._sanitize_text(huge)
+    sanitized = registry._sanitize_text(huge, registry.limits)
     assert "u:p" not in sanitized
     assert len(sanitized) <= registry.limits.max_error_chars
 
@@ -479,7 +493,7 @@ def test_long_userinfo_crossing_boundary_never_leaks_prefix():
     # Credential starts near index 0; password is far longer than the
     # retained prefix and the '@' is beyond it.
     text = "http://user:" + ("p" * 600) + "@host"
-    sanitized = registry._sanitize_text(text)
+    sanitized = registry._sanitize_text(text, registry.limits)
     assert "user" not in sanitized
     assert "p" * 100 not in sanitized
     assert len(sanitized) <= registry.limits.max_error_chars
@@ -490,10 +504,10 @@ def test_make_adapter_uses_explicit_none_timeout_semantics():
 
     registry = RuntimeProbeRegistry(timeout=2.5, max_workers=1)
     target = _target("t", timeout=1.5)
-    adapter = _make_adapter(registry, target)
+    adapter = _make_adapter(registry, target, timeout=1.5, limits=registry.limits)
     assert adapter.timeout == 1.5
     target_none = _target("t2")
-    adapter_none = _make_adapter(registry, target_none)
+    adapter_none = _make_adapter(registry, target_none, timeout=2.5, limits=registry.limits)
     assert adapter_none.timeout == 2.5
 
 
@@ -503,6 +517,7 @@ def test_endpoint_credentials_fragment_scheme_and_malformed_rejected():
     invalid_endpoints = [
         "http://user:pass@127.0.0.1:11434",
         "http://127.0.0.1:11434#fragment",
+        "http://127.0.0.1:11434/?token=secret",
         "ftp://127.0.0.1:11434",
         "not a url",
         "http://127.0.0.1:11434\tabc",
@@ -587,7 +602,11 @@ def _synthetic_model(model_id: str, *, capabilities: int = 0, huge_field: bool =
 
 def test_model_strings_and_capabilities_projection_bounded():
     registry = RuntimeProbeRegistry()
-    projected = registry._bound_models([_synthetic_model("huge", capabilities=30, huge_field=True)])
+    projected = registry._bound_models(
+        [_synthetic_model("huge", capabilities=30, huge_field=True)],
+        limits=registry.limits,
+        snapshot=_snapshot(),
+    )
     assert len(projected) == 1
     assert len(projected[0].model_id.encode("utf-8")) <= registry.limits.max_model_field_bytes
     assert len(projected[0].capabilities) == registry.limits.max_model_capabilities
@@ -599,14 +618,14 @@ def test_model_total_chars_over_policy_fails_target():
         _synthetic_model(f"m-{index}", capabilities=16, huge_field=True) for index in range(100)
     ]
     with pytest.raises(RuntimeProbeError):
-        registry._bound_models(models)
+        registry._bound_models(models, limits=registry.limits, snapshot=_snapshot())
 
 
 def test_model_field_emoji_truncated_by_bytes_without_broken_codepoint():
     registry = RuntimeProbeRegistry()
     model = _synthetic_model("emoji")
     model = model.model_copy(update={"model_id": "\U0001f600" * 200})
-    projected = registry._bound_models([model])[0]
+    projected = registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())[0]
     encoded = projected.model_id.encode("utf-8")
     assert len(encoded) <= registry.limits.max_model_field_bytes
     encoded.decode("utf-8")
@@ -619,15 +638,15 @@ def test_model_aggregate_emoji_byte_budget():
         _synthetic_model("\U0001f600" * 200, capabilities=16, huge_field=True) for _ in range(100)
     ]
     with pytest.raises(RuntimeProbeError):
-        registry._bound_models(models)
+        registry._bound_models(models, limits=registry.limits, snapshot=_snapshot())
 
 
 def test_projected_models_are_fresh_validated_descriptors():
     registry = RuntimeProbeRegistry()
     model = _synthetic_model("fresh", capabilities=2, huge_field=True)
-    projected = registry._bound_models([model])[0]
+    projected = registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())[0]
     assert projected is not model
-    assert projected.runtime_id == model.runtime_id
+    assert projected.runtime_id == "runtime-a"
     assert projected.last_seen_at == model.last_seen_at
     assert projected.identity_strength == model.identity_strength
 
@@ -655,6 +674,11 @@ def test_final_descriptor_is_fresh_validated_reconstruction():
         endpoint="http://127.0.0.1:1234",
         kind=RuntimeKind.OLLAMA,
         source_value=RuntimeSource.AUTO,
+        status=original.status,
+        registered=original.registered,
+        server_running=original.server_running,
+        installed=original.installed,
+        installed_not_running=original.installed_not_running,
         evidence=["bounded"],
         warnings=[],
         error=None,
@@ -701,7 +725,7 @@ def test_large_exception_string_sanitized_with_bounded_prefix():
 def test_credential_redaction_within_retained_prefix():
     registry = RuntimeProbeRegistry()
     text = "http://user:pass@host/ " + ("x" * 1000)
-    sanitized = registry._sanitize_text(text)
+    sanitized = registry._sanitize_text(text, registry.limits)
     assert "user:pass" not in sanitized
     assert "[REDACTED]" in sanitized
     assert len(sanitized) <= registry.limits.max_error_chars
@@ -742,3 +766,535 @@ def test_executable_discovery_failure_isolated_from_successful_target():
     assert by_id["failing"].error
     assert by_id["ok"].registered is True
     assert by_id["ok"].status == RuntimeStatus.ONLINE
+
+
+def test_constructor_never_calls_transport_or_executables_bool():
+    """Falsy injected objects are retained; hostile __bool__ is never invoked."""
+    calls = {"bool": 0}
+
+    class HostileTransport:
+        def __bool__(self):
+            calls["bool"] += 1
+            return False
+
+    transport = HostileTransport()
+    registry = RuntimeProbeRegistry(transport=transport)
+    assert registry.transport is transport
+    assert calls["bool"] == 0
+
+    class HostileExecutables(ExecutableDiscovery):
+        def __bool__(self):
+            calls["bool"] += 1
+            return False
+
+    executables = HostileExecutables()
+    registry = RuntimeProbeRegistry(executables=executables)
+    assert registry.executables is executables
+    assert calls["bool"] == 0
+
+
+def test_falsy_transport_never_falls_back_to_real_transport():
+    class FalsyTransport:
+        def __bool__(self):
+            return False
+
+        def request(self, method, url, *, headers=None, body=None, timeout=1.0):
+            raise AssertionError("transport request should never run")
+
+    registry = RuntimeProbeRegistry(transport=FalsyTransport())
+    descriptor = registry.probe([_target("one")])[0]
+    assert descriptor.status == RuntimeStatus.ERROR
+    assert "hostile truthiness" in (descriptor.error or "")
+
+
+def test_constructor_rejects_falsy_limits_without_hostile_bool():
+    calls = {"bool": 0}
+
+    class FalsyLimits(RuntimeProbeLimits):
+        def __bool__(self):
+            calls["bool"] += 1
+            return False
+
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry(limits=FalsyLimits())
+    assert calls["bool"] == 0
+
+
+def test_limits_corrupted_through_object_setattr_rejected():
+    limits = RuntimeProbeLimits()
+    object.__setattr__(limits, "max_targets", 1000)
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry(limits=limits)
+
+
+def test_limits_model_construct_corruption_rejected():
+    limits = RuntimeProbeLimits.model_construct(max_targets=1000, max_workers=4)
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry(limits=limits)
+
+
+def test_exact_limits_revalidated_into_fresh_instance():
+    limits = RuntimeProbeLimits(max_targets=8, max_workers=2)
+    registry = RuntimeProbeRegistry(max_workers=2, limits=limits)
+    assert registry.limits is not limits
+    assert registry.limits.max_targets == 8
+
+
+def test_hostile_target_bool_eq_hash_repr_and_getattribute_never_used():
+    """Duplicate IDs are rejected after exact raw validation with zero hooks."""
+
+    class HostileTarget(ProbeTarget):
+        def __bool__(self):
+            raise AssertionError("__bool__ called")
+
+        def __eq__(self, other):
+            raise AssertionError("__eq__ called")
+
+        def __hash__(self):
+            raise AssertionError("__hash__ called")
+
+        def __repr__(self):
+            raise AssertionError("__repr__ called")
+
+        def __getattribute__(self, name):
+            raise AssertionError(f"__getattribute__ called for {name}")
+
+    registry = RuntimeProbeRegistry()
+    target = HostileTarget(
+        runtime_id="dup",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        adapter_type=AdapterType.OLLAMA,
+    )
+    with pytest.raises(ValueError):
+        registry.probe([target, _target("dup")])
+
+
+def test_hostile_target_subclass_rejected_without_hooks():
+    class SubclassTarget(ProbeTarget):
+        pass
+
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry().probe(
+            [
+                SubclassTarget(
+                    runtime_id="sub",
+                    kind=RuntimeKind.OLLAMA,
+                    endpoint="http://127.0.0.1:11434",
+                    source=RuntimeSource.AUTO,
+                    adapter_type=AdapterType.OLLAMA,
+                )
+            ]
+        )
+
+
+def test_object_mutated_target_rejected_without_hooks():
+    target = _target("mut")
+    object.__setattr__(target, "endpoint", None)
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry().probe([target])
+
+
+def test_remote_and_lan_endpoints_rejected():
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    registry = RuntimeProbeRegistry(transport)
+    invalid = [
+        "http://192.168.1.1:11434",
+        "http://10.0.0.5:11434",
+        "http://localhost.evil.com:11434",
+        "http://user:pass@127.0.0.1:11434",
+    ]
+    for endpoint in invalid:
+        with pytest.raises(ValueError):
+            registry.probe([_target("remote", endpoint=endpoint)])
+    assert transport.calls == []
+
+
+def test_loopback_hosts_still_accepted():
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    registry = RuntimeProbeRegistry(transport)
+    for endpoint in (
+        "http://localhost:11434",
+        "http://127.0.0.1:11434",
+        "http://127.0.0.2:11434",
+        "http://[::1]:11434",
+        "http://localhost.",
+    ):
+        descriptor = registry.probe([_target("ok", endpoint=endpoint)])[0]
+        assert descriptor.registered is False or descriptor.registered is True
+
+
+def test_shared_deadline_prevents_transport_after_expiry():
+    """A blocked worker must never call the transport after the batch deadline."""
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    calls = {"count": 0}
+
+    class SlowFakeTransport:
+        def request(self, method, url, *, headers=None, body=None, timeout=1.0):
+            calls["count"] += 1
+            if url == "http://127.0.0.1:11434/api/tags":
+                time.sleep(0.35)
+                return transport.routes[("GET", url)]
+            return transport.routes[("GET", url)]
+
+    registry = RuntimeProbeRegistry(SlowFakeTransport(), timeout=0.05, max_workers=1)
+    descriptors = registry.probe(
+        [_target("slow"), _target("fast", endpoint="http://127.0.0.1:1234")]
+    )
+    assert len(descriptors) == 2
+    # The slow worker times out at the shared deadline; the fast target never
+    # starts after that point.
+    assert calls["count"] == 1
+    assert any(descriptor.status == RuntimeStatus.ERROR for descriptor in descriptors)
+
+
+def test_hostile_descriptor_getattribute_and_bool_never_used():
+    class HostileDescriptor(RuntimeDescriptor):
+        def __getattribute__(self, name):
+            raise AssertionError(f"__getattribute__ called for {name}")
+
+        def __bool__(self):
+            raise AssertionError("__bool__ called")
+
+    source = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        evidence=[],
+        warnings=[],
+        models=[],
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    hostile = object.__new__(HostileDescriptor)
+    object.__setattr__(hostile, "__dict__", dict(object.__getattribute__(source, "__dict__")))
+    registry = RuntimeProbeRegistry()
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_descriptor(hostile, _target("x"), limits=registry.limits)
+
+
+def test_object_mutated_descriptor_rejected():
+    descriptor = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    object.__setattr__(descriptor, "evidence", None)
+    with pytest.raises(RuntimeProbeError):
+        RuntimeProbeRegistry()._bound_descriptor(
+            descriptor, _target("x"), limits=RuntimeProbeRegistry().limits
+        )
+
+
+def test_descriptor_model_construct_missing_required_field_rejected():
+    descriptor = RuntimeDescriptor.model_construct(
+        runtime_id="x",
+        endpoint="http://127.0.0.1:11434",
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+    )
+    with pytest.raises(RuntimeProbeError):
+        RuntimeProbeRegistry()._bound_descriptor(
+            descriptor, _target("x"), limits=RuntimeProbeRegistry().limits
+        )
+
+
+def test_object_mutated_model_rejected():
+    model = _synthetic_model("m")
+    object.__setattr__(model, "model_id", None)
+    with pytest.raises(RuntimeProbeError):
+        RuntimeProbeRegistry()._bound_models(
+            [model], limits=RuntimeProbeRegistry().limits, snapshot=_snapshot()
+        )
+
+
+def test_model_construct_missing_required_field_rejected():
+    model = ModelDescriptor.model_construct(
+        model_id="m",
+        display_name="m",
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    with pytest.raises(RuntimeProbeError):
+        RuntimeProbeRegistry()._bound_models(
+            [model], limits=RuntimeProbeRegistry().limits, snapshot=_snapshot()
+        )
+
+
+def test_hostile_model_bool_and_getattribute_never_used():
+    class HostileModel(ModelDescriptor):
+        def __bool__(self):
+            raise AssertionError("__bool__ called")
+
+        def __getattribute__(self, name):
+            raise AssertionError(f"__getattribute__ called for {name}")
+
+    source = ModelDescriptor(
+        runtime_id="r",
+        model_id="m",
+        display_name="m",
+        metadata_source="runtime",
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    model = object.__new__(HostileModel)
+    object.__setattr__(model, "__dict__", dict(object.__getattribute__(source, "__dict__")))
+    with pytest.raises(RuntimeProbeError):
+        RuntimeProbeRegistry()._bound_models(
+            [model], limits=RuntimeProbeRegistry().limits, snapshot=_snapshot()
+        )
+
+
+def test_exact_revalidation_keeps_valid_descriptor_values():
+    descriptor = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        evidence=["ok"],
+        models=[],
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    rebuilt = RuntimeProbeRegistry()._bound_descriptor(
+        descriptor, _target("x"), limits=RuntimeProbeRegistry().limits
+    )
+    assert rebuilt.runtime_id == "x"
+    assert rebuilt.evidence == ["ok"]
+
+
+def test_normal_runtime_probe_error_redacted_without_hostile_path():
+    registry = RuntimeProbeRegistry()
+    sanitized = registry._sanitize_error(
+        RuntimeProbeError("model count exceeds policy limit 128"), limits=registry.limits
+    )
+    assert sanitized == "model count exceeds policy limit 128"
+
+    redacted = registry._sanitize_error(
+        RuntimeProbeError("http://user:pass@host/token=supersecret failed"),
+        limits=registry.limits,
+    )
+    assert "user:pass" not in redacted
+    assert "supersecret" not in redacted
+
+
+def test_evil_numeric_subclasses_rejected_in_constructor():
+    class EvilInt(int):
+        pass
+
+    class EvilFloat(float):
+        pass
+
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry(timeout=EvilFloat(1.0))
+    with pytest.raises(ValueError):
+        RuntimeProbeRegistry(max_workers=EvilInt(1))
+
+
+def test_evil_timeout_subclass_rejected_before_transport():
+    class EvilFloat(float):
+        pass
+
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    registry = RuntimeProbeRegistry(transport)
+    with pytest.raises(ValueError):
+        registry.probe([_target("evil", timeout=EvilFloat(1.0))])
+    assert transport.calls == []
+
+
+def test_utc_timestamp_validation():
+    registry = RuntimeProbeRegistry()
+    descriptor = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        last_seen_at=datetime.now(timezone(timedelta(hours=2))),
+    )
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_descriptor(descriptor, _target("x"), limits=registry.limits)
+
+    descriptor = descriptor.model_copy(update={"last_seen_at": datetime.now(UTC)})
+    rebuilt = registry._bound_descriptor(descriptor, _target("x"), limits=registry.limits)
+    assert rebuilt.runtime_id == "x"
+
+
+def test_model_numeric_fields_must_be_exact_nonnegative_int():
+    registry = RuntimeProbeRegistry()
+    model = _synthetic_model("m")
+    model = model.model_copy(update={"size_bytes": -1})
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())
+
+    model = model.model_copy(update={"size_bytes": True})
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())
+
+    class EvilInt(int):
+        pass
+
+    model = model.model_copy(update={"size_bytes": EvilInt(10)})
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())
+
+
+def test_model_capabilities_len_gated_before_iteration():
+    registry = RuntimeProbeRegistry()
+
+    class HostileCapability:
+        def __str__(self):
+            raise AssertionError("capabilities past the cap were traversed")
+
+    capabilities = ["ok"] * registry.limits.max_model_capabilities + [HostileCapability()]
+    model = _synthetic_model("m", capabilities=0)
+    model = model.model_copy(update={"capabilities": capabilities})
+    projected = registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())[0]
+    assert len(projected.capabilities) == registry.limits.max_model_capabilities
+
+
+def test_corrupted_registry_fields_revalidated_at_probe_start():
+    registry = RuntimeProbeRegistry()
+    object.__setattr__(registry, "max_workers", 100)
+    with pytest.raises(ValueError):
+        registry.probe([_target("x")])
+
+    object.__setattr__(registry, "max_workers", 2)
+    object.__setattr__(registry, "timeout", float("nan"))
+    with pytest.raises(RuntimeProbeError):
+        registry.probe([_target("x")])
+
+
+def test_custom_endpoint_and_reference_limits_are_distinct():
+    limits = RuntimeProbeLimits(
+        max_targets=4,
+        max_workers=1,
+        max_endpoint_length=10,
+        max_reference_length=200,
+    )
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    registry = RuntimeProbeRegistry(transport, max_workers=1, limits=limits)
+    with pytest.raises(ValueError):
+        registry.probe([_target("id", endpoint="http://127.0.0.1:11434")])
+    long_id = "r" * 250
+    with pytest.raises(ValueError):
+        registry.probe([_target(long_id, endpoint="http://x")])
+
+
+def test_evidence_and_warnings_are_sanitized_display_text():
+    registry = RuntimeProbeRegistry()
+    descriptor = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        evidence=[
+            "token=super-secret",
+            "http://user:password@localhost/private",
+            "bad\x01ctl",
+        ],
+        warnings=["api_key=abc123", "ok\x00line"],
+        models=[],
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    rebuilt = registry._bound_descriptor(descriptor, _snapshot(), limits=registry.limits)
+    joined_evidence = " ".join(rebuilt.evidence)
+    joined_warnings = " ".join(rebuilt.warnings)
+    assert "super-secret" not in joined_evidence
+    assert "user:password" not in joined_evidence
+    assert "abc123" not in joined_warnings
+    assert "\x00" not in joined_evidence + joined_warnings
+    assert "\x01" not in joined_evidence + joined_warnings
+    assert all(type(item) is str for item in rebuilt.evidence + rebuilt.warnings)
+
+
+def test_identified_vendor_control_chars_fail_closed():
+    registry = RuntimeProbeRegistry()
+    descriptor = RuntimeDescriptor(
+        runtime_id="x",
+        kind=RuntimeKind.OLLAMA,
+        endpoint="http://127.0.0.1:11434",
+        source=RuntimeSource.AUTO,
+        status=RuntimeStatus.ONLINE,
+        registered=True,
+        server_running=True,
+        installed=False,
+        installed_not_running=False,
+        identified_vendor="vendor\nbad",
+        models=[],
+        last_seen_at=datetime(2026, 8, 9, 12, 0, 0, tzinfo=UTC),
+    )
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_descriptor(descriptor, _snapshot(), limits=registry.limits)
+
+
+def test_model_text_control_chars_fail_closed():
+    registry = RuntimeProbeRegistry()
+    model = _synthetic_model("m")
+    model = model.model_copy(update={"display_name": "line\nbreak"})
+    with pytest.raises(RuntimeProbeError):
+        registry._bound_models([model], limits=registry.limits, snapshot=_snapshot())
+
+
+def test_model_runtime_id_bound_to_target_snapshot():
+    registry = RuntimeProbeRegistry()
+    model = _synthetic_model("m")
+    model = model.model_copy(update={"runtime_id": "other-runtime"})
+    projected = registry._bound_models(
+        [model], limits=registry.limits, snapshot=_snapshot("runtime-a")
+    )[0]
+    assert projected.runtime_id == "runtime-a"
+    assert "other-runtime" not in projected.runtime_id
+
+
+def test_endpoint_query_rejected_before_transport():
+    transport = FakeTransport(_routes("http://127.0.0.1:11434"))
+    registry = RuntimeProbeRegistry(transport)
+    with pytest.raises(ValueError):
+        registry.probe([_target("one", endpoint="http://127.0.0.1:11434/?token=secret")])
+    with pytest.raises(ValueError):
+        registry.probe([_target("one", endpoint="http://127.0.0.1:11434/v1/models?q=1")])
+    assert transport.calls == []
+
+
+def test_missing_registry_fields_fail_typed():
+    registry = RuntimeProbeRegistry()
+    object.__delattr__(registry, "limits")
+    with pytest.raises(ValueError):
+        registry.probe([])
+
+    registry = RuntimeProbeRegistry()
+    object.__delattr__(registry, "timeout")
+    with pytest.raises(ValueError):
+        registry.probe([])
+
+    registry = RuntimeProbeRegistry()
+    object.__delattr__(registry, "max_workers")
+    with pytest.raises(ValueError):
+        registry.probe([])

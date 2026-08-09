@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import math
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MAX_TARGETS = 16
@@ -76,3 +79,66 @@ class RuntimeProbeLimits(BaseModel):
 
 
 DEFAULT_PROBE_LIMITS = RuntimeProbeLimits()
+
+
+def _fresh_default_limits() -> RuntimeProbeLimits:
+    """Return a fresh canonical default, never a shared mutable reference."""
+    return RuntimeProbeLimits()
+
+
+_LIMITS_SPEC: dict[str, dict[str, Any]] = {
+    "max_targets": {"min": 1, "max": MAX_TARGETS, "float": False},
+    "max_workers": {"min": 1, "max": MAX_WORKERS, "float": False},
+    "max_timeout_seconds": {"min": 0.0, "max": MAX_TIMEOUT_SECONDS, "float": True},
+    "max_endpoint_length": {"min": 1, "max": MAX_ENDPOINT_LENGTH, "float": False},
+    "max_reference_length": {"min": 1, "max": MAX_REFERENCE_LENGTH, "float": False},
+    "max_bearer_token_bytes": {"min": 1, "max": MAX_BEARER_TOKEN_BYTES, "float": False},
+    "max_endpoint_bytes": {"min": 1, "max": MAX_ENDPOINT_BYTES, "float": False},
+    "max_reference_bytes": {"min": 1, "max": MAX_REFERENCE_BYTES, "float": False},
+    "max_evidence_items": {"min": 1, "max": MAX_EVIDENCE_ITEMS, "float": False},
+    "max_evidence_chars": {"min": 1, "max": MAX_EVIDENCE_CHARS, "float": False},
+    "max_error_chars": {"min": 1, "max": MAX_ERROR_CHARS, "float": False},
+    "max_models": {"min": 1, "max": MAX_MODELS, "float": False},
+    "max_model_field_bytes": {"min": 1, "max": MAX_MODEL_FIELD_BYTES, "float": False},
+    "max_model_capabilities": {"min": 1, "max": MAX_MODEL_CAPABILITIES, "float": False},
+    "max_models_total_bytes": {"min": 1, "max": MAX_MODELS_TOTAL_BYTES, "float": False},
+}
+
+
+def _validated_limits(limits: RuntimeProbeLimits) -> RuntimeProbeLimits:
+    """Revalidate one limits instance field-by-field into a fresh instance.
+
+    The caller may pass a frozen model that was mutated through
+    ``object.__setattr__`` or built with ``model_construct``.  Those paths
+    bypass Pydantic validation, so the registry reads the raw namespace once
+    and rebuilds a fresh instance instead of trusting model_dump/model_copy
+    hooks or a caller/global reference.
+    """
+    if type(limits) is not RuntimeProbeLimits:
+        raise ValueError("limits must be a RuntimeProbeLimits instance")
+    namespace = object.__getattribute__(limits, "__dict__")
+    if type(namespace) is not dict:
+        raise ValueError("limits is corrupted")
+    validated: dict[str, Any] = {}
+    for name, spec in _LIMITS_SPEC.items():
+        if name not in namespace:
+            raise ValueError("limits is missing a required field")
+        value = namespace[name]
+        if spec["float"] is True:
+            if type(value) not in (int, float):
+                raise ValueError("limits contains a non-numeric timeout")
+            numeric = float(value)
+            if math.isinf(numeric) or math.isnan(numeric):
+                raise ValueError("limits contains a non-finite timeout")
+            if numeric <= 0 or numeric > spec["max"]:
+                raise ValueError("limits contains an out-of-range timeout")
+            validated[name] = numeric
+            continue
+        if type(value) is not int:
+            raise ValueError("limits contains a non-integer field")
+        if value < 1 or value > spec["max"]:
+            raise ValueError("limits contains an out-of-range field")
+        validated[name] = value
+    if validated["max_workers"] > validated["max_targets"]:
+        raise ValueError("max_workers cannot exceed max_targets")
+    return RuntimeProbeLimits(**validated)
