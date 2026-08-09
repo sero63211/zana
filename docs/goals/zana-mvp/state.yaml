@@ -60,7 +60,7 @@ agents:
   deepseek_max: required_flash_reasoning_effort_not_a_separate_model
 
 environment:
-  implementation_state: T900_api_knowledge_runtime_inference_and_models_system_desktop_integrated
+  implementation_state: T900_api_knowledge_runtime_inference_models_system_desktop_and_tauri_integrated
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 23.0
@@ -1099,7 +1099,7 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: active
-        branch: codex/zana-t900-capability-authoring-api
+        branch: agent/t900-capability-authoring-api
         thread: 019fe8b6-af8f-76e1-b818-49a3dccebd47
         worktree: /Users/sero/.codex/worktrees/f2c9/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
@@ -1109,7 +1109,7 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: active
-        branch: codex/zana-t900-mlx-training-execution
+        branch: agent/t900-mlx-training-execution
         thread: 019fe8bb-fe02-7340-97c5-fa915f4ba840
         worktree: /Users/sero/.codex/worktrees/3858/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
@@ -1118,13 +1118,23 @@ tasks:
       - id: T900-tauri-core-package
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-tauri-core-package
         thread: 019fe8a6-6bba-7791-bbfb-cbec9b48b0d0
         worktree: /Users/sero/.codex/worktrees/edc1/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "apps/desktop/src-tauri/**, scripts/package-core.sh, scripts/dev.sh, .agent-work/handoffs/T900-tauri-core-package.md"
         gates: "Rust unit tests/rustfmt/clippy and script syntax checks only if bounded; sidecar auth/lifecycle/path/error inspection; no dependency install/native bundle/app launch; one implementation commit plus receipt; clean; no push."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: 1bad9e356b9d12e5e822c16c60ad31c8a454054a
+          source_commits: "78d09d5, c6ac475, 4a611b7, 98319b7"
+          verification: "Lead lifecycle/security/readability review PASS; cargo fmt --check; bash -n; JSON sanity; source invariants; git diff --check. No compile, bundle, PyInstaller, app, browser, Core, model, or live execution."
+          security_delta: "Generation-serialized one-child supervision, fail-closed uncertain cleanup, fresh OS-CSPRNG token per spawn, loopback-only binding, sanitized errors, offline --no-sync packaging/dev paths, and contained atomic sidecar publication."
+          residual_risk: "The shell sidecar API still requires releasing the reserved loopback socket before spawn; Cargo compile/clippy/tests, PyInstaller, Tauri build/bundle/dev, and live sidecar health remain deferred under host safety."
+          remote_proof: "Non-force origin/main push confirmed; local HEAD and origin/main both 1bad9e356b9d12e5e822c16c60ad31c8a454054a before this receipt update."
+          clean_proof: "Canonical index/worktree and source agent worktree were clean."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
