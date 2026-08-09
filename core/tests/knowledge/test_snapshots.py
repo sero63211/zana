@@ -11,7 +11,7 @@ from zana_core.knowledge.snapshots import (
 )
 
 
-def source(sha256: str = "sha256:abc", size: int = 100) -> SourceMetadata:
+def source(sha256: str = "sha256:" + "2" * 64, size: int = 100) -> SourceMetadata:
     return SourceMetadata(
         original_path="/approved/doc.md",
         display_name="doc.md",
@@ -30,7 +30,7 @@ class TestSnapshotInvalidation:
             embedding_identity_required="embedding:v1",
         )
         assert base != digest_invalidation_inputs(
-            sources=[source(sha256="sha256:different")],
+            sources=[source(sha256="sha256:" + "9" * 64)],
             chunk_config=config,
             embedding_identity_required="embedding:v1",
         )
@@ -53,8 +53,8 @@ class TestSnapshotInvalidation:
 
     def test_source_order_does_not_change_digest(self) -> None:
         config = ChunkConfiguration()
-        a = source(sha256="sha256:a", size=1)
-        b = source(sha256="sha256:b", size=2)
+        a = source(sha256="sha256:" + "b" * 64, size=1)
+        b = source(sha256="sha256:" + "c" * 64, size=2)
         first = digest_invalidation_inputs(
             sources=[a, b],
             chunk_config=config,
@@ -77,4 +77,4 @@ class TestSnapshotInvalidation:
         )
         assert manifest.snapshot_id.startswith("sha256:")
         assert manifest.embedding_identity_required == "placeholder:not-yet-acquired"
-        assert manifest.sources[0].sha256 == "sha256:abc"
+        assert manifest.sources[0].sha256 == "sha256:" + "2" * 64

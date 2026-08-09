@@ -25,7 +25,7 @@ def identity() -> EmbeddingIdentity:
         provider="ollama",
         runtime_endpoint_identity="http://127.0.0.1:11434",
         model_name="nomic-embed-text",
-        model_digest="sha256:abc",
+        model_digest="sha256:" + "2" * 64,
         dimensions=2,
         normalization=NormalizationBehavior.L2,
         batch_size=8,
@@ -34,10 +34,10 @@ def identity() -> EmbeddingIdentity:
 
 def index_identity() -> IndexIdentity:
     return IndexIdentity(
-        snapshot_digest="sha256:snap",
+        snapshot_digest="sha256:" + "3" * 64,
         parser_version="markdown-text.v1",
         chunker_identity="zana.heading-aware.v1",
-        chunk_config_digest="sha256:chunk",
+        chunk_config_digest="sha256:" + "4" * 64,
         embedding=identity(),
     )
 
@@ -72,7 +72,7 @@ class FakeIndex:
         return
 
 
-def record(chunk_id: str, section: str = "s", doc: str = "sha256:d") -> VectorRecord:
+def record(chunk_id: str, section: str = "s", doc: str = "sha256:" + "1" * 64) -> VectorRecord:
     return VectorRecord(
         chunk_id=chunk_id,
         document_digest=doc,
@@ -103,16 +103,16 @@ class TestRetrievalService:
         assert isinstance(result, RetrievalResult)
         assert [hit.chunk_id for hit in result.hits] == ["a", "b"]
         assert [hit.rank for hit in result.hits] == [1, 2]
-        assert result.hits[0].heading_path == ["Chapter 1"]
+        assert list(result.hits[0].heading_path) == ["Chapter 1"]
 
     def test_dedup_by_document_and_section(self) -> None:
         provider = FakeProvider(identity())
         index = FakeIndex(
             index_identity(),
             [
-                record("a", section="s1", doc="d1"),
-                record("b", section="s1", doc="d1"),
-                record("c", section="s2", doc="d1"),
+                record("a", section="s1", doc="sha256:" + "b" * 64),
+                record("b", section="s1", doc="sha256:" + "b" * 64),
+                record("c", section="s2", doc="sha256:" + "b" * 64),
             ],
         )
         service = RetrievalService(provider=provider, index=index)
@@ -128,7 +128,9 @@ class TestRetrievalService:
         provider = FakeProvider(other)
         index = FakeIndex(index_identity(), [record("a")])
         service = RetrievalService(provider=provider, index=index)
-        with pytest.raises(ValueError):
+        from zana_core.knowledge.retrieval import RetrievalError
+
+        with pytest.raises(RetrievalError):
             service.search(RetrievalQuery(text="q"))
 
     def test_top_k_limit_fails_closed(self) -> None:
@@ -142,51 +144,51 @@ class TestRetrievalService:
 class TestRetrievalSmoke:
     def test_honest_pass_and_fail_records(self) -> None:
         provider = FakeProvider(identity())
-        index = FakeIndex(index_identity(), [record("a", doc="sha256:d")])
+        index = FakeIndex(index_identity(), [record("a", doc="sha256:" + "1" * 64)])
         service = RetrievalService(provider=provider, index=index)
         passed = service.smoke_test(
             query_text="q",
             expected_chunk_ids=["a"],
-            expected_source_ids=["sha256:d"],
+            expected_source_ids=["sha256:" + "1" * 64],
         )
         assert isinstance(passed, RetrievalSmokeRecord)
         assert passed.passed is True
         failed = service.smoke_test(
             query_text="q",
             expected_chunk_ids=["missing"],
-            expected_source_ids=["sha256:missing"],
+            expected_source_ids=["sha256:" + "a" * 64],
         )
         assert failed.passed is False
-        assert any("missing_chunk:missing" in item for item in failed.failures)
-        assert any("missing_source:sha256:missing" in item for item in failed.failures)
+        assert "missing_chunk" in failed.failures
+        assert "missing_source" in failed.failures
 
 
 class TestIndexCompatibility:
     def test_all_inputs_must_match(self) -> None:
         assert index_compatible(
             index_identity(),
-            expected_snapshot_digest="sha256:snap",
+            expected_snapshot_digest="sha256:" + "3" * 64,
             parser_version="markdown-text.v1",
             chunker_identity="zana.heading-aware.v1",
-            chunk_config_digest="sha256:chunk",
+            chunk_config_digest="sha256:" + "4" * 64,
             embedding=identity(),
         )
         assert not index_compatible(
             index_identity(),
-            expected_snapshot_digest="sha256:changed",
+            expected_snapshot_digest="sha256:" + "7" * 64,
             parser_version="markdown-text.v1",
             chunker_identity="zana.heading-aware.v1",
-            chunk_config_digest="sha256:chunk",
+            chunk_config_digest="sha256:" + "4" * 64,
             embedding=identity(),
         )
         other_data = identity().model_dump()
-        other_data["model_digest"] = "sha256:new"
+        other_data["model_digest"] = "sha256:" + "8" * 64
         other = EmbeddingIdentity(**other_data)
         assert not index_compatible(
             index_identity(),
-            expected_snapshot_digest="sha256:snap",
+            expected_snapshot_digest="sha256:" + "3" * 64,
             parser_version="markdown-text.v1",
             chunker_identity="zana.heading-aware.v1",
-            chunk_config_digest="sha256:chunk",
+            chunk_config_digest="sha256:" + "4" * 64,
             embedding=other,
         )

@@ -17,7 +17,7 @@ def section_document() -> NormalizedDocument:
         end_offset=700,
     )
     return NormalizedDocument(
-        document_id="sha256:doc",
+        document_id="sha256:" + "0" * 64,
         title="T",
         sections=[section],
     )
@@ -36,7 +36,7 @@ class TestHeadingAwareChunker:
 
         assert len(chunks) > 1
         assert all(chunk.section_id == "sec1" for chunk in chunks)
-        assert all(chunk.heading_path == ["Chapter 1", "Section 2"] for chunk in chunks)
+        assert all(list(chunk.heading_path) == ["Chapter 1", "Section 2"] for chunk in chunks)
         assert all(chunk.page_start == 4 and chunk.page_end == 5 for chunk in chunks)
         assert all(chunk.token_estimate <= config.max_tokens for chunk in chunks)
         for chunk in chunks[1:]:
@@ -53,7 +53,7 @@ class TestHeadingAwareChunker:
     def test_overlap_never_merges_sections(self) -> None:
         chunker = HeadingAwareChunker(ChunkConfiguration(target_tokens=30, overlap_tokens=10))
         document = NormalizedDocument(
-            document_id="sha256:doc",
+            document_id="sha256:" + "0" * 64,
             title="T",
             sections=[
                 NormalizedSection(

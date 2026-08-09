@@ -13,7 +13,12 @@ class MarkdownParser:
     parser_version = "markdown-text.v1"
     supported_kinds = frozenset({DocumentKind.MARKDOWN, DocumentKind.TEXT})
 
-    def parse(self, source: SourceMetadata) -> NormalizedDocument:
+    def parse(
+        self,
+        source: SourceMetadata,
+        *,
+        deadline: float | None = None,
+    ) -> NormalizedDocument:
         return NormalizedDocument(
             document_id=source.sha256,
             title=source.display_name,
@@ -28,7 +33,7 @@ def source(kind: DocumentKind = DocumentKind.MARKDOWN) -> SourceMetadata:
         display_name="doc",
         kind=kind,
         size_bytes=10,
-        sha256="sha256:doc",
+        sha256="sha256:" + "0" * 64,
     )
 
 

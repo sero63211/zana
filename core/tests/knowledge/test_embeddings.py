@@ -6,6 +6,7 @@ import math
 from collections.abc import Mapping
 
 import pytest
+from pydantic import ValidationError
 
 from zana_core.knowledge.embeddings import (
     BackendUnavailableError,
@@ -13,11 +14,9 @@ from zana_core.knowledge.embeddings import (
     DuplicateChunkIdError,
     EmbeddingBatch,
     EmbeddingIdentity,
-    EmbeddingLimits,
     EmptyVectorError,
     IndexIdentity,
     MixedIdentityError,
-    NonFiniteVectorError,
     NormalizationBehavior,
     NormalizationMismatchError,
     OllamaEmbeddingProvider,
@@ -29,6 +28,7 @@ from zana_core.knowledge.embeddings import (
     validate_embedding_batch,
     validate_vector_index,
 )
+from zana_core.knowledge.limits import KnowledgeLimits
 from zana_core.runtimes.base import HttpResponse
 
 
@@ -37,7 +37,7 @@ def identity(dimensions: int = 3) -> EmbeddingIdentity:
         provider="ollama",
         runtime_endpoint_identity="http://127.0.0.1:11434",
         model_name="nomic-embed-text",
-        model_digest="sha256:abc",
+        model_digest="sha256:" + "2" * 64,
         dimensions=dimensions,
         normalization=NormalizationBehavior.L2,
         batch_size=8,
@@ -107,16 +107,11 @@ class TestBatchValidation:
             )
 
     def test_nonfinite_rejected(self) -> None:
-        batch = EmbeddingBatch(
-            identity=identity(),
-            texts=["x"],
-            vectors=[[float("nan"), 0.0, 1.0]],
-        )
-        with pytest.raises(NonFiniteVectorError):
-            validate_embedding_batch(
-                batch,
-                expected_identity=identity(),
-                expected_dimensions=3,
+        with pytest.raises(ValidationError):
+            EmbeddingBatch(
+                identity=identity(),
+                texts=["x"],
+                vectors=[[float("nan"), 0.0, 1.0]],
             )
 
     def test_l2_mismatch_rejected(self) -> None:
@@ -132,21 +127,21 @@ class TestBatchValidation:
 class TestVectorIndexValidation:
     def test_duplicate_chunk_rejected(self) -> None:
         index_identity = IndexIdentity(
-            snapshot_digest="sha256:s",
+            snapshot_digest="sha256:" + "5" * 64,
             parser_version="p",
             chunker_identity="c",
-            chunk_config_digest="sha256:c",
+            chunk_config_digest="sha256:" + "6" * 64,
             embedding=identity(),
         )
         records = [
             VectorRecord(
                 chunk_id="c1",
-                document_digest="sha256:d",
+                document_digest="sha256:" + "1" * 64,
                 vector=l2([1.0, 2.0, 3.0]),
             ),
             VectorRecord(
                 chunk_id="c1",
-                document_digest="sha256:d",
+                document_digest="sha256:" + "1" * 64,
                 vector=l2([1.0, 2.0, 3.0]),
             ),
         ]
@@ -155,21 +150,33 @@ class TestVectorIndexValidation:
 
     def test_empty_and_dimension_mismatch_rejected(self) -> None:
         index_identity = IndexIdentity(
-            snapshot_digest="sha256:s",
+            snapshot_digest="sha256:" + "5" * 64,
             parser_version="p",
             chunker_identity="c",
-            chunk_config_digest="sha256:c",
+            chunk_config_digest="sha256:" + "6" * 64,
             embedding=identity(dimensions=2),
         )
         with pytest.raises(EmptyVectorError):
             validate_vector_index(
                 index_identity,
-                [VectorRecord(chunk_id="c1", document_digest="d", vector=[])],
+                [
+                    VectorRecord(
+                        chunk_id="c1",
+                        document_digest="sha256:" + "5" * 64,
+                        vector=[],
+                    )
+                ],
             )
         with pytest.raises(DimensionMismatchError):
             validate_vector_index(
                 index_identity,
-                [VectorRecord(chunk_id="c1", document_digest="d", vector=[1.0, 2.0, 3.0])],
+                [
+                    VectorRecord(
+                        chunk_id="c1",
+                        document_digest="sha256:" + "5" * 64,
+                        vector=[1.0, 2.0, 3.0],
+                    )
+                ],
             )
 
 
@@ -187,7 +194,7 @@ class TestOllamaEmbeddingProvider:
         provider = OllamaEmbeddingProvider(identity=identity(), transport=transport)
         batch = provider.embed(["a", "b"])
         assert len(batch.vectors) == 2
-        assert batch.texts == ["a", "b"]
+        assert list(batch.texts) == ["a", "b"]
         body = transport.calls[0][2]
         assert b'"model":"nomic-embed-text"' in body
         assert b'"input":["a","b"]' in body
@@ -238,10 +245,11 @@ class TestOllamaEmbeddingProvider:
 
     def test_batch_limit_rejects_before_request(self) -> None:
         transport = FakeTransport()
+        small_batch_identity = EmbeddingIdentity(**{**identity().model_dump(), "batch_size": 1})
         provider = OllamaEmbeddingProvider(
-            identity=identity(),
+            identity=small_batch_identity,
             transport=transport,
-            limits=EmbeddingLimits(max_batch_texts=2),
+            limits=KnowledgeLimits(max_batch_text_count=2),
         )
         with pytest.raises(ResourceLimitError):
             provider.embed(["a", "b", "c"])
@@ -252,20 +260,23 @@ class TestOllamaEmbeddingProvider:
         provider = OllamaEmbeddingProvider(
             identity=identity(),
             transport=transport,
-            limits=EmbeddingLimits(max_text_chars=4),
+            limits=KnowledgeLimits(
+                max_text_bytes=4,
+                max_query_bytes=4,
+                max_chunk_text_bytes=4,
+            ),
         )
         with pytest.raises(ResourceLimitError):
             provider.embed(["too-long"])
         big_data = identity().model_dump()
-        big_data["dimensions"] = 20_000
+        big_data["dimensions"] = 4_096
         big_identity = EmbeddingIdentity(**big_data)
-        provider = OllamaEmbeddingProvider(
-            identity=big_identity,
-            transport=transport,
-            limits=EmbeddingLimits(max_vector_dimensions=10_000),
-        )
         with pytest.raises(ResourceLimitError):
-            provider.embed(["x"])
+            OllamaEmbeddingProvider(
+                identity=big_identity,
+                transport=transport,
+                limits=KnowledgeLimits(max_vector_dimensions=2_048),
+            )
         assert transport.calls == []
 
     def test_empty_query_is_structured_error(self) -> None:

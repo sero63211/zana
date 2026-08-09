@@ -26,12 +26,12 @@ class TestMarkdownNormalization:
             source,
             kind=DocumentKind.MARKDOWN,
             title="Policy Manual",
-            document_id="sha256:doc",
+            document_id="sha256:" + "0" * 64,
         )
         assert document.title == "Policy Manual"
         assert len(document.sections) == 2
-        assert document.sections[0].heading_path == ["Chapter 1"]
-        assert document.sections[1].heading_path == ["Chapter 1", "Section 2"]
+        assert list(document.sections[0].heading_path) == ["Chapter 1"]
+        assert list(document.sections[1].heading_path) == ["Chapter 1", "Section 2"]
         assert "Intro text." in document.sections[0].text
         assert "Detail here." in document.sections[1].text
 
@@ -41,7 +41,7 @@ class TestMarkdownNormalization:
             source,
             kind=DocumentKind.MARKDOWN,
             title="T",
-            document_id="sha256:doc",
+            document_id="sha256:" + "0" * 64,
         )
         sections = document.sections
         assert sections[0].start_offset == 5
