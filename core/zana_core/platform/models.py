@@ -32,7 +32,13 @@ class PathRoot(str, Enum):
 
 
 class PathPolicy(BaseModel):
-    """Strict bounds for root validation and child derivation."""
+    """Strict bounds for root validation and child derivation.
+
+    ``require_disjoint_roots`` is truthful: when enabled, the final canonical
+    root set must have no alias and no parent/child relation except the
+    explicitly declared ``allowed_containment`` pairs (child kind, parent
+    kind). The default allows exactly one relation: workspace inside data.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -44,6 +50,9 @@ class PathPolicy(BaseModel):
     forbid_cwd_root: bool = True
     forbid_filesystem_root: bool = True
     require_disjoint_roots: bool = True
+    allowed_containment: tuple[tuple[PathRoot, PathRoot], ...] = (
+        (PathRoot.WORKSPACE, PathRoot.DATA),
+    )
     confinement_roots: tuple[Path, ...] = ()
 
 

@@ -28,6 +28,7 @@ from zana_core.platform.resolve import (
     is_within,
     validate_override,
     validate_overrides,
+    validate_root_set,
 )
 
 __all__ = [
@@ -49,4 +50,5 @@ __all__ = [
     "probe_roots",
     "validate_override",
     "validate_overrides",
+    "validate_root_set",
 ]

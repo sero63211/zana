@@ -25,7 +25,15 @@ class PathLocator(Protocol):
 
 
 class PlatformdirsLocator:
-    """Default locator backed only by platformdirs."""
+    """Default locator backed only by platformdirs.
+
+    platformdirs nests cache/log under data or cache on some operating
+    systems (Windows cache/log under data, Linux log under cache). ZANA's
+    canonical boundary requires disjoint roots with exactly one allowed
+    containment (workspace under data), so nested roots are relocated to
+    sibling directories beneath the same OS base directory. This is a
+    documented canonical rule, not a host-specific path.
+    """
 
     def __init__(self, app_name: str = "zana") -> None:
         if not app_name or app_name != app_name.strip() or _NUL in app_name:
@@ -35,18 +43,25 @@ class PlatformdirsLocator:
     def base_dir(self, kind: PathRoot) -> Path:
         import platformdirs
 
+        data = Path(platformdirs.user_data_dir(self._app_name))
+
         if kind == PathRoot.CONFIG:
             return Path(platformdirs.user_config_dir(self._app_name))
         if kind == PathRoot.DATA:
-            return Path(platformdirs.user_data_dir(self._app_name))
+            return data
         if kind == PathRoot.CACHE:
-            return Path(platformdirs.user_cache_dir(self._app_name))
+            base = Path(platformdirs.user_cache_dir(self._app_name))
+            return base if not is_within(data, base) else _sibling(data, "cache")
         if kind == PathRoot.LOG:
-            return Path(platformdirs.user_log_dir(self._app_name))
+            base = Path(platformdirs.user_log_dir(self._app_name))
+            if is_within(data, base):
+                return _sibling(data, "log")
+            cache = Path(platformdirs.user_cache_dir(self._app_name))
+            return base if not is_within(cache, base) else _sibling(data, "log")
         if kind == PathRoot.TEMP:
             return Path(tempfile.gettempdir()) / self._app_name
         if kind == PathRoot.WORKSPACE:
-            return Path(platformdirs.user_data_dir(self._app_name, version="workspaces"))
+            return data / "workspaces"
         raise PlatformPathValidationError(f"unsupported root kind {kind!r}")
 
 
@@ -61,6 +76,10 @@ class FixedPathLocator:
             return self._mapping[kind]
         except KeyError:
             raise PlatformPathValidationError(f"no fixed path for {kind.value}") from None
+
+
+def _sibling(path: Path, suffix: str) -> Path:
+    return path.parent / f"{path.name}-{suffix}"
 
 
 def _normalize(path: Path) -> Path:
@@ -118,14 +137,7 @@ def _base_checks(
     return normalized
 
 
-def validate_override(
-    kind: PathRoot,
-    raw: str | Path,
-    policy: PathPolicy,
-) -> Path:
-    """Validate one explicit override: absolute, normalized, NUL-free, safe."""
-    text = str(raw)
-    normalized = _base_checks(kind, text, policy)
+def _root_safety_checks(kind: PathRoot, normalized: Path, policy: PathPolicy) -> None:
     if policy.forbid_filesystem_root and normalized == Path(os.path.sep):
         raise PlatformPathValidationError(
             f"override for {kind.value} is the filesystem root",
@@ -148,7 +160,51 @@ def validate_override(
                 f"override for {kind.value} is outside the allowed confinement roots",
                 code="PATH_UNCONFINED",
             )
+
+
+def validate_override(
+    kind: PathRoot,
+    raw: str | Path,
+    policy: PathPolicy,
+) -> Path:
+    """Validate one explicit override: absolute, normalized, NUL-free, safe."""
+    text = str(raw)
+    normalized = _base_checks(kind, text, policy)
+    _root_safety_checks(kind, normalized, policy)
     return normalized
+
+
+def _check_root_relations(
+    roots: Mapping[PathRoot, Path],
+    policy: PathPolicy,
+) -> None:
+    """Reject aliases and parent/child relations except declared containment."""
+    ordered = sorted(roots.items(), key=lambda item: str(item[1]))
+    for index, (kind, path) in enumerate(ordered):
+        for other_kind, other in ordered[index + 1 :]:
+            if path == other:
+                raise PlatformPathValidationError(
+                    f"{kind.value} and {other_kind.value} collide on the same absolute path",
+                    code="PATH_ALIAS_COLLISION",
+                )
+            if is_within(path, other):
+                # ``other`` is inside ``path``: path is the parent.
+                allowed = (other_kind, kind) in policy.allowed_containment
+                if not allowed:
+                    raise PlatformPathValidationError(
+                        f"{kind.value} and {other_kind.value} form a "
+                        "parent/child configuration that could make cleanup broad",
+                        code="PATH_PARENT_CHILD",
+                    )
+            elif is_within(other, path):
+                # ``path`` is inside ``other``: other is the parent.
+                allowed = (kind, other_kind) in policy.allowed_containment
+                if not allowed:
+                    raise PlatformPathValidationError(
+                        f"{kind.value} and {other_kind.value} form a "
+                        "parent/child configuration that could make cleanup broad",
+                        code="PATH_PARENT_CHILD",
+                    )
 
 
 def validate_overrides(
@@ -158,22 +214,29 @@ def validate_overrides(
     """Validate all overrides and reject alias/parent/child collisions."""
     validated = {kind: validate_override(kind, raw, policy) for kind, raw in overrides.items()}
     if policy.require_disjoint_roots:
-        ordered = sorted(validated.items(), key=lambda item: str(item[1]))
-        for index, (kind, path) in enumerate(ordered):
-            for other_kind, other in ordered[index + 1 :]:
-                if path == other:
-                    raise PlatformPathValidationError(
-                        f"overrides for {kind.value} and {other_kind.value} collide "
-                        "on the same absolute path",
-                        code="PATH_ALIAS_COLLISION",
-                    )
-                if is_within(path, other) or is_within(other, path):
-                    raise PlatformPathValidationError(
-                        f"overrides for {kind.value} and {other_kind.value} form a "
-                        "parent/child configuration that could make cleanup broad",
-                        code="PATH_PARENT_CHILD",
-                    )
+        _check_root_relations(validated, policy)
     return validated
+
+
+def validate_root_set(
+    paths: PlatformPaths,
+    policy: PathPolicy,
+) -> PlatformPaths:
+    """Canonical final validator for all six resolved roots, regardless of source.
+
+    Applies structural, unsafe-root, home/cwd, and confinement checks to every
+    root, then enforces alias/parent-child disjointness with the declared
+    allowed containment exception. Returns the (immutable) paths unchanged.
+    """
+    roots: dict[PathRoot, Path] = {}
+    for kind in PathRoot:
+        root = paths.root(kind)
+        normalized = _base_checks(kind, str(root), policy)
+        _root_safety_checks(kind, normalized, policy)
+        roots[kind] = normalized
+    if policy.require_disjoint_roots:
+        _check_root_relations(roots, policy)
+    return paths
 
 
 def is_within(root: Path, candidate: Path) -> bool:
@@ -212,9 +275,7 @@ class PathResolver:
                 )
             values[f"{kind.value}_root"] = _normalize(self._overrides.get(kind, base))
         paths = PlatformPaths(**values)
-        for kind in PathRoot:
-            _base_checks(kind, str(paths.root(kind)), self._policy)
-        return paths
+        return validate_root_set(paths, self._policy)
 
 
 def derive_child(

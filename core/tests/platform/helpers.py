@@ -33,11 +33,11 @@ def linux_layout(base: Path) -> dict[PathRoot, Path]:
 def windows_layout(base: Path) -> dict[PathRoot, Path]:
     return {
         PathRoot.CONFIG: base / "AppData" / "Roaming" / "zana",
-        PathRoot.DATA: base / "AppData" / "Local" / "zana",
-        PathRoot.CACHE: base / "AppData" / "Local" / "zana" / "Cache",
-        PathRoot.LOG: base / "AppData" / "Local" / "zana" / "Logs",
+        PathRoot.DATA: base / "AppData" / "Local" / "zana" / "Data",
+        PathRoot.CACHE: base / "AppData" / "Local" / "zana-cache",
+        PathRoot.LOG: base / "AppData" / "Local" / "zana-log",
         PathRoot.TEMP: base / "Temp" / "zana",
-        PathRoot.WORKSPACE: base / "AppData" / "Local" / "zana" / "Workspaces",
+        PathRoot.WORKSPACE: base / "AppData" / "Local" / "zana" / "Data" / "Workspaces",
     }
 
 

@@ -17,7 +17,7 @@ from zana_core.platform.models import (
     PathRoot,
     PlatformPathValidationError,
 )
-from zana_core.platform.resolve import FixedPathLocator, PathResolver
+from zana_core.platform.resolve import FixedPathLocator, PathResolver, is_within
 
 
 @pytest.mark.parametrize(
@@ -86,13 +86,19 @@ def test_alias_collision_rejected(tmp_path):
     assert exc.value.code == "PATH_ALIAS_COLLISION"
 
 
-def test_parent_child_override_rejected(tmp_path):
+def test_workspace_under_data_override_allowed(tmp_path):
     layout = mac_layout(tmp_path)
     parent = tmp_path / "parent"
     child = parent / "child"
-    with pytest.raises(PlatformPathValidationError) as exc:
-        resolver_for(layout, data=str(parent), workspace=str(child))
-    assert exc.value.code == "PATH_PARENT_CHILD"
+    paths = resolver_for(layout, data=str(parent), workspace=str(child)).resolve()
+    assert paths.workspace_root == child
+    assert paths.data_root == parent
+
+
+def test_reversed_containment_override_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    parent = tmp_path / "parent"
+    child = parent / "child"
     with pytest.raises(PlatformPathValidationError) as exc:
         resolver_for(layout, data=str(child), workspace=str(parent))
     assert exc.value.code == "PATH_PARENT_CHILD"
@@ -102,16 +108,16 @@ def test_confinement_roots_enforced(tmp_path):
     layout = mac_layout(tmp_path)
     confine = tmp_path / "confine"
     outside = tmp_path / "outside"
-    policy = PathPolicy(confinement_roots=(confine,))
+    policy = PathPolicy(confinement_roots=(tmp_path,))
     PathResolver(
         FixedPathLocator(layout),
         policy,
-        overrides={"data": confine / "data"},
+        overrides={"data": tmp_path / "custom" / "data"},
     ).resolve()
     with pytest.raises(PlatformPathValidationError) as exc:
         PathResolver(
             FixedPathLocator(layout),
-            policy,
+            PathPolicy(confinement_roots=(confine,)),
             overrides={"data": outside},
         )
     assert exc.value.code == "PATH_UNCONFINED"
@@ -121,3 +127,60 @@ def test_defaults_do_not_require_actual_home(tmp_path):
     layout = mac_layout(tmp_path / "fake-home")
     paths = resolver_for(layout).resolve()
     assert paths.config_root == tmp_path / "fake-home" / "Library" / "Preferences" / "zana"
+
+
+def test_locator_default_filesystem_root_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    layout[PathRoot.DATA] = Path("/")
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_UNSAFE_ROOT"
+
+
+def test_locator_default_home_root_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    layout[PathRoot.DATA] = Path.home()
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_UNSAFE_ROOT"
+
+
+def test_locator_default_cwd_root_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    layout[PathRoot.DATA] = Path.cwd()
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_UNSAFE_ROOT"
+
+
+def test_locator_default_duplicate_roots_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    shared = layout[PathRoot.CONFIG]
+    layout[PathRoot.DATA] = shared
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_ALIAS_COLLISION"
+
+
+def test_locator_default_unsafe_parent_child_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    layout[PathRoot.CACHE] = layout[PathRoot.CONFIG] / "nested"
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_PARENT_CHILD"
+
+
+def test_locator_default_reversed_containment_rejected(tmp_path):
+    layout = mac_layout(tmp_path)
+    workspace = layout[PathRoot.WORKSPACE]
+    layout[PathRoot.DATA] = workspace / "data"
+    with pytest.raises(PlatformPathValidationError) as exc:
+        resolver_for(layout).resolve()
+    assert exc.value.code == "PATH_PARENT_CHILD"
+
+
+def test_allowed_workspace_under_data_is_preserved(tmp_path):
+    layout = mac_layout(tmp_path)
+    paths = resolver_for(layout).resolve()
+    assert is_within(paths.data_root, paths.workspace_root)
+    assert paths.workspace_root != paths.data_root
