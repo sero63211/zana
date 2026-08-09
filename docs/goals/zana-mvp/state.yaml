@@ -35,6 +35,11 @@ rules:
   one_active_task: true
   max_write_workers: 6
   implementation_agent_policy: "Only opencode-go/deepseek-v4-flash with reasoning effort max; never DeepSeek V4 Pro."
+  implementation_agents_visible_first_class_only: true
+  writer_preflight_required: "Verify canonical repo, HEAD, branch, remote, status, worktree, and exclusive owner before every writer scope."
+  milestone_acceptance_gate: "Implementation, focused tests, inspection/review, readability refactor, security/error paths, and relevant integration checks must all pass."
+  accepted_commit_policy: "Exactly one focused commit per accepted feature/fix, then prove clean index and responsible worktree before advancing."
+  safe_push_policy: "Fetch/reconcile, never force, confirm remote SHA; if unauthorized or blocked, record the blocker and never claim push success."
   parallel_workers_require_disjoint_scopes: true
   no_implementation_without_worker_or_pm_task: true
   no_completion_without_judge_or_pm_audit: true

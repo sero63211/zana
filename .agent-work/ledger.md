@@ -6,6 +6,8 @@ operational coordination only and never supersedes it.
 ## Conventions
 
 - One row per task; update state as it changes.
+- Before a writer starts, record/verify canonical repo, HEAD, branch, remote,
+  clean status, worktree, and exclusive owner; never share a writer worktree.
 - Shared contracts have a single owner/integrator; that owner is recorded in
   the row for the owning task.
 - Stop and escalate before changing an interface contract; do not edit another
@@ -13,6 +15,11 @@ operational coordination only and never supersedes it.
 - Keep notifications quiet: blockers, interface changes, and completion only.
 - Verification column records the exact commands or evidence required for
   `done`.
+- An accepted row receipt includes focused commit SHA, changed paths, gates,
+  security delta, residual risk, clean index/worktree proof, and confirmed
+  push SHA/remote state or an explicit push blocker.
+- Known red gates are repaired before commit/push/next scope. Pushes are
+  fetch/reconcile first, non-force, and never claimed without remote proof.
 - Do not delete or rewrite another agent's row, branch/worktree, or files.
 
 ## Rows

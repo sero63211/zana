@@ -25,6 +25,7 @@ Nothing in this map or `.agent-work/` supersedes it.
 | Heartbeat accounting with quiet status | Lanes report only blockers, interface changes, and completion; no repetitive progress chatter. |
 | Extend durable knowledge | Add decisions and explicitly supersede conflicts rather than replacing knowledge aggressively. |
 | Security and contract review gates | API contract, security, test-gap, and UX consistency review agents run after implementation slices. |
+| Accepted milestone receipts | A scope advances only after focused implementation/tests, inspection, readability refactor, security/error-path and relevant integration gates, one focused commit, clean proof, safe non-force push, and a receipt with local/remote SHAs. |
 
 ## Not adopted
 
@@ -66,3 +67,12 @@ effort and must not be presented as another agent.
 
 Stop and escalate before changing an interface contract. A gate agent blocks
 and hands back; it does not silently feature-build.
+
+## Accepted milestone cycle
+
+`bounded scope -> build -> focused tests -> inspect/review -> readability
+refactor -> security/error gates -> focused commit -> clean proof -> safe
+fetch/reconcile and non-force push -> receipt -> next scope`
+
+A missing or unauthorized remote blocks only the push claim: retain the
+focused local commit, record the exact blocker, and never invent a remote SHA.
