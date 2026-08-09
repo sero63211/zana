@@ -53,16 +53,16 @@ agents:
   deepseek_max: unavailable_not_configured_max_is_reasoning_effort
 
 environment:
-  implementation_state: M0_authenticated_desktop_foundation_complete
+  implementation_state: M1_authenticated_foundation_plus_static_desktop_surface
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
-  disk_free_gib_observed: 6.5
+  disk_free_gib_observed: 23.0
   toolchains_present:
     - "Python 3.12 + uv"
     - "Node + pnpm"
     - "Rust/Cargo"
     - "Xcode"
-  live_runtime_state: "No Ollama, LM Studio, llama.cpp, MLX server, local model, or embedding provider detected."
+  live_runtime_state: "Ollama 0.32.6 and three compact local model blobs are installed, but the service is stopped after the host watchdog restart; no model, inference, build, or training process is running."
   acquisition_rule: "Measure disk headroom and require a safety reserve before downloads or training; block only the affected task."
 
 active_task: T005
@@ -355,6 +355,63 @@ tasks:
       - "Any write is required outside allowed_files."
       - "The same verification cause fails twice."
     receipt: null
+  - id: T006
+    type: worker
+    assignee: Worker
+    status: done
+    reasoning_hint: high
+    objective: "Implement and document the complete honest desktop information architecture while keeping all model, build, and training processes stopped."
+    inputs:
+      - "Completed T004 receipt"
+      - "20_DESKTOP_UX_SPECIFICATION.md"
+      - "21_REPOSITORY_STRUCTURE.md"
+      - "25_ACCEPTANCE_CRITERIA.md"
+      - "Current React/Tauri foundation"
+    constraints:
+      - "DeepSeek Flash performs code implementation only."
+      - "No local models, builds, tests, package installs, or training."
+      - "No fake records or placeholder success states."
+      - "Strict isolated worktrees and disjoint UI/documentation ownership."
+    delegated_lanes:
+      - id: T006-ui
+        agent: opencode-go/deepseek-v4-flash
+        codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
+        owns: "apps/desktop/src/** and .agent-work/handoffs/T006-ui.md"
+      - id: T006-docs
+        agent: gpt-5.6-terra
+        codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
+        owns: "README.md, docs/product/**, and .agent-work/handoffs/T006-docs.md"
+    allowed_files:
+      - "apps/desktop/src/**"
+      - "README.md"
+      - "docs/product/**"
+      - "docs/product/product-blueprint.md"
+      - "docs/product/naming-conventions.md"
+      - ".agent-work/handoffs/T006-ui.md"
+      - ".agent-work/handoffs/T006-docs.md"
+    verify:
+      - "git diff --check"
+      - "Deferred: frontend lint, typecheck, tests, build, package, and live launch"
+    receipt:
+      result: done
+      summary: "Integrated a polished seven-view React/Tauri surface with real Core health and honest unavailable states, then published a professional README, product blueprint, and stable naming contract."
+      changed_files:
+        - "apps/desktop/src/**"
+        - "README.md"
+        - "docs/product/product-blueprint.md"
+        - "docs/product/naming-conventions.md"
+        - ".agent-work/handoffs/T006-ui.md"
+        - ".agent-work/handoffs/T006-docs.md"
+      commits:
+        - "c957389 feat: add polished ZANA desktop UI surface"
+        - "4b101d0 docs: define ZANA product blueprint"
+        - "3e672ac docs: add T006 documentation handoff"
+      commands:
+        - cmd: "git diff --check"
+          status: pass
+      security_delta: "The UI never renders, persists, or logs the Core token; non-health product surfaces remain honest unavailable/empty states."
+      full_outcome_complete: false
+      next_allowed_task: T005
   - id: T900
     type: pm
     assignee: PM
