@@ -787,6 +787,17 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/runtimes/registry.py, core/zana_core/runtimes/limits.py, core/tests/runtimes/test_registry.py, core/tests/runtimes/test_limits.py, .agent-work/handoffs/T007-runtime-hardening.md"
+      - id: T007-knowledge-hardening
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        codex_thread: 019fe6d7-9e33-7a51-a3f1-918e95e65c1d
+        worktree: /Users/sero/.codex/worktrees/9b02/zana
+        branch: agent/T007-knowledge-hardening
+        base_commit: 8402887
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/knowledge/**, core/tests/knowledge/**, .agent-work/handoffs/T007-knowledge-hardening.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -857,6 +868,8 @@ tasks:
       - "core/zana_core/runtimes/limits.py"
       - "core/tests/runtimes/test_registry.py"
       - "core/tests/runtimes/test_limits.py"
+      - "core/zana_core/knowledge/**"
+      - "core/tests/knowledge/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -883,6 +896,7 @@ tasks:
       - ".agent-work/handoffs/T007-jobs-sse.md"
       - ".agent-work/handoffs/T007-platform-wiring.md"
       - ".agent-work/handoffs/T007-runtime-hardening.md"
+      - ".agent-work/handoffs/T007-knowledge-hardening.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
