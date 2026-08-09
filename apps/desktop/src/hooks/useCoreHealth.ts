@@ -9,7 +9,5 @@ export function useCoreHealth() {
     queryKey: CORE_HEALTH_QUERY_KEY,
     queryFn: ({ signal }) => fetchCoreHealth(signal),
     retry: false,
-    refetchInterval: 5_000,
-    refetchIntervalInBackground: false,
   });
 }
