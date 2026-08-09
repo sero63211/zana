@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import os
 import stat as stat_module
 import tempfile
@@ -29,6 +30,8 @@ from zana_core.knowledge.embeddings import (
     BackendUnavailableError,
     EmbeddingError,
     IndexIdentity,
+    NormalizationBehavior,
+    NormalizationMismatchError,
     VectorRecord,
     validate_vector_index,
 )
@@ -42,6 +45,7 @@ from zana_core.knowledge.limits import (
     resolve_limits,
     utf8_byte_length,
 )
+from zana_core.knowledge.models import FrozenMetadata, FrozenMetadataList
 
 INDEX_MANIFEST_NAME = "manifest.json"
 INDEX_MANIFEST_TMP = ".manifest.json.tmp"
@@ -184,6 +188,64 @@ def _build_manifest(identity: IndexIdentity) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
+def _l2_norm(vector: list[float] | tuple[float, ...]) -> float:
+    """Return a finite stable L2 norm, rejecting overflow."""
+    max_abs = 0.0
+    for value in vector:
+        magnitude = abs(require_finite_number(value, label="Query vector cell"))
+        if magnitude > max_abs:
+            max_abs = magnitude
+    if max_abs == 0.0:
+        return 0.0
+    scaled_sum = 0.0
+    for value in vector:
+        value = require_finite_number(value, label="Query vector cell")
+        scaled_sum += (value / max_abs) * (value / max_abs)
+    return max_abs * math.sqrt(scaled_sum)
+
+
+def _metadata_to_plain(value: Any) -> Any:
+    """Convert immutable metadata to a plain JSON-compatible graph."""
+    if type(value) is FrozenMetadata:
+        return {
+            key: _metadata_to_plain(child)
+            for key, child in FrozenMetadata._validated_wrapper(value).items()
+        }
+    if type(value) is FrozenMetadataList:
+        validated = FrozenMetadataList._validated_wrapper(value)
+        return [_metadata_to_plain(child) for child in tuple.__getitem__(validated, slice(None))]
+    return value
+
+
+def _validate_query_vector(
+    vector: list[float] | tuple[float, ...],
+    *,
+    embedding: object,
+    limits: KnowledgeLimits,
+) -> None:
+    """Validate a query vector before any backend search occurs."""
+    if type(vector) not in (tuple, list):
+        raise ResourceLimitError("Query vector must be an exact tuple or list.")
+    if not vector:
+        raise ResourceLimitError("Query vector must not be empty.")
+    expected_dimensions = getattr(embedding, "dimensions", None)
+    if type(expected_dimensions) is not int or expected_dimensions <= 0:
+        raise IndexCorruptionError("Index embedding dimensions are invalid.")
+    if len(vector) != expected_dimensions:
+        raise ResourceLimitError(
+            f"Query vector must have {expected_dimensions} dimensions, got {len(vector)}."
+        )
+    for value in vector:
+        require_finite_number(value, label="Query vector cell")
+    normalization = getattr(embedding, "normalization", None)
+    if normalization == NormalizationBehavior.L2:
+        norm = _l2_norm(vector)
+        if not math.isclose(norm, 1.0, rel_tol=1e-6, abs_tol=1e-6):
+            raise NormalizationMismatchError(
+                "Query vector is not L2 normalized as required by the index identity."
+            )
+
+
 def _read_manifest(location: Path, *, limits: KnowledgeLimits) -> str:
     manifest_path = location / INDEX_MANIFEST_NAME
     if not manifest_path.exists():
@@ -252,9 +314,22 @@ class LanceDBRecordStore:
     :class:`BackendUnavailableError`; no table or index is fabricated.
     """
 
-    def __init__(self, location: Path, *, identity: IndexIdentity) -> None:
+    def __init__(
+        self,
+        location: Path,
+        *,
+        identity: IndexIdentity,
+        backend: Any | None = None,
+        limits: KnowledgeLimits | None = None,
+    ) -> None:
         if type(identity) is not IndexIdentity:
             raise IndexIncompatibleError("LanceDB store requires an exact IndexIdentity.")
+        self._limits = resolve_limits(limits)
+        self._identity = identity
+        self._location = location / "table"
+        if backend is not None:
+            self._db = backend
+            return
         try:
             lancedb = importlib.import_module("lancedb")
         except Exception:
@@ -262,12 +337,27 @@ class LanceDBRecordStore:
                 "LanceDB is not installed; the persistent local vector index is unavailable."
             ) from None
         self._lancedb = lancedb
-        self._location = location / "table"
-        self._identity = identity
         self._db = lancedb.connect(str(self._location))
 
     def load_records(self) -> list[VectorRecord]:
-        return self._list_records()
+        table = self._open_table()
+        try:
+            count = table.count_rows()
+        except Exception:
+            raise IndexCorruptionError("LanceDB row count could not be read safely.") from None
+        if type(count) is not int or count < 0:
+            raise IndexCorruptionError("LanceDB returned an invalid row count.")
+        if count > self._limits.max_index_records:
+            raise ResourceLimitError(
+                f"LanceDB table exceeds the {self._limits.max_index_records}-record index limit."
+            )
+        try:
+            rows = table.to_lance().to_table().to_pylist()
+        except Exception:
+            raise IndexCorruptionError("LanceDB table could not be read safely.") from None
+        if len(rows) > self._limits.max_index_records:
+            raise IndexCorruptionError("LanceDB returned more rows than the bounded preflight.")
+        return [self._row_to_record(row) for row in rows]
 
     def upsert(self, records: Sequence[VectorRecord]) -> None:
         if type(records) not in (tuple, list):
@@ -275,28 +365,58 @@ class LanceDBRecordStore:
         if not records:
             return
         rows = [self._record_to_row(record) for record in records]
+        if len(rows) > self._limits.max_index_records:
+            raise ResourceLimitError(
+                f"Record store upsert exceeds the "
+                f"{self._limits.max_index_records}-record index limit."
+            )
+        try:
+            names = self._db.table_names()
+        except Exception:
+            raise IndexCorruptionError("LanceDB table list could not be read safely.") from None
+        if type(names) is not list:
+            raise IndexCorruptionError("LanceDB returned a malformed table list.")
+        if "vectors" not in names:
+            try:
+                self._db.create_table("vectors", data=rows)
+            except Exception:
+                raise IndexCorruptionError(
+                    "LanceDB table creation failed; no index was overwritten."
+                ) from None
+            return
         try:
             table = self._db.open_table("vectors")
-            table.add(rows)
+            merge = table.merge_insert("chunk_id")
+            merge.when_matched_update_all().when_not_matched_insert_all().execute(rows)
         except Exception:
-            self._db.create_table("vectors", data=rows, mode="overwrite")
+            raise IndexCorruptionError(
+                "LanceDB merge/update failed; the existing index was not overwritten."
+            ) from None
 
     def search(
         self,
         vector: list[float] | tuple[float, ...],
         limit: int,
     ) -> list[tuple[VectorRecord, float]]:
-        table = self._db.open_table("vectors")
-        results = table.search(list(vector)).limit(int(limit)).to_list()
+        _validate_query_vector(
+            vector,
+            embedding=self._identity.embedding,
+            limits=self._limits,
+        )
+        table = self._open_table()
+        try:
+            results = table.search(list(vector), metric="cosine").limit(int(limit)).to_list()
+        except Exception:
+            raise IndexCorruptionError("LanceDB search failed safely.") from None
         candidates: list[tuple[VectorRecord, float]] = []
         for row in results:
             if type(row) is not dict:
                 raise IndexCorruptionError("LanceDB returned a non-object row.")
             record = self._row_to_record(row)
-            score = row.get("_distance")
-            if type(score) is not int and type(score) is not float:
-                raise IndexCorruptionError("LanceDB returned a malformed score.")
-            similarity = 1.0 - float(score)
+            distance = row.get("_distance")
+            if type(distance) is not int and type(distance) is not float:
+                raise IndexCorruptionError("LanceDB returned a malformed distance.")
+            similarity = 1.0 - float(distance)
             if not (-1.0 <= similarity <= 1.0):
                 raise IndexCorruptionError("LanceDB returned an out-of-range similarity score.")
             candidates.append((record, similarity))
@@ -305,13 +425,11 @@ class LanceDBRecordStore:
     def close(self) -> None:
         return None
 
-    def _list_records(self) -> list[VectorRecord]:
+    def _open_table(self) -> Any:
         try:
-            table = self._db.open_table("vectors")
-            rows = table.to_lance().to_table().to_pylist()
+            return self._db.open_table("vectors")
         except Exception:
-            raise IndexCorruptionError("LanceDB table could not be read safely.") from None
-        return [self._row_to_record(row) for row in rows]
+            raise IndexCorruptionError("LanceDB table could not be opened.") from None
 
     def _record_to_row(self, record: VectorRecord) -> dict[str, Any]:
         return {
@@ -324,7 +442,7 @@ class LanceDBRecordStore:
             "section_id": record.section_id,
             "text": record.text,
             "vector": list(record.vector),
-            "metadata_json": record.metadata_json.model_dump(),
+            "metadata_json": _metadata_to_plain(record.metadata_json),
         }
 
     def _row_to_record(self, row: dict[str, Any]) -> VectorRecord:
@@ -382,6 +500,7 @@ class LanceDBIndex:
         identity: IndexIdentity,
         records: Sequence[VectorRecord] | Iterable[VectorRecord],
         store: RecordStore | None = None,
+        backend: Any | None = None,
         limits: KnowledgeLimits | None = None,
     ) -> LanceDBIndex:
         active = resolve_limits(limits)
@@ -393,7 +512,15 @@ class LanceDBIndex:
             raise IndexCorruptionError(
                 "An index is already published at this location; refusing to overwrite it."
             )
-        effective_store = store if store is not None else LanceDBRecordStore(loc, identity=identity)
+        if store is not None:
+            effective_store = store
+        else:
+            effective_store = LanceDBRecordStore(
+                loc,
+                identity=identity,
+                backend=backend,
+                limits=active,
+            )
         manifest = _build_manifest(identity)
         _atomic_write_text(loc / INDEX_MANIFEST_TMP, manifest)
         effective_store.upsert(validated_records)
@@ -412,6 +539,7 @@ class LanceDBIndex:
         *,
         expected_identity: IndexIdentity | None = None,
         store: RecordStore | None = None,
+        backend: Any | None = None,
         limits: KnowledgeLimits | None = None,
     ) -> LanceDBIndex:
         active = resolve_limits(limits)
@@ -429,7 +557,15 @@ class LanceDBIndex:
             raise IndexIncompatibleError(
                 "Persisted index identity does not match the expected index identity."
             )
-        effective_store = store if store is not None else LanceDBRecordStore(loc, identity=identity)
+        if store is not None:
+            effective_store = store
+        else:
+            effective_store = LanceDBRecordStore(
+                loc,
+                identity=identity,
+                backend=backend,
+                limits=active,
+            )
         records = effective_store.load_records()
         validate_vector_index(identity, records, limits=active)
         index = cls(
@@ -466,6 +602,11 @@ class LanceDBIndex:
                 f"Search limit must be within the "
                 f"{self._limits.max_candidate_count}-candidate limit."
             )
+        _validate_query_vector(
+            vector,
+            embedding=self.identity.embedding,
+            limits=self._limits,
+        )
         try:
             results = self._store.search(vector, active_limit)
         except (EmbeddingError, ResourceLimitError, IndexError):

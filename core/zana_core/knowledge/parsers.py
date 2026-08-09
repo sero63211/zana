@@ -154,9 +154,12 @@ def _parser_failure(exc: Exception) -> ParserError:
     if getattr(exc, "code", None) == "PARSER_UNAVAILABLE":
         return ParserError(
             code="PARSER_UNAVAILABLE",
-            message=str(exc) or "The configured parser is not available for this source.",
-            recoverable=bool(getattr(exc, "recoverable", True)),
-            actions=tuple(getattr(exc, "actions", ())),
+            message=(
+                "The configured parser is not available for this source; "
+                "no content was read or claimed."
+            ),
+            recoverable=True,
+            actions=("install_supported_parser", "use_markdown_or_text"),
         )
     return ParserError(
         code="PARSE_FAILED",

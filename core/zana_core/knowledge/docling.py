@@ -219,6 +219,8 @@ class DoclingParser:
     ) -> NormalizedDocument:
         if type(source) is not SourceMetadata:
             raise ParserIOError("Document parser requires a SourceMetadata instance.")
+        if not source.approved:
+            raise ParserIOError("Document source was not approved for parsing.")
         if source.kind not in self.supported_kinds:
             raise DoclingUnavailableError(
                 f"Docling parser does not support {source.kind.value} sources."
@@ -228,8 +230,6 @@ class DoclingParser:
             deadline = make_deadline(deadline, hard_max=active.max_timeout_seconds)
         check_deadline(deadline, label="document parsing")
         if source.kind in {DocumentKind.MARKDOWN, DocumentKind.TEXT}:
-            if not source.approved:
-                raise ParserIOError("Document source was not approved for parsing.")
             text = self._read_source(source)
             check_deadline(deadline, label="document parsing")
             return normalize_source(
@@ -248,31 +248,67 @@ class DoclingParser:
                 "PDF parsing via Docling is not configured; no PDF content was read."
             )
         resolved = _validated_path(source.original_path, limits=active)
-        _verify_source_digest(source, path=resolved)
+        _preflight_source(source, path=resolved, limits=active)
         converted = self._converter.convert(str(resolved))
         check_deadline(deadline, label="document parsing")
         return _docling_document_to_normalised(converted, source=source, limits=active)
 
     def _read_source(self, source: SourceMetadata) -> str:
         resolved = _validated_path(source.original_path, limits=self.limits)
-        _verify_source_digest(source, path=resolved)
+        _preflight_source(source, path=resolved, limits=self.limits)
         text = self._reader.read(resolved, limits=self.limits)
         if type(text) is not str:
             raise ParserIOError("Source reader returned a non-string body.")
         return text
 
 
-def _verify_source_digest(source: SourceMetadata, *, path: Path) -> None:
+def _preflight_source(
+    source: SourceMetadata,
+    *,
+    path: Path,
+    limits: KnowledgeLimits,
+) -> None:
+    """Verify approval, exact size, and bounded digest before any conversion."""
+    if not source.approved:
+        raise ParserIOError("Document source was not approved for parsing.")
+    try:
+        stat_result = os.lstat(path)
+        actual_size = stat_result.st_size
+    except OSError:
+        raise ParserIOError("Source file could not be inspected safely.") from None
+    if type(actual_size) is not int or actual_size < 0:
+        raise ParserLimitExceededError("Source file size is invalid.")
+    if actual_size > limits.max_source_bytes:
+        raise ParserLimitExceededError("Source file exceeds the configured size limit.")
+    if type(source.size_bytes) is not int or source.size_bytes != actual_size:
+        raise ParserLimitExceededError("Source size does not match intake metadata.")
+    _verify_source_digest(source, path=path, limits=limits)
+
+
+def _verify_source_digest(
+    source: SourceMetadata,
+    *,
+    path: Path,
+    limits: KnowledgeLimits,
+) -> None:
     if not isinstance(source.sha256, str) or not source.sha256.startswith("sha256:"):
         return
     try:
         digest = hashlib.sha256()
+        total = 0
         with open(path, "rb") as handle:
             while True:
                 chunk = handle.read(HARD_MAX_STREAM_CHUNK_SIZE)
                 if not chunk:
                     break
+                total += len(chunk)
+                if total > limits.max_source_bytes:
+                    raise ParserLimitExceededError(
+                        "Source file exceeds the configured size limit while hashing."
+                    )
                 digest.update(chunk)
+    except ParserLimitExceededError:
+        raise
     except OSError:
         raise ParserIOError("Source digest could not be verified safely.") from None
     if f"sha256:{digest.hexdigest()}" != source.sha256:
@@ -288,15 +324,21 @@ def _docling_document_to_normalised(
     if document is None:
         raise ParserIOError("Docling returned no document.")
     try:
-        items = list(document.texts) if hasattr(document, "texts") else []
+        texts = document.texts
     except Exception:
         raise ParserIOError("Docling document texts could not be read.") from None
-    if len(items) > limits.max_section_count:
-        raise ResourceLimitError("Docling output exceeds the section limit.")
+    if texts is None:
+        texts = ()
+    try:
+        items = iter(texts)
+    except Exception:
+        raise ParserIOError("Docling document texts could not be iterated.") from None
     from zana_core.knowledge.models import NormalizedDocument, NormalizedSection
 
     sections: list[NormalizedSection] = []
     for sequence, item in enumerate(items):
+        if sequence >= limits.max_section_count:
+            raise ResourceLimitError("Docling output exceeds the section limit.")
         text = _docling_item_text(item)
         if not text:
             continue

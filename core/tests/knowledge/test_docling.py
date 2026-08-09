@@ -13,7 +13,7 @@ from zana_core.knowledge.docling import (
     ParserIOError,
     ParserLimitExceededError,
 )
-from zana_core.knowledge.limits import KnowledgeLimits
+from zana_core.knowledge.limits import KnowledgeLimits, ResourceLimitError
 from zana_core.knowledge.models import (
     DocumentKind,
     NormalizedDocument,
@@ -141,8 +141,10 @@ class TestDoclingPdfUnavailable:
         assert documents == []
         assert len(errors) == 1
         assert errors[0].code == "PARSER_UNAVAILABLE"
-        assert "not installed" in errors[0].message
-        assert "no pdf content was read" in errors[0].message.lower()
+        assert errors[0].message == (
+            "The configured parser is not available for this source; "
+            "no content was read or claimed."
+        )
         assert errors[0].recoverable is True
 
     def test_pdf_parse_raises_honest_error(self, tmp_path) -> None:  # noqa: ANN001
@@ -178,9 +180,23 @@ class _FakeDocument:
 class _FakeConverter:
     def __init__(self, document) -> None:  # noqa: ANN001
         self._document = document
+        self.calls = 0
 
     def convert(self, path: str) -> _FakeDocument:  # noqa: ARG002
+        self.calls += 1
         return self._document
+
+
+class _InfiniteItems:
+    def __init__(self) -> None:
+        self.count = 0
+
+    def __iter__(self):  # noqa: ANN201
+        return self
+
+    def __next__(self) -> _FakeItem:  # noqa: ANN201
+        self.count += 1
+        return _FakeItem(f"item {self.count}")
 
 
 class TestDoclingAdapterCalls:
@@ -236,3 +252,66 @@ class TestDoclingAdapterCalls:
         source = _source(path, DocumentKind.TEXT)
         document = DoclingParser(reader=FixedReader()).parse(source)
         assert document.sections and "injected body line" in document.sections[0].text
+
+
+class TestDoclingReviewFixes:
+    def test_unapproved_pdf_refused_before_converter(self, tmp_path) -> None:  # noqa: ANN001
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 fake")
+        source = _source(path, DocumentKind.PDF).model_copy(update={"approved": False})
+        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        with pytest.raises(ParserIOError):
+            DoclingParser(converter=converter).parse(source)
+        assert converter.calls == 0
+
+    def test_pdf_declared_size_drift_rejected_before_converter(self, tmp_path) -> None:  # noqa: ANN001
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"A" * 10)
+        source = _source(path, DocumentKind.PDF).model_copy(update={"size_bytes": 5})
+        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        with pytest.raises(ParserLimitExceededError):
+            DoclingParser(converter=converter).parse(source)
+        assert converter.calls == 0
+
+    def test_oversized_pdf_rejected_before_converter(self, tmp_path) -> None:  # noqa: ANN001
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"B" * 128)
+        source = _source(path, DocumentKind.PDF)
+        small = KnowledgeLimits(
+            max_source_bytes=64,
+            max_text_bytes=64,
+            max_query_bytes=16,
+            max_chunk_text_bytes=32,
+        )
+        converter = _FakeConverter(_FakeDocument([_FakeItem("x")]))
+        with pytest.raises(ParserLimitExceededError):
+            DoclingParser(converter=converter, limits=small).parse(source)
+        assert converter.calls == 0
+
+    def test_hostile_infinite_texts_consumes_cap_plus_one(self, tmp_path) -> None:  # noqa: ANN001
+        path = tmp_path / "scan.pdf"
+        path.write_bytes(b"%PDF-1.4 fake")
+        source = _source(path, DocumentKind.PDF)
+        small = KnowledgeLimits(max_section_count=3)
+        infinite = _InfiniteItems()
+        converter = _FakeConverter(_FakeDocument(infinite))
+        with pytest.raises(ResourceLimitError):
+            DoclingParser(converter=converter, limits=small).parse(source)
+        assert infinite.count == small.max_section_count + 1
+
+    def test_unavailable_error_does_not_echo_hostile_content(self) -> None:  # noqa: ANN001
+        class HostileUnavailableError(Exception):
+            code = "PARSER_UNAVAILABLE"
+
+        hostile = HostileUnavailableError("SECRET=abc123 raw traceback boom")
+        hostile.recoverable = False
+        hostile.actions = ("leak_path", "/etc/passwd")
+        from zana_core.knowledge.parsers import _parser_failure
+
+        mapped = _parser_failure(hostile)
+        assert mapped.code == "PARSER_UNAVAILABLE"
+        assert "SECRET" not in mapped.message
+        assert "traceback" not in mapped.message
+        assert "/etc/passwd" not in mapped.actions
+        assert mapped.actions == ("install_supported_parser", "use_markdown_or_text")
+        assert mapped.recoverable is True

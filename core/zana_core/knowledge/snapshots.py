@@ -157,15 +157,41 @@ def write_snapshot(
     *,
     limits: KnowledgeLimits | None = None,
 ) -> Path:
-    """Atomically persist an immutable snapshot manifest to a directory."""
+    """Atomically persist an immutable snapshot manifest to a directory.
+
+    A published manifest is never overwritten with a different identity.  An
+    identical manifest is accepted idempotently after verifying the existing
+    bytes; a different identity fails and leaves the published bytes intact.
+    """
     active = resolve_limits(limits)
     if type(manifest) is not SnapshotManifest:
         raise ResourceLimitError("Snapshot persistence requires an exact SnapshotManifest.")
     directory_path = _snapshot_dir(directory, create=True, limits=active)
+    existing_path = directory_path / SNAPSHOT_MANIFEST_NAME
+    target_path = directory_path / SNAPSHOT_MANIFEST_TMP
     payload = manifest.model_dump_json()
-    _atomic_write_text(directory_path / SNAPSHOT_MANIFEST_TMP, payload)
-    os.replace(directory_path / SNAPSHOT_MANIFEST_TMP, directory_path / SNAPSHOT_MANIFEST_NAME)
-    return directory_path / SNAPSHOT_MANIFEST_NAME
+    if existing_path.exists():
+        try:
+            existing = read_snapshot(directory_path, limits=active)
+        except ResourceLimitError:
+            raise ResourceLimitError(
+                "A corrupt or incompatible snapshot is already published."
+            ) from None
+        if existing.snapshot_id != manifest.snapshot_id:
+            raise ResourceLimitError(
+                "Refusing to overwrite a published snapshot with a different identity."
+            )
+        return existing_path
+    _atomic_write_text(target_path, payload)
+    try:
+        os.replace(target_path, existing_path)
+    except OSError:
+        with suppress(OSError):
+            target_path.unlink()
+        raise ResourceLimitError(
+            "The snapshot manifest could not be published atomically."
+        ) from None
+    return existing_path
 
 
 def read_snapshot(
