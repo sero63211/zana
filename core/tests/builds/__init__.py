@@ -1,0 +1,1 @@
+"""Build lifecycle tests."""
