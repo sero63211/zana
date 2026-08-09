@@ -132,6 +132,25 @@ following, with ownership expanded to the instance contract surface:
 - OpenAI streaming requests advertise `text/event-stream`; Ollama keeps
   `application/x-ndjson`.
 
+### Final focused correction (lead review gate close)
+
+Commit `29fea3b` (`fix: exact endpoint binding and bounded tool identity`)
+closes the remaining identity/bounds gates without changing ownership:
+
+- `LifecycleService._binding_matches` now requires exact `runtime_endpoint`
+  equality in addition to runtime/model identities; a focused
+  adapter-returned-endpoint-mismatch test proves `start` raises
+  `RuntimeBindingMismatchError`.
+- `_validate_config` wraps `urlsplit` so malformed URLs (for example
+  bracketed IPv6) fail closed as typed `PARAMETERS_EXCEEDED`, rejects
+  endpoint query/fragment parts, and requires `bearer_token` to be an exact
+  string when present; all new no-open tests verify no transport call.
+- Tool-call ids and names now have dedicated hard `InferenceLimits` fields
+  (char and UTF-8 byte caps), are validated as exact non-empty strings for
+  both OpenAI fragmented calls and Ollama full calls, and oversized/invalid
+  values produce typed failed results (`TOOL_CALL_ID_LIMIT`,
+  `TOOL_NAME_LIMIT`, or `TOOL_CALLS_MALFORMED`) with no `ToolRequest`.
+
 ### Verification for the review fix
 
 Host-safety rule applied: no broad full-suite, live, provider, browser, app,
@@ -142,6 +161,22 @@ model was started.
 | Check | Result |
 | --- | --- |
 | Focused changed-file pytest: `tests/runtimes/test_inference.py`, `tests/instances/test_models.py`, `tests/instances/test_runtime_selection.py`, `tests/instances/test_lifecycle.py` | 78 passed |
+| Ruff check on owned files | clean |
+| Ruff format check on owned files | clean |
+| Pyright `zana_core/runtimes` + `zana_core/instances` | 0 errors, 0 warnings |
+| Import smoke | pass, no circular import |
+| `git diff --check` | pass |
+
+### Verification for the final focused correction
+
+Host-safety rule applied again: only the smallest changed-file tests were
+run; no broad suite, live provider/runtime/model, network, browser, app,
+bundle, load, or performance test was run, and no Ollama or local model was
+started.
+
+| Check | Result |
+| --- | --- |
+| Focused changed-file pytest: `tests/runtimes/test_inference.py`, `tests/instances/test_lifecycle.py` | 71 passed |
 | Ruff check on owned files | clean |
 | Ruff format check on owned files | clean |
 | Pyright `zana_core/runtimes` + `zana_core/instances` | 0 errors, 0 warnings |
@@ -163,6 +198,8 @@ evidence but was not rerun.
   `9c1dfb4a2ee4b30fe836d795ef4663e3d921bd75`.
 - Review-fix commit: `5de21f4`
   (`fix: runtime-native inference identity and bounded tool parsing`).
+- Final focused correction commit: `29fea3b`
+  (`fix: exact endpoint binding and bounded tool identity`).
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`).
 - This handoff is committed separately on the same branch.
 - Merge `core/zana_core/runtimes/inference.py`,
@@ -177,6 +214,8 @@ evidence but was not rerun.
 ## Clean proof and remote state
 
 - After the implementation commit: index clean, worktree clean,
+  `git status --porcelain` empty, `git diff --check` pass.
+- After the final focused correction commit: index clean, worktree clean,
   `git status --porcelain` empty, `git diff --check` pass.
 - After the handoff commit: index clean, worktree clean,
   `git status --porcelain` empty, `git diff --check` pass.
