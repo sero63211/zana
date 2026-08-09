@@ -135,8 +135,7 @@ def test_darwin_cpu_name_from_bounded_sysctl() -> None:
     assert runner.calls[0][0] == "sysctl"
 
 
-def test_darwin_arm64_metal_without_brand_name() -> None:
-    monkeypatch = pytest.MonkeyPatch()
+def test_darwin_arm64_metal_without_brand_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("zana_core.hardware.providers.platform.machine", lambda: "arm64")
     runner = FakeRunner(CommandResult(returncode=None, error="executable_not_found"))
     accelerators, note = DarwinProvider().platform_accelerators(runner)
@@ -147,8 +146,9 @@ def test_darwin_arm64_metal_without_brand_name() -> None:
     assert note is None
 
 
-def test_darwin_x86_metal_parses_system_profiler() -> None:
-    monkeypatch = pytest.MonkeyPatch()
+def test_darwin_x86_metal_parses_system_profiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("zana_core.hardware.providers.platform.machine", lambda: "x86_64")
     runner = FakeRunner(CommandResult(returncode=0, stdout=SYSTEM_PROFILER_JSON))
     accelerators, note = DarwinProvider().platform_accelerators(runner)
@@ -160,8 +160,9 @@ def test_darwin_x86_metal_parses_system_profiler() -> None:
     assert runner.calls[0][0] == "system_profiler"
 
 
-def test_darwin_x86_metal_profiler_failure_is_unknown() -> None:
-    monkeypatch = pytest.MonkeyPatch()
+def test_darwin_x86_metal_profiler_failure_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("zana_core.hardware.providers.platform.machine", lambda: "x86_64")
     runner = FakeRunner(CommandResult(returncode=None, timed_out=True, error="timeout"))
     accelerators, note = DarwinProvider().platform_accelerators(runner)
@@ -169,8 +170,9 @@ def test_darwin_x86_metal_profiler_failure_is_unknown() -> None:
     assert "unknown" in (note or "")
 
 
-def test_linux_cpu_model_name_reads_proc_cpuinfo() -> None:
-    monkeypatch = pytest.MonkeyPatch()
+def test_linux_cpu_model_name_reads_proc_cpuinfo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     real_open = open
 
     class FakeCPUInfo:
