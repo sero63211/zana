@@ -480,6 +480,7 @@ tasks:
       - "DeepSeek Flash performs implementation only; no product research, evaluation, or documentation planning."
       - "No model start, inference, download, training, native bundle build, or memory-heavy command."
       - "Strict lightweight portability: no new dependency without PM approval; bound memory, disk, batch, recursion, time, and concurrency; stream large I/O; use platform-neutral paths; probe before use; fail explicitly on low-resource macOS/Linux/Windows instead of crashing."
+      - "Single canonical implementation per integrity boundary: portability must reuse or own-and-improve image archive/OCI/import primitives; duplicated parsers, codecs, digest validators, or exclusion scanners are not acceptable."
       - "All lanes start from the same integrated master commit and have exclusive disjoint ownership."
       - "No lane may edit API registration, database/domain contracts, root manifests, lockfiles, desktop source, GoalBuddy state, or the ledger."
       - "Test fixtures may emulate external protocols only inside automated tests; runtime/demo/product state may never use fake data."
@@ -688,7 +689,7 @@ tasks:
         branch: agent/T007-portability
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        owns: "core/zana_core/portability/**, core/tests/portability/**, .agent-work/handoffs/T007-portability.md"
+        owns: "core/zana_core/portability/**, core/tests/portability/**, core/zana_core/images/archive.py, core/zana_core/images/oci.py, core/zana_core/images/import_plan.py, core/zana_core/images/secrets.py, core/zana_core/images/__init__.py, core/tests/images/**, .agent-work/handoffs/T007-portability.md"
       - id: T007-resources
         agent: router_opencode_go_deepseek_v4_flash
         status: active
@@ -756,6 +757,12 @@ tasks:
       - "core/tests/knowledge/test_retrieval.py"
       - "core/zana_core/portability/**"
       - "core/tests/portability/**"
+      - "core/zana_core/images/archive.py"
+      - "core/zana_core/images/oci.py"
+      - "core/zana_core/images/import_plan.py"
+      - "core/zana_core/images/secrets.py"
+      - "core/zana_core/images/__init__.py"
+      - "core/tests/images/**"
       - "core/zana_core/resources/**"
       - "core/tests/resources/**"
       - "core/zana_core/diagnostics/**"
