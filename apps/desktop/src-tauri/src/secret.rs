@@ -21,9 +21,12 @@ pub(crate) fn generate_token() -> Result<String, String> {
 
 #[cfg(not(unix))]
 pub(crate) fn generate_token() -> Result<String, String> {
-    // uuid v4 is backed by the OS random number generator through getrandom.
-    let mut token = uuid::Uuid::new_v4().simple().to_string();
-    token.push_str(&uuid::Uuid::new_v4().simple().to_string());
+    // Each UUIDv4 provides 122 random bits from the OS CSPRNG through
+    // getrandom. Three independent draws guarantee at least 256 random bits.
+    let mut token = String::with_capacity(96);
+    for _ in 0..3 {
+        token.push_str(&uuid::Uuid::new_v4().simple().to_string());
+    }
     Ok(token)
 }
 

@@ -40,4 +40,4 @@ fi
 
 cd "$(dirname "$0")/.."
 printf 'Starting ZANA Core dev server on %s:%s\n' "$HOST" "$PORT"
-ZANA_CORE_TOKEN="$TOKEN" exec uv run --project core zana-core serve --host "$HOST" --port "$PORT"
+ZANA_CORE_TOKEN="$TOKEN" exec uv run --project core --no-sync zana-core serve --host "$HOST" --port "$PORT"

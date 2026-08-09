@@ -1,10 +1,6 @@
 // Sanitized, actionable error text. Raw OS/plugin details are never forwarded
 // because they can include paths, commands, environment values, or tokens.
 
-pub(crate) fn supervisor_unavailable() -> String {
-    "ZANA Core supervisor is not responding. Restart the app to recover.".to_owned()
-}
-
 pub(crate) fn sidecar_missing() -> String {
     "The bundled ZANA Core sidecar is missing. Rebuild it with scripts/package-core.sh, then restart the app."
         .to_owned()
@@ -30,4 +26,9 @@ pub(crate) fn token_unavailable() -> String {
 
 pub(crate) fn core_event_error() -> String {
     "ZANA Core reported an internal process error. Restart Core and try again.".to_owned()
+}
+
+pub(crate) fn core_unrecoverable() -> String {
+    "ZANA Core stopped unexpectedly and could not be cleaned up safely. Restart the app to recover."
+        .to_owned()
 }

@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -27,14 +27,6 @@ impl CoreConnection {
         }
     }
 
-    fn unavailable() -> Self {
-        Self {
-            base_url: String::new(),
-            token: String::new(),
-            launch_error: Some(errors::supervisor_unavailable()),
-        }
-    }
-
     fn started(base_url: String, token: String) -> Self {
         Self {
             base_url,
@@ -51,13 +43,29 @@ struct ChildSlot {
 }
 
 /// One supervisor owns exactly one Core child at a time.
+///
+/// Every lifecycle state transition that can change the current child or
+/// connection is serialized by `lifecycle_lock` and revalidates the child
+/// generation. A stale watcher therefore cannot clear a newer child's slot or
+/// connection, and restart/shutdown cannot run concurrently with cleanup.
 pub(crate) struct CoreSupervisor {
-    // Serializes lifecycle transitions so concurrent restarts or an app exit
-    // cannot race a spawn and leave two children.
     lifecycle_lock: Mutex<()>,
     connection: Mutex<CoreConnection>,
     child: Mutex<Option<ChildSlot>>,
+    // Once cleanup is uncertain, the supervisor refuses to spawn a
+    // replacement so restart cannot layer another child over a process it may
+    // not have stopped.
+    replacement_blocked: AtomicBool,
     next_generation: AtomicU64,
+}
+
+/// Recover a poisoned mutex instead of leaking a child or dropping state. The
+/// recovered value remains usable; raw poison errors are never surfaced.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
 }
 
 impl CoreSupervisor {
@@ -66,45 +74,49 @@ impl CoreSupervisor {
             lifecycle_lock: Mutex::new(()),
             connection: Mutex::new(CoreConnection::not_started()),
             child: Mutex::new(None),
+            replacement_blocked: AtomicBool::new(false),
             next_generation: AtomicU64::new(0),
         }
     }
 
     pub(crate) fn connection(&self) -> CoreConnection {
-        match self.connection.lock() {
-            Ok(connection) => connection.clone(),
-            Err(_) => CoreConnection::unavailable(),
-        }
+        lock(&self.connection).clone()
     }
 
     pub(crate) fn launch(&self, app: &AppHandle) -> Result<(), String> {
-        let _guard = self
-            .lifecycle_lock
-            .lock()
-            .map_err(|_| errors::supervisor_unavailable())?;
+        if self.replacement_blocked.load(Ordering::SeqCst) {
+            let error = errors::core_unrecoverable();
+            self.record_failure(&error);
+            return Err(error);
+        }
+
+        // Serialize restart/shutdown with the child watcher's state
+        // transitions. A blocked supervisor never spawns a replacement.
+        let _guard = lock(&self.lifecycle_lock);
+        if self.replacement_blocked.load(Ordering::SeqCst) {
+            let error = errors::core_unrecoverable();
+            self.record_failure(&error);
+            return Err(error);
+        }
 
         if let Err(error) = self.stop_current_child() {
-            self.record_launch_failure(&error);
+            self.record_failure(&error);
             return Err(error);
         }
         match self.spawn_child(app) {
             Ok(()) => Ok(()),
             Err(error) => {
-                self.record_launch_failure(&error);
+                self.record_failure(&error);
                 Err(error)
             }
         }
     }
 
     pub(crate) fn shutdown(&self) {
-        let _guard = match self.lifecycle_lock.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let slot = match self.child.lock() {
-            Ok(mut child) => child.take(),
-            Err(poisoned) => poisoned.into_inner().take(),
-        };
+        // Clean app exit still respects the lifecycle lock so it cannot race a
+        // restart in progress.
+        let _guard = lock(&self.lifecycle_lock);
+        let slot = lock(&self.child).take();
         if let Some(slot) = slot {
             slot.expected_stop.store(true, Ordering::SeqCst);
             let _ = slot.child.kill();
@@ -112,14 +124,15 @@ impl CoreSupervisor {
     }
 
     fn stop_current_child(&self) -> Result<(), String> {
-        let slot = self
-            .child
-            .lock()
-            .map_err(|_| errors::supervisor_unavailable())?
-            .take();
+        let slot = lock(&self.child).take();
         if let Some(slot) = slot {
             slot.expected_stop.store(true, Ordering::SeqCst);
-            slot.child.kill().map_err(|_| errors::core_stop_failed())?;
+            if slot.child.kill().is_err() {
+                // The handle is consumed by kill; the process state is no
+                // longer certain, so never spawn over it.
+                self.replacement_blocked.store(true, Ordering::SeqCst);
+                return Err(errors::core_stop_failed());
+            }
         }
         Ok(())
     }
@@ -140,39 +153,89 @@ impl CoreSupervisor {
             .spawn()
             .map_err(|_| errors::core_spawn_failed())?;
 
+        // State publication below is infallible: poisoned locks are recovered.
+        // If that guarantee changes, the spawned child must be killed before
+        // any early return so a successful spawn is never orphaned.
         let generation = self.next_generation.fetch_add(1, Ordering::Relaxed);
         let expected_stop = Arc::new(AtomicBool::new(false));
-        *self
-            .child
-            .lock()
-            .map_err(|_| errors::supervisor_unavailable())? = Some(ChildSlot {
+        *lock(&self.child) = Some(ChildSlot {
             child,
             expected_stop: Arc::clone(&expected_stop),
             generation,
         });
-        *self
-            .connection
-            .lock()
-            .map_err(|_| errors::supervisor_unavailable())? =
-            CoreConnection::started(base_url, token);
+        *lock(&self.connection) = CoreConnection::started(base_url, token);
 
         watch_core_events(app.clone(), generation, expected_stop, events);
         Ok(())
     }
 
-    fn record_launch_failure(&self, message: &str) {
-        let mut connection = match self.connection.lock() {
-            Ok(connection) => connection,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+    fn record_failure(&self, message: &str) {
+        let mut connection = lock(&self.connection);
         connection.base_url.clear();
         connection.token.clear();
         connection.launch_error = Some(message.to_owned());
     }
+
+    fn generation_is_current(&self, generation: u64) -> bool {
+        lock(&self.child)
+            .as_ref()
+            .is_some_and(|slot| slot.generation == generation)
+    }
+
+    /// One lifecycle-serialized transition for an unexpected child exit.
+    ///
+    /// A stale generation never changes the current child or connection.
+    fn on_unexpected_exit(&self, generation: u64, message: String) {
+        let _guard = lock(&self.lifecycle_lock);
+        if self.replacement_blocked.load(Ordering::SeqCst)
+            || !self.generation_is_current(generation)
+        {
+            return;
+        }
+        lock(&self.child).take();
+        self.record_failure(&message);
+    }
+
+    /// Record a sanitized plugin error for this generation without abandoning
+    /// the live child. The watcher keeps draining toward `Terminated`.
+    fn on_event_error(&self, generation: u64) {
+        let _guard = lock(&self.lifecycle_lock);
+        if self.replacement_blocked.load(Ordering::SeqCst)
+            || !self.generation_is_current(generation)
+        {
+            return;
+        }
+        self.record_failure(errors::core_event_error());
+    }
+
+    /// Channel closure means no more events will arrive for this child. Under
+    /// the lifecycle lock, perform bounded best-effort cleanup for exactly
+    /// this generation; uncertain cleanup blocks future replacements.
+    fn on_channel_closed(&self, generation: u64) {
+        let _guard = lock(&self.lifecycle_lock);
+        if self.replacement_blocked.load(Ordering::SeqCst)
+            || !self.generation_is_current(generation)
+        {
+            return;
+        }
+        let slot = lock(&self.child).take();
+        let mut cleanup_failed = false;
+        if let Some(slot) = slot {
+            slot.expected_stop.store(true, Ordering::SeqCst);
+            if slot.child.kill().is_err() {
+                cleanup_failed = true;
+            }
+        }
+        if cleanup_failed {
+            self.replacement_blocked.store(true, Ordering::SeqCst);
+        }
+        self.record_failure(errors::core_event_error());
+    }
 }
 
-/// One bounded watcher task per child. It ends as soon as the child's event
-/// channel closes after termination, so no polling or unbounded work remains.
+/// One bounded watcher task per child. It drains the plugin's event receiver
+/// until the channel closes after termination, so no polling, busy loop, or
+/// unbounded event retention remains.
 fn watch_core_events(
     app: AppHandle,
     generation: u64,
@@ -180,53 +243,41 @@ fn watch_core_events(
     mut events: tauri::async_runtime::Receiver<CommandEvent>,
 ) {
     tauri::async_runtime::spawn(async move {
-        while let Some(event) = events.recv().await {
-            if expected_stop.load(Ordering::SeqCst) {
-                if matches!(event, CommandEvent::Terminated(_)) {
+        loop {
+            match events.recv().await {
+                Some(event) => {
+                    if expected_stop.load(Ordering::SeqCst) {
+                        if matches!(event, CommandEvent::Terminated(_)) {
+                            break;
+                        }
+                        continue;
+                    }
+                    match event {
+                        CommandEvent::Terminated(payload) => {
+                            app.state::<CoreSupervisor>().on_unexpected_exit(
+                                generation,
+                                exit_message(payload.code, payload.signal),
+                            );
+                            break;
+                        }
+                        CommandEvent::Error(_) => {
+                            app.state::<CoreSupervisor>().on_event_error(generation);
+                            // Continue draining: the channel has bounded
+                            // capacity and the child may still terminate.
+                        }
+                        // The plugin enum is non-exhaustive; stdout/stderr are
+                        // intentionally discarded and unknown events are safe
+                        // to ignore while waiting for Terminated.
+                        _ => {}
+                    }
+                }
+                None => {
+                    app.state::<CoreSupervisor>().on_channel_closed(generation);
                     break;
                 }
-                continue;
-            }
-            match event {
-                CommandEvent::Terminated(payload) => {
-                    forget_exited_child(&app, generation);
-                    record_unexpected_exit(&app, exit_message(payload.code, payload.signal));
-                    break;
-                }
-                CommandEvent::Error(_) => {
-                    record_unexpected_exit(&app, errors::core_event_error());
-                    break;
-                }
-                // The plugin enum is non-exhaustive; stdout/stderr are
-                // intentionally discarded and unknown future events are safe
-                // to ignore.
-                _ => {}
             }
         }
     });
-}
-
-fn forget_exited_child(app: &AppHandle, generation: u64) {
-    let supervisor = app.state::<CoreSupervisor>();
-    if let Ok(mut child) = supervisor.child.lock() {
-        if child
-            .as_ref()
-            .is_some_and(|slot| slot.generation == generation)
-        {
-            child.take();
-        }
-    }
-}
-
-fn record_unexpected_exit(app: &AppHandle, message: String) {
-    let supervisor = app.state::<CoreSupervisor>();
-    let mut connection = match supervisor.connection.lock() {
-        Ok(connection) => connection,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    connection.base_url.clear();
-    connection.token.clear();
-    connection.launch_error = Some(message);
 }
 
 fn exit_message(code: Option<i32>, signal: Option<i32>) -> String {
