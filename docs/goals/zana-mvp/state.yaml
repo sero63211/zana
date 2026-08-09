@@ -1016,24 +1016,30 @@ tasks:
       - id: T900-api-system-runtime
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-api-system-runtime
+        thread: 019fe868-40ad-7cd3-b026-5980b0d49978
+        worktree: /Users/sero/.codex/worktrees/90b6/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/api/doctor.py, core/zana_core/api/runtimes.py, core/zana_core/api/models.py, core/zana_core/api/system.py, core/zana_core/api/schemas.py, core/zana_core/api/deps.py, core/zana_core/main.py, core/tests/api/test_api_contracts.py, core/tests/api/test_system_runtime_models.py, core/tests/platform/test_main_integration.py, .agent-work/handoffs/T900-api-system-runtime.md"
         gates: "Focused API/platform pytest; Ruff/format; Pyright; auth/error/bounds inspection; full Core compatibility; one implementation commit plus receipt; clean; no push."
       - id: T900-runtime-inference
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-runtime-inference
+        thread: 019fe870-59d1-74f2-98b2-13d3d0dd9561
+        worktree: /Users/sero/.codex/worktrees/2aa0/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/runtimes/inference.py, core/zana_core/runtimes/ollama.py, core/zana_core/runtimes/openai_compat.py, core/zana_core/runtimes/transport.py, core/zana_core/runtimes/__init__.py, core/tests/runtimes/test_inference.py, .agent-work/handoffs/T900-runtime-inference.md"
         gates: "Focused runtime tests with local protocol fixtures only; Ruff/format; Pyright; bounded streaming/error/secret inspection; no live server/model; one implementation commit plus receipt; clean; no push."
       - id: T900-knowledge-providers
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-knowledge-providers
+        thread: 019fe870-ce4c-7c71-8e2b-afe450a0a6f3
+        worktree: /Users/sero/.codex/worktrees/934f/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/knowledge/docling.py, core/zana_core/knowledge/lancedb_index.py, core/zana_core/knowledge/parsers.py, core/zana_core/knowledge/snapshots.py, core/zana_core/knowledge/retrieval.py, core/zana_core/knowledge/__init__.py, core/tests/knowledge/test_docling.py, core/tests/knowledge/test_lancedb_index.py, .agent-work/handoffs/T900-knowledge-providers.md"
         gates: "Focused knowledge tests; Ruff/format; Pyright; file/symlink/size/index-identity inspection; optional dependency unavailability honest; no install/model/network; one implementation commit plus receipt; clean; no push."
