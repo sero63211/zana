@@ -30,13 +30,16 @@ from zana_core.runtimes.openai_compat import OpenAICompatInferenceAdapter
 
 OLLAMA_END = "http://127.0.0.1:11434"
 OPENAI_END = "http://127.0.0.1:1234"
-MODEL_KEY = "qwen-example:tag"
+NATIVE_MODEL_ID = "qwen-example:tag"
+OLLAMA_MODEL_KEY = "ollama-local:qwen-example:tag"
+OPENAI_MODEL_KEY = "openai-compatible:qwen-example:tag"
 MODEL_DIGEST = "sha256:abc123"
 
 
 def make_binding(
     *,
-    model_key: str = MODEL_KEY,
+    model_key: str = OLLAMA_MODEL_KEY,
+    runtime_model_id: str = NATIVE_MODEL_ID,
     model_digest: str = MODEL_DIGEST,
     runtime_id: str = "ollama-local",
     runtime_endpoint: str = OLLAMA_END,
@@ -49,6 +52,7 @@ def make_binding(
         runtime_id=runtime_id,
         runtime_endpoint=runtime_endpoint,
         model_key=model_key,
+        runtime_model_id=runtime_model_id,
         model_digest=model_digest,
         bound_at=datetime.now(UTC),
     )
@@ -72,20 +76,25 @@ class FakeStreamTransport:
         self,
         *,
         body: str = "",
+        raw_body: bytes | None = None,
         chunk_size: int = 8,
         raise_timeout: bool = False,
         raise_invalid: bool = False,
+        close_failure: bool = False,
         cancel_after_chunks: int | None = None,
         cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self._body = body
+        self._raw_body = raw_body
         self._chunk_size = chunk_size
         self._raise_timeout = raise_timeout
         self._raise_invalid = raise_invalid
+        self._close_failure = close_failure
         self._cancel_after_chunks = cancel_after_chunks
         self._cancelled = cancelled or (lambda: False)
         self.calls: list[tuple[str, str, Mapping[str, str] | None, bytes | None]] = []
         self.closed = False
+        self.close_attempts = 0
 
     def open_stream(
         self,
@@ -103,7 +112,10 @@ class FakeStreamTransport:
             raise InvalidRuntimeResponseError(
                 "Runtime chat returned HTTP 401; runtime was not available."
             )
-        for index, chunk in enumerate(chunks(self._body, self._chunk_size)):
+        payload = self._body.encode("utf-8") if self._raw_body is None else self._raw_body
+        for index, chunk in enumerate(
+            [payload[i : i + self._chunk_size] for i in range(0, len(payload), self._chunk_size)]
+        ):
             if self._cancelled():
                 yield chunk
                 return
@@ -113,7 +125,12 @@ class FakeStreamTransport:
             yield chunk
 
     def close(self) -> None:
+        self.close_attempts += 1
         self.closed = True
+        if self._close_failure:
+            from zana_core.runtimes.transport import TransportCleanupError
+
+            raise TransportCleanupError("simulated close failure")
 
 
 class CancelToken:
@@ -181,7 +198,7 @@ class TestParameterValidation:
 class TestOllamaInference:
     def test_single_line_success(self) -> None:
         event = {
-            "model": MODEL_KEY,
+            "model": NATIVE_MODEL_ID,
             "message": {"role": "assistant", "content": "Hello"},
             "done": True,
         }
@@ -201,11 +218,11 @@ class TestOllamaInference:
 
     def test_multi_line_success_accumulates(self) -> None:
         body = (
-            json.dumps({"model": MODEL_KEY, "message": {"content": "Hel"}, "done": False})
+            json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "Hel"}, "done": False})
             + "\n"
-            + json.dumps({"model": MODEL_KEY, "message": {"content": "lo"}, "done": False})
+            + json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "lo"}, "done": False})
             + "\n"
-            + json.dumps({"model": MODEL_KEY, "message": {"content": ""}, "done": True})
+            + json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": ""}, "done": True})
             + "\n"
         )
         adapter = OllamaInferenceAdapter(
@@ -256,7 +273,7 @@ class TestOllamaInference:
 
     def test_truncated_stream_is_honest_failure(self) -> None:
         event = {
-            "model": MODEL_KEY,
+            "model": NATIVE_MODEL_ID,
             "message": {"content": "partial"},
             "done": False,
         }
@@ -275,7 +292,7 @@ class TestOllamaInference:
         assert result.raw_text == "partial"
 
     def test_runtime_error_event_is_failed(self) -> None:
-        event = {"model": MODEL_KEY, "error": "cpu overloaded", "done": True}
+        event = {"model": NATIVE_MODEL_ID, "error": "cpu overloaded", "done": True}
         adapter = OllamaInferenceAdapter(
             endpoint=OLLAMA_END,
             transport=FakeStreamTransport(body=json.dumps(event) + "\n"),
@@ -292,7 +309,7 @@ class TestOllamaInference:
 
     def test_tool_calls_are_parsed(self) -> None:
         event = {
-            "model": MODEL_KEY,
+            "model": NATIVE_MODEL_ID,
             "message": {
                 "role": "assistant",
                 "content": "",
@@ -314,6 +331,152 @@ class TestOllamaInference:
         assert len(result.tool_requests) == 1
         assert result.tool_requests[0].tool_id == "calculator"
         assert result.tool_requests[0].arguments == {"expr": "1+1"}
+
+    def test_request_uses_runtime_native_model_id(self) -> None:
+        transport = FakeStreamTransport(
+            body=json.dumps({"model": "qwen2:1.5b", "message": {"content": "ok"}, "done": True})
+            + "\n"
+        )
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key="ollama-local:qwen2:1.5b",
+                runtime_model_id="qwen2:1.5b",
+            ),
+        )
+        assert result.status == "completed"
+        body = transport.calls[0][3]
+        assert body is not None
+        assert b'"model":"qwen2:1.5b"' in body
+        assert b"ollama-local:qwen2:1.5b" not in body
+
+    def test_adapter_endpoint_mismatch_blocks_without_open(self) -> None:
+        transport = FakeStreamTransport(
+            body=json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True})
+            + "\n"
+        )
+        adapter = OllamaInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "IDENTITY_MISMATCH"
+        assert transport.calls == []
+
+    def test_adapter_runtime_id_mismatch_blocks_without_open(self) -> None:
+        transport = FakeStreamTransport(body="{}")
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            runtime_id="manual-other",
+            transport=transport,
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "IDENTITY_MISMATCH"
+        assert transport.calls == []
+
+    def test_manual_runtime_id_match_proceeds(self) -> None:
+        transport = FakeStreamTransport(
+            body=json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True})
+            + "\n"
+        )
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            runtime_id="manual-ollama",
+            transport=transport,
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="manual-ollama"),
+        )
+        assert result.status == "completed"
+        assert len(transport.calls) == 1
+
+    def test_too_many_tools_fails_closed(self) -> None:
+        calls = [{"function": {"name": f"tool-{i}", "arguments": {"x": i}}} for i in range(17)]
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {"role": "assistant", "content": "", "tool_calls": calls},
+            "done": True,
+        }
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=FakeStreamTransport(body=json.dumps(event) + "\n"),
+            limits=InferenceLimits(max_tool_requests=2),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOO_MANY_TOOLS"
+        assert result.tool_requests == ()
+
+    def test_malformed_tool_arguments_fail_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"function": {"name": "calculator", "arguments": "not-json"}}],
+            },
+            "done": True,
+        }
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=FakeStreamTransport(body=json.dumps(event) + "\n"),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_oversize_tool_arguments_fail_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"function": {"name": "calculator", "arguments": {"x": "a" * 20000}}}
+                ],
+            },
+            "done": True,
+        }
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=FakeStreamTransport(body=json.dumps(event) + "\n"),
+            limits=InferenceLimits(max_tool_arguments_bytes=1024),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
+        assert result.tool_requests == ()
 
 
 class TestOpenAICompatInference:
@@ -431,7 +594,8 @@ class TestOpenAICompatInference:
     def test_tool_calls_are_parsed(self) -> None:
         body = (
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
-            '{"function":{"name":"calculator","arguments":"{\\"expr\\":\\"1+1\\"}"}}'
+            '{"index":0,"id":"call_1","function":{"name":"calculator",'
+            '"arguments":"{\\"expr\\":\\"1+1\\"}"}}'
             ']},"index":0}]}\n\n'
             'data: {"model":"qwen-example:tag",'
             '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
@@ -450,6 +614,127 @@ class TestOpenAICompatInference:
         assert len(result.tool_requests) == 1
         assert result.tool_requests[0].arguments == {"expr": "1+1"}
 
+    def test_fragmented_tool_calls_accumulate(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"calculator"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"arguments":"{\\"expr\\":"}}]},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"arguments":"\\"1+1\\"}"}}]},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=FakeStreamTransport(body=body),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "completed"
+        assert len(result.tool_requests) == 1
+        assert result.tool_requests[0].tool_id == "calculator"
+        assert result.tool_requests[0].arguments == {"expr": "1+1"}
+
+    def test_malformed_tool_fragment_fails_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","function":{"name":"calculator","arguments":"not"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=FakeStreamTransport(body=body),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_oversize_tool_arguments_fail_closed(self) -> None:
+        huge = "a" * 20000
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            f'{{"index":0,"id":"call_1","function":{{"name":"calculator","arguments":"{huge}"}}}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=FakeStreamTransport(body=body),
+            limits=InferenceLimits(max_tool_arguments_chars=1024),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
+        assert result.tool_requests == ()
+
+    def test_too_many_tools_fails_closed(self) -> None:
+        fragments = "".join(
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            f'{{"index":{i},"id":"call_{i}","function":{{"name":"tool-{i}",'
+            f'"arguments":"{{\\"x\\":{i}}}"}}}}'
+            ']},"index":0}]}\n\n'
+            for i in range(3)
+        )
+        body = (
+            fragments + 'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=FakeStreamTransport(body=body),
+            limits=InferenceLimits(max_tool_requests=2),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOO_MANY_TOOLS"
+        assert result.tool_requests == ()
+
+    def test_incomplete_fragment_at_done_fails_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","function":{"name":"calculator"}}'
+            ']},"index":0}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=FakeStreamTransport(body=body),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
 
 class TestBoundsCancellationAndSecrets:
     def _make_openai(self, transport: FakeStreamTransport) -> OpenAICompatInferenceAdapter:
@@ -462,7 +747,9 @@ class TestBoundsCancellationAndSecrets:
         adapter = OllamaInferenceAdapter(
             endpoint=OLLAMA_END,
             transport=FakeStreamTransport(
-                body=json.dumps({"model": MODEL_KEY, "message": {"content": "ok"}, "done": True})
+                body=json.dumps(
+                    {"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True}
+                )
                 + "\n"
             ),
         )
@@ -478,7 +765,9 @@ class TestBoundsCancellationAndSecrets:
 
     def test_cancellation_mid_stream(self) -> None:
         transport = FakeStreamTransport(
-            body=json.dumps({"model": MODEL_KEY, "message": {"content": "partial"}, "done": False})
+            body=json.dumps(
+                {"model": NATIVE_MODEL_ID, "message": {"content": "partial"}, "done": False}
+            )
             + "\n",
             cancelled=lambda: True,
         )
@@ -500,7 +789,7 @@ class TestBoundsCancellationAndSecrets:
             return clock["t"]
 
         transport = FakeStreamTransport(
-            body=json.dumps({"model": MODEL_KEY, "message": {"content": "x"}, "done": False})
+            body=json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "x"}, "done": False})
             + "\n",
         )
         adapter = OllamaInferenceAdapter(
@@ -574,7 +863,7 @@ class TestBoundsCancellationAndSecrets:
 
     def test_oversized_output_is_bounded(self) -> None:
         event = {
-            "model": MODEL_KEY,
+            "model": NATIVE_MODEL_ID,
             "message": {"content": "x" * 20000},
             "done": False,
         }
@@ -596,7 +885,7 @@ class TestBoundsCancellationAndSecrets:
         assert result.error_code == "OUTPUT_LIMIT_EXCEEDED"
 
     def test_no_accumulation_past_limit_and_no_background_worker(self) -> None:
-        event = {"model": MODEL_KEY, "message": {"content": "ok"}, "done": True}
+        event = {"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True}
         transport = FakeStreamTransport(body=json.dumps(event) + "\n")
         adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
         result = adapter.generate(
@@ -617,6 +906,130 @@ class TestBoundsCancellationAndSecrets:
                 limits=InferenceLimits(max_context_chars=4),
             )
 
+    def test_invalid_utf8_stream_is_rejected(self) -> None:
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=FakeStreamTransport(raw_body=b"\xff\xfe\n"),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "INFERENCE_UNPROCESSABLE"
+
+    def test_stop_sequence_byte_limit_is_rejected(self) -> None:
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            limits=InferenceLimits(max_stop_sequence_bytes=1024),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(stop=("x" * 2048,)),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "PARAMETERS_EXCEEDED"
+
+    def test_invalid_endpoint_is_rejected_before_open(self) -> None:
+        transport = FakeStreamTransport(body="{}")
+        adapter = OllamaInferenceAdapter(endpoint="ftp://127.0.0.1:11434", transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "PARAMETERS_EXCEEDED"
+        assert transport.calls == []
+
+    def test_oversize_bearer_token_is_rejected_before_open(self) -> None:
+        transport = FakeStreamTransport(body="{}")
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            bearer_token="x" * 5000,
+            transport=transport,
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "PARAMETERS_EXCEEDED"
+        assert transport.calls == []
+
+    def test_invalid_timeout_is_rejected_before_open(self) -> None:
+        transport = FakeStreamTransport(body="{}")
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            timeout_seconds=float("inf"),
+            transport=transport,
+        )
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "PARAMETERS_EXCEEDED"
+        assert transport.calls == []
+
+    def test_close_failure_never_overrides_with_success(self) -> None:
+        transport = FakeStreamTransport(
+            body=json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True})
+            + "\n",
+            close_failure=True,
+        )
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "INFERENCE_CLEANUP_FAILED"
+
+    def test_openai_accept_header_is_event_stream(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"stop","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = self._make_openai(transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+        )
+        assert result.status == "completed"
+        assert transport.calls[0][2] is not None
+        assert transport.calls[0][2].get("Accept") == "text/event-stream"
+
+    def test_ollama_accept_header_is_ndjson(self) -> None:
+        transport = FakeStreamTransport(
+            body=json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": "ok"}, "done": True})
+            + "\n"
+        )
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="hi",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "completed"
+        assert transport.calls[0][2] is not None
+        assert transport.calls[0][2].get("Accept") == "application/x-ndjson"
+
 
 def test_verify_identity_accepts_missing_model() -> None:
     binding = make_binding()
@@ -627,3 +1040,38 @@ def test_verify_identity_accepts_missing_model() -> None:
 def test_verify_identity_rejects_mismatch() -> None:
     with pytest.raises(InferenceIdentityError):
         verify_identity(payload_model="other", binding=make_binding())
+
+
+class _TrackingErrorBody:
+    def __init__(self, payload: bytes) -> None:
+        self._payload = payload
+        self.closed = False
+
+    def read(self, size: int = -1) -> bytes:  # noqa: A002
+        return self._payload
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_http_error_close_is_deterministic(monkeypatch: pytest.MonkeyPatch) -> None:
+    import urllib.error
+    import urllib.request
+
+    from zana_core.runtimes.transport import UrllibStreamTransport
+
+    error_body = _TrackingErrorBody(b'{"error":"denied"}')
+
+    def fake_urlopen(request: object, timeout: object = None) -> object:
+        raise urllib.error.HTTPError("http://127.0.0.1:11434", 401, "Unauthorized", {}, error_body)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(InvalidRuntimeResponseError):
+        list(
+            UrllibStreamTransport().open_stream(
+                "POST",
+                "http://127.0.0.1:11434/api/chat",
+                timeout=1.0,
+            )
+        )
+    assert error_body.closed is True

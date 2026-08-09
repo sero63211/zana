@@ -21,7 +21,11 @@ from zana_core.runtimes.inference import (
     BaseRuntimeInferenceAdapter,
     EngineResult,
     InferenceLimits,
-    bind_tool_requests,
+    ToolCallAccumulator,
+    ToolCallArgumentsError,
+    ToolCallLimitError,
+    ToolCallParseError,
+    _tool_call_failure,
     parse_json_line,
     verify_identity,
 )
@@ -200,6 +204,7 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         self,
         *,
         endpoint: str,
+        runtime_id: str | None = None,
         limits: InferenceLimits | None = None,
         transport: StreamTransport | None = None,
         clock: Callable[[], float] | None = None,
@@ -208,12 +213,17 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
     ) -> None:
         super().__init__(
             endpoint=endpoint,
+            runtime_id=runtime_id if runtime_id is not None else self.runtime_id,
             limits=limits,
             transport=transport,
             clock=clock,
             timeout_seconds=timeout_seconds,
             bearer_token=bearer_token,
         )
+        self._tool_accumulator = ToolCallAccumulator(self.limits)
+
+    def begin_generation(self) -> None:
+        self._tool_accumulator = ToolCallAccumulator(self.limits)
 
     def build_request(
         self,
@@ -224,11 +234,14 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         binding: SessionBinding,
     ) -> tuple[str, dict[str, str], bytes]:
         url = self.chat_url()
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         body = {
-            "model": binding.model_key,
+            "model": binding.runtime_model_id,
             "messages": [
                 {"role": "system", "content": context},
                 {"role": "user", "content": message},
@@ -259,7 +272,11 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
             return None
         payload_text = line[len("data:") :].lstrip()
         if payload_text == "[DONE]":
-            return EngineResult(status="completed", content="")
+            try:
+                tool_requests = self._tool_accumulator.finish()
+            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                return _tool_call_failure(error)
+            return EngineResult(status="completed", content="", tool_requests=tool_requests)
         if not payload_text:
             return None
         payload = parse_json_line(payload_text, "OpenAI-compatible stream")
@@ -282,7 +299,12 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         delta_dict: dict[str, Any] = delta if isinstance(delta, dict) else {}
         content = delta_dict.get("content")
         content_str = content if isinstance(content, str) else ""
-        tool_calls = bind_tool_requests(delta_dict.get("tool_calls"), limits=self.limits)
+        tool_calls = delta_dict.get("tool_calls")
+        if tool_calls is not None:
+            try:
+                self._tool_accumulator.add_openai_delta(tool_calls)
+            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                return _tool_call_failure(error)
         if finish is not None:
             if finish == "length":
                 return EngineResult(
@@ -291,7 +313,15 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
                     error_code="OUTPUT_LENGTH_LIMIT",
                     error_message="Output reached the model generation limit.",
                 )
-            return EngineResult(status="completed", content="", tool_requests=tool_calls)
-        if content_str or tool_calls:
-            return EngineResult(status="streaming", content=content_str, tool_requests=tool_calls)
+            try:
+                tool_requests = self._tool_accumulator.finish()
+            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                return _tool_call_failure(error)
+            return EngineResult(
+                status="completed",
+                content=content_str,
+                tool_requests=tool_requests,
+            )
+        if content_str:
+            return EngineResult(status="streaming", content=content_str)
         return None

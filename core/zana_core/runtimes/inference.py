@@ -10,10 +10,13 @@ worker; all parsing is synchronous and bounded.
 from __future__ import annotations
 
 import json
+import math
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -22,7 +25,11 @@ from zana_core.runtimes.base import (
     RuntimeProbeError,
     RuntimeProbeTimeoutError,
 )
-from zana_core.runtimes.transport import StreamTransport, UrllibStreamTransport
+from zana_core.runtimes.transport import (
+    StreamTransport,
+    TransportCleanupError,
+    UrllibStreamTransport,
+)
 
 if TYPE_CHECKING:
     from zana_core.instances import (
@@ -71,7 +78,15 @@ MAX_LINE_BYTES = 262_144
 MAX_EVENTS = 8192
 MAX_TOOL_REQUESTS = 16
 MAX_STOP_SEQUENCES = 16
+MAX_STOP_SEQUENCE_BYTES = 1024
+MAX_STOP_TOTAL_BYTES = 16_384
 MAX_GENERATION_TIMEOUT_SECONDS = 300.0
+MAX_ENDPOINT_BYTES = 4096
+MAX_BEARER_TOKEN_BYTES = 4096
+MAX_TOOL_ARGUMENTS_CHARS = 16_000
+MAX_TOOL_ARGUMENTS_BYTES = 16_000
+MAX_CONTEXT_BYTES = 262_144
+MAX_MESSAGE_BYTES = 65_536
 
 
 class InferenceLimits(BaseModel):
@@ -102,6 +117,30 @@ class InferenceLimits(BaseModel):
     )
     max_stop_sequences: int = Field(
         default=MAX_STOP_SEQUENCES, strict=True, ge=1, le=MAX_STOP_SEQUENCES
+    )
+    max_stop_sequence_bytes: int = Field(
+        default=MAX_STOP_SEQUENCE_BYTES, strict=True, ge=1, le=MAX_STOP_SEQUENCE_BYTES
+    )
+    max_stop_total_bytes: int = Field(
+        default=MAX_STOP_TOTAL_BYTES, strict=True, ge=1, le=MAX_STOP_TOTAL_BYTES
+    )
+    max_endpoint_bytes: int = Field(
+        default=MAX_ENDPOINT_BYTES, strict=True, ge=1, le=MAX_ENDPOINT_BYTES
+    )
+    max_bearer_token_bytes: int = Field(
+        default=MAX_BEARER_TOKEN_BYTES, strict=True, ge=1, le=MAX_BEARER_TOKEN_BYTES
+    )
+    max_context_bytes: int = Field(
+        default=MAX_CONTEXT_BYTES, strict=True, ge=1, le=MAX_CONTEXT_BYTES
+    )
+    max_message_bytes: int = Field(
+        default=MAX_MESSAGE_BYTES, strict=True, ge=1, le=MAX_MESSAGE_BYTES
+    )
+    max_tool_arguments_chars: int = Field(
+        default=MAX_TOOL_ARGUMENTS_CHARS, strict=True, ge=1, le=MAX_TOOL_ARGUMENTS_CHARS
+    )
+    max_tool_arguments_bytes: int = Field(
+        default=MAX_TOOL_ARGUMENTS_BYTES, strict=True, ge=1, le=MAX_TOOL_ARGUMENTS_BYTES
     )
     max_generation_timeout_seconds: float = Field(
         default=MAX_GENERATION_TIMEOUT_SECONDS,
@@ -179,6 +218,10 @@ def _fresh_limits(limits: InferenceLimits | None) -> InferenceLimits:
     return InferenceLimits(**limits.model_dump())
 
 
+def _isfinite(value: float) -> bool:
+    return math.isfinite(value)
+
+
 def validate_parameters(
     *,
     context: str,
@@ -195,6 +238,14 @@ def validate_parameters(
         raise InferenceParametersError(
             f"Message exceeds the {limits.max_message_chars}-character limit."
         )
+    if len(context.encode("utf-8")) > limits.max_context_bytes:
+        raise InferenceParametersError(
+            f"Context exceeds the {limits.max_context_bytes}-byte limit."
+        )
+    if len(message.encode("utf-8")) > limits.max_message_bytes:
+        raise InferenceParametersError(
+            f"Message exceeds the {limits.max_message_bytes}-byte limit."
+        )
     if settings.max_tokens > limits.max_output_tokens:
         raise InferenceParametersError(
             f"Requested max_tokens exceeds the {limits.max_output_tokens} bound."
@@ -202,6 +253,20 @@ def validate_parameters(
     if len(settings.stop) > limits.max_stop_sequences:
         raise InferenceParametersError(
             f"Stop sequences exceed the {limits.max_stop_sequences} bound."
+        )
+    stop_total_bytes = 0
+    for stop in settings.stop:
+        if not isinstance(stop, str):
+            raise InferenceParametersError("Stop sequences must be strings.")
+        stop_bytes = len(stop.encode("utf-8"))
+        if stop_bytes > limits.max_stop_sequence_bytes:
+            raise InferenceParametersError(
+                f"A stop sequence exceeds the {limits.max_stop_sequence_bytes}-byte bound."
+            )
+        stop_total_bytes += stop_bytes
+    if stop_total_bytes > limits.max_stop_total_bytes:
+        raise InferenceParametersError(
+            f"Stop sequences exceed the {limits.max_stop_total_bytes}-byte total bound."
         )
 
 
@@ -235,11 +300,17 @@ class LineBuffer:
         self._buffer.extend(chunk)
         while b"\n" in self._buffer:
             raw, self._buffer = self._buffer.split(b"\n", 1)
-            line = raw.rstrip(b"\r").decode("utf-8", errors="replace")
-            if len(line.encode("utf-8")) > self.limits.max_line_bytes:
+            line_bytes = raw.rstrip(b"\r")
+            if len(line_bytes) > self.limits.max_line_bytes:
                 raise InferenceProtocolError(
                     "Inference stream line exceeded the bounded line limit."
                 )
+            try:
+                line = line_bytes.decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise InferenceProtocolError(
+                    "Inference stream contained invalid UTF-8 bytes."
+                ) from error
             if line:
                 yield line
 
@@ -248,9 +319,14 @@ class LineBuffer:
             return
         raw = bytes(self._buffer).rstrip(b"\r")
         self._buffer.clear()
-        line = raw.decode("utf-8", errors="replace")
-        if len(line.encode("utf-8")) > self.limits.max_line_bytes:
+        if len(raw) > self.limits.max_line_bytes:
             raise InferenceProtocolError("Inference stream tail exceeded the bounded line limit.")
+        try:
+            line = raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise InferenceProtocolError(
+                "Inference stream contained invalid UTF-8 bytes."
+            ) from error
         if line.strip():
             yield line
 
@@ -268,6 +344,7 @@ class BaseRuntimeInferenceAdapter(ABC):
         self,
         *,
         endpoint: str,
+        runtime_id: str | None = None,
         limits: InferenceLimits | None = None,
         transport: StreamTransport | None = None,
         clock: Callable[[], float] | None = None,
@@ -275,11 +352,47 @@ class BaseRuntimeInferenceAdapter(ABC):
         bearer_token: str | None = None,
     ) -> None:
         self.endpoint = endpoint.rstrip("/")
+        self.runtime_id = runtime_id
         self.limits = _fresh_limits(limits)
         self.transport = transport or UrllibStreamTransport()
         self._clock = clock or time.monotonic
         self.timeout_seconds = timeout_seconds
         self.bearer_token = bearer_token
+
+    def _validate_config(self) -> None:
+        """Reject invalid endpoint/token/timeout before any JSON/open."""
+        if not self.endpoint:
+            raise InferenceParametersError("An inference endpoint is required.")
+        endpoint_bytes = len(self.endpoint.encode("utf-8"))
+        if endpoint_bytes > self.limits.max_endpoint_bytes:
+            raise InferenceParametersError(
+                f"Endpoint exceeds the {self.limits.max_endpoint_bytes}-byte limit."
+            )
+        parts = urlsplit(self.endpoint)
+        if parts.scheme not in ("http", "https") or not parts.netloc:
+            raise InferenceParametersError("Inference endpoints must be http(s) URLs.")
+        if parts.username or parts.password:
+            raise InferenceParametersError("Embedded credentials in endpoints are rejected.")
+        if self.bearer_token is not None and len(self.bearer_token.encode("utf-8")) > (
+            self.limits.max_bearer_token_bytes
+        ):
+            raise InferenceParametersError(
+                f"Bearer token exceeds the {self.limits.max_bearer_token_bytes}-byte limit."
+            )
+        if self.timeout_seconds is not None:
+            timeout = float(self.timeout_seconds)
+            if not _isfinite(timeout) or timeout <= 0:
+                raise InferenceParametersError("Timeout must be finite and positive.")
+            if timeout > self.limits.max_generation_timeout_seconds:
+                bound = self.limits.max_generation_timeout_seconds
+                raise InferenceParametersError(f"Timeout exceeds the {bound}-second bound.")
+
+    def _verify_binding(self, binding: SessionBinding) -> None:
+        """Verify adapter endpoint/runtime identity before any request."""
+        if self.runtime_id != binding.runtime_id:
+            raise InferenceIdentityError("adapter runtime does not match the session binding")
+        if self.endpoint.rstrip("/") != binding.runtime_endpoint.rstrip("/"):
+            raise InferenceIdentityError("adapter endpoint does not match the session binding")
 
     def generate(
         self,
@@ -291,6 +404,7 @@ class BaseRuntimeInferenceAdapter(ABC):
         cancellation: CancellationToken | None = None,
     ) -> InferenceResult:
         try:
+            self._validate_config()
             validate_parameters(
                 context=context,
                 message=message,
@@ -303,21 +417,27 @@ class BaseRuntimeInferenceAdapter(ABC):
         if cancellation is not None and cancellation.is_cancelled():
             return self._cancelled_result()
 
-        url, headers, body = self.build_request(
-            context=context,
-            message=message,
-            settings=settings,
-            binding=binding,
-        )
-        if len(body) > self.limits.max_request_body_bytes:
-            return self._failed_result(
-                "The inference request exceeded the bounded payload limit.",
-                "REQUEST_PAYLOAD_EXCEEDED",
-            )
-
-        deadline_seconds = self._resolve_deadline_seconds()
-        started = self._clock()
         try:
+            self._verify_binding(binding)
+        except InferenceIdentityError as error:
+            return self._failed_result(sanitized_message(error), "IDENTITY_MISMATCH")
+
+        self.begin_generation()
+        result: InferenceResult | None = None
+        try:
+            url, headers, body = self.build_request(
+                context=context,
+                message=message,
+                settings=settings,
+                binding=binding,
+            )
+            if len(body) > self.limits.max_request_body_bytes:
+                return self._failed_result(
+                    "The inference request exceeded the bounded payload limit.",
+                    "REQUEST_PAYLOAD_EXCEEDED",
+                )
+            deadline_seconds = self._resolve_deadline_seconds()
+            started = self._clock()
             stream = self.transport.open_stream(
                 "POST",
                 url,
@@ -333,20 +453,46 @@ class BaseRuntimeInferenceAdapter(ABC):
                 binding=binding,
                 cancellation=cancellation,
             )
-            return result
         except RuntimeProbeTimeoutError:
-            return self._timeout_result()
+            result = self._timeout_result()
         except InferenceIdentityError as error:
-            return self._failed_result(sanitized_message(error), "IDENTITY_MISMATCH")
+            result = self._failed_result(sanitized_message(error), "IDENTITY_MISMATCH")
+        except TransportCleanupError:
+            result = self._failed_result(
+                "The inference request cleanup failed.",
+                "INFERENCE_CLEANUP_FAILED",
+            )
         except (InferenceProtocolError, InvalidRuntimeResponseError, RuntimeProbeError) as error:
-            return self._failed_result(sanitized_message(error), "INFERENCE_UNPROCESSABLE")
+            result = self._failed_result(sanitized_message(error), "INFERENCE_UNPROCESSABLE")
         except Exception:  # noqa: BLE001 - adapter boundary maps to a typed result
-            return self._failed_result(
+            result = self._failed_result(
                 "The local inference request failed.",
                 "INFERENCE_FAILED",
             )
-        finally:
+        try:
             self.transport.close()
+        except TransportCleanupError:
+            return self._failed_result(
+                "The inference request cleanup failed.",
+                "INFERENCE_CLEANUP_FAILED",
+            )
+        except Exception:  # noqa: BLE001 - cleanup must not escape
+            return self._failed_result(
+                "The inference request cleanup failed.",
+                "INFERENCE_CLEANUP_FAILED",
+            )
+        return (
+            result
+            if result is not None
+            else self._failed_result(
+                "The local inference request failed.",
+                "INFERENCE_FAILED",
+            )
+        )
+
+    def begin_generation(self) -> None:
+        """Reset per-request provider state; subclasses override when needed."""
+        return None
 
     def _drain(
         self,
@@ -537,74 +683,171 @@ def verify_identity(
     payload_model: object,
     binding: SessionBinding,
 ) -> None:
-    """Enforce exact model-key identity whenever a runtime reports its model."""
+    """Enforce exact runtime-native model identity whenever a runtime reports it."""
     if not isinstance(payload_model, str) or not payload_model:
         return
-    if payload_model != binding.model_key:
+    if payload_model != binding.runtime_model_id:
         raise InferenceIdentityError("runtime reported a different model identity")
 
 
-def bind_tool_requests(
+class ToolCallLimitError(InferenceProtocolError):
+    """Too many tool calls appeared in one inference response."""
+
+    code = "TOO_MANY_TOOLS"
+
+
+class ToolCallParseError(InferenceProtocolError):
+    """Tool calls were malformed or incomplete and cannot be trusted."""
+
+    code = "TOOL_CALLS_MALFORMED"
+
+
+class ToolCallArgumentsError(InferenceProtocolError):
+    """Tool call arguments exceeded the bounded character/byte limits."""
+
+    code = "TOOL_ARGUMENTS_LIMIT"
+
+
+def _tool_call_failure(error: ToolCallLimitError | ToolCallParseError | ToolCallArgumentsError):
+    return EngineResult(
+        status="failed",
+        content="",
+        error_code=error.code,
+        error_message=(
+            "Tool calls were not accepted because they were malformed or exceeded bounds."
+        ),
+    )
+
+
+def _validate_arguments_object(arguments: Any, limits: InferenceLimits) -> dict[str, Any]:
+    """Decode a complete tool-call arguments payload or fail closed."""
+    if isinstance(arguments, dict):
+        parsed = arguments
+    elif isinstance(arguments, str) and arguments.strip():
+        try:
+            decoded = json.loads(arguments)
+        except ValueError as error:
+            raise ToolCallParseError("tool arguments were not valid JSON") from error
+        if not isinstance(decoded, dict):
+            raise ToolCallParseError("tool arguments were not a JSON object")
+        parsed = decoded
+    else:
+        raise ToolCallParseError("tool arguments were empty or incomplete")
+    encoded = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > limits.max_tool_arguments_bytes:
+        raise ToolCallArgumentsError("tool arguments exceeded the byte limit")
+    if len(encoded) > limits.max_tool_arguments_chars:
+        raise ToolCallArgumentsError("tool arguments exceeded the character limit")
+    return parsed
+
+
+def parse_complete_tool_calls(
     tool_calls: Any,
     *,
     limits: InferenceLimits,
-) -> tuple[ToolRequest, ...]:
-    """Convert bounded raw tool calls to strict ``ToolRequest`` records."""
-    if not isinstance(tool_calls, list):
+) -> tuple[Any, ...]:
+    """Convert a complete Ollama-style tool-call list, failing closed on bounds."""
+    if tool_calls is None:
         return ()
-    requests: list[ToolRequest] = []
-    for call in tool_calls[: limits.max_tool_requests]:
+    if not isinstance(tool_calls, list):
+        raise ToolCallParseError("tool calls were not a list")
+    if len(tool_calls) > limits.max_tool_requests:
+        raise ToolCallLimitError("tool calls exceeded the bounded count")
+    requests: list[Any] = []
+    for call in tool_calls:
         if not isinstance(call, dict):
-            continue
+            raise ToolCallParseError("a tool call was not an object")
         function = call.get("function")
         if not isinstance(function, dict):
-            continue
+            raise ToolCallParseError("a tool call had no function object")
         name = function.get("name")
         if not isinstance(name, str) or not name:
-            continue
-        arguments = function.get("arguments")
-        parsed_arguments: dict[str, Any] = {}
-        if isinstance(arguments, str) and arguments:
-            try:
-                decoded = json.loads(arguments)
-            except ValueError:
-                decoded = {}
-            if isinstance(decoded, dict):
-                parsed_arguments = decoded
-        elif isinstance(arguments, dict):
-            parsed_arguments = arguments
-        requests.append(_tool_request(name, parsed_arguments))
-    return tuple(requests[: limits.max_tool_requests])
+            raise ToolCallParseError("a tool call had no name")
+        parsed = _validate_arguments_object(function.get("arguments"), limits)
+        requests.append(_tool_request(name, parsed))
+    return tuple(requests)
 
 
-def bind_tool_requests_ollama(
-    tool_calls: Any,
-    *,
-    limits: InferenceLimits,
-) -> tuple[ToolRequest, ...]:
-    """Normalize Ollama's ``message.tool_calls`` shape to ``ToolRequest``."""
-    if not isinstance(tool_calls, list):
-        return ()
-    requests: list[ToolRequest] = []
-    for call in tool_calls[: limits.max_tool_requests]:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function")
-        if not isinstance(function, dict):
-            continue
-        name = function.get("name")
-        if not isinstance(name, str) or not name:
-            continue
-        arguments = function.get("arguments")
-        parsed_arguments: dict[str, Any] = {}
-        if isinstance(arguments, dict):
-            parsed_arguments = arguments
-        elif isinstance(arguments, str) and arguments:
-            try:
-                decoded = json.loads(arguments)
-            except ValueError:
-                decoded = {}
-            if isinstance(decoded, dict):
-                parsed_arguments = decoded
-        requests.append(_tool_request(name, parsed_arguments))
-    return tuple(requests[: limits.max_tool_requests])
+@dataclass(frozen=True)
+class _ToolCallFragment:
+    index: int
+    call_id: str | None = None
+    name: str | None = None
+    arguments: str = ""
+
+
+class ToolCallAccumulator:
+    """Bounded accumulation of OpenAI-style fragmented tool calls."""
+
+    def __init__(self, limits: InferenceLimits) -> None:
+        self._limits = limits
+        self._fragments: dict[int, _ToolCallFragment] = {}
+
+    def add_openai_delta(self, calls: Any) -> None:
+        if calls is None:
+            return
+        if not isinstance(calls, list):
+            raise ToolCallParseError("tool calls were not a list")
+        for call in calls:
+            if not isinstance(call, dict):
+                raise ToolCallParseError("a tool call fragment was not an object")
+            index_value = call.get("index")
+            if not isinstance(index_value, int) or index_value < 0:
+                raise ToolCallParseError("a tool call fragment had no valid index")
+            if index_value >= self._limits.max_tool_requests:
+                raise ToolCallLimitError("tool calls exceeded the bounded count")
+            fragment = self._fragments.get(index_value)
+            if fragment is None:
+                if len(self._fragments) >= self._limits.max_tool_requests:
+                    raise ToolCallLimitError("tool calls exceeded the bounded count")
+                fragment = _ToolCallFragment(index=index_value)
+            call_id = call.get("id")
+            if isinstance(call_id, str) and call_id:
+                if fragment.call_id is not None and fragment.call_id != call_id:
+                    raise ToolCallParseError("a tool call id changed across fragments")
+                fragment = _ToolCallFragment(
+                    index=index_value,
+                    call_id=call_id,
+                    name=fragment.name,
+                    arguments=fragment.arguments,
+                )
+            function = call.get("function")
+            if isinstance(function, dict):
+                name = function.get("name")
+                if isinstance(name, str) and name:
+                    if fragment.name is not None and fragment.name != name:
+                        raise ToolCallParseError("a tool call name changed across fragments")
+                    fragment = _ToolCallFragment(
+                        index=index_value,
+                        call_id=fragment.call_id,
+                        name=name,
+                        arguments=fragment.arguments,
+                    )
+                arguments = function.get("arguments")
+                if isinstance(arguments, str):
+                    fragment = _ToolCallFragment(
+                        index=index_value,
+                        call_id=fragment.call_id,
+                        name=fragment.name,
+                        arguments=fragment.arguments + arguments,
+                    )
+                    argument_bytes = len(fragment.arguments.encode("utf-8"))
+                    if argument_bytes > self._limits.max_tool_arguments_bytes:
+                        raise ToolCallArgumentsError("tool arguments exceeded the byte limit")
+                    if len(fragment.arguments) > self._limits.max_tool_arguments_chars:
+                        raise ToolCallArgumentsError("tool arguments exceeded the character limit")
+                elif arguments is not None:
+                    raise ToolCallParseError("tool arguments fragments must be strings")
+            self._fragments[index_value] = fragment
+
+    def finish(self) -> tuple[Any, ...]:
+        requests: list[Any] = []
+        for index in sorted(self._fragments):
+            fragment = self._fragments[index]
+            if not fragment.name:
+                raise ToolCallParseError("a tool call never received a name")
+            if not fragment.arguments:
+                raise ToolCallParseError("a tool call arguments fragment was incomplete")
+            parsed = _validate_arguments_object(fragment.arguments, self._limits)
+            requests.append(_tool_request(fragment.name, parsed))
+        return tuple(requests)

@@ -26,7 +26,11 @@ from zana_core.runtimes.inference import (
     BaseRuntimeInferenceAdapter,
     EngineResult,
     InferenceLimits,
-    bind_tool_requests_ollama,
+    ToolCallArgumentsError,
+    ToolCallLimitError,
+    ToolCallParseError,
+    _tool_call_failure,
+    parse_complete_tool_calls,
     parse_json_line,
     verify_identity,
 )
@@ -344,6 +348,7 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
         self,
         *,
         endpoint: str = OLLAMA_DEFAULT_ENDPOINT,
+        runtime_id: str | None = None,
         limits: InferenceLimits | None = None,
         transport: StreamTransport | None = None,
         clock: Callable[[], float] | None = None,
@@ -352,6 +357,7 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
     ) -> None:
         super().__init__(
             endpoint=endpoint,
+            runtime_id=runtime_id if runtime_id is not None else self.runtime_id,
             limits=limits,
             transport=transport,
             clock=clock,
@@ -368,11 +374,14 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
         binding: SessionBinding,
     ) -> tuple[str, dict[str, str], bytes]:
         url = f"{self.endpoint}/api/chat"
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/x-ndjson",
+        }
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         body = {
-            "model": binding.model_key,
+            "model": binding.runtime_model_id,
             "messages": [
                 {"role": "system", "content": context},
                 {"role": "user", "content": message},
@@ -408,10 +417,13 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
         if done is True:
             message = payload.get("message")
             message_dict: dict[str, Any] = message if isinstance(message, dict) else {}
-            tool_calls = bind_tool_requests_ollama(
-                message_dict.get("tool_calls"),
-                limits=self.limits,
-            )
+            try:
+                tool_calls = parse_complete_tool_calls(
+                    message_dict.get("tool_calls"),
+                    limits=self.limits,
+                )
+            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                return _tool_call_failure(error)
             final_content = message_dict.get("content")
             return EngineResult(
                 status="completed",

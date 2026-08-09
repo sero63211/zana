@@ -64,6 +64,7 @@ class TestStartPlanAndBinding:
             runtime_id="ollama-local",
             runtime_endpoint="http://127.0.0.1:11434",
             model_key="ollama-local:model",
+            runtime_model_id="model",
             model_digest="sha256:" + "a" * 64,
             expected_state_revision=0,
         )
@@ -79,6 +80,7 @@ class TestStartPlanAndBinding:
             runtime_id="ollama-local",
             runtime_endpoint="http://127.0.0.1:11434",
             model_key="ollama-local:model",
+            runtime_model_id="model",
             model_digest="sha256:" + "a" * 64,
         )
         assert binding.session_id == "s1"

@@ -64,6 +64,12 @@ class TestStart:
         with pytest.raises(RuntimeBindingMismatchError):
             running_instance(adapter=adapter)
 
+    def test_runtime_model_mismatch_blocks_start(self) -> None:
+        adapter = FakeRuntimeSessionAdapter()
+        adapter.runtime_model_mismatch = True
+        with pytest.raises(RuntimeBindingMismatchError):
+            running_instance(adapter=adapter)
+
     def test_already_starting_conflict(self) -> None:
         instance, _, plan = running_instance()
         instance.status = InstanceStatus.STARTING

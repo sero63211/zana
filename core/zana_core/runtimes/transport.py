@@ -11,12 +11,17 @@ from typing import Any, Protocol
 from zana_core.runtimes.base import (
     HttpResponse,
     InvalidRuntimeResponseError,
+    RuntimeProbeError,
     RuntimeProbeTimeoutError,
 )
 
 MAX_RESPONSE_BYTES = 1_048_576
 STREAM_CHUNK_SIZE = 65_536
 USER_AGENT = "zana-core/0.1.0"
+
+
+class TransportCleanupError(RuntimeProbeError):
+    """A stream/response could not be closed deterministically."""
 
 
 class UrllibTransport:
@@ -69,7 +74,10 @@ class UrllibTransport:
         )
 
     def _read_http_error(self, error: urllib.error.HTTPError) -> HttpResponse:  # noqa: ANN001
-        payload = error.read(MAX_RESPONSE_BYTES + 1)
+        try:
+            payload = error.read(MAX_RESPONSE_BYTES + 1)
+        finally:
+            error.close()
         if len(payload) > MAX_RESPONSE_BYTES:
             raise InvalidRuntimeResponseError(
                 "Runtime error response exceeded the 1 MiB bounded probe limit."
@@ -136,7 +144,10 @@ class _BoundedStream:
         if self._closed:
             return
         self._closed = True
-        self._response.close()
+        try:
+            self._response.close()
+        except Exception as error:  # noqa: BLE001 - cleanup is reported, never silent
+            raise TransportCleanupError("Runtime chat stream cleanup failed.") from error
 
 
 class UrllibStreamTransport(UrllibTransport):
@@ -174,7 +185,10 @@ class UrllibStreamTransport(UrllibTransport):
         try:
             response = urllib.request.urlopen(request, timeout=timeout)
         except urllib.error.HTTPError as error:
-            error.read(MAX_RESPONSE_BYTES + 1)
+            try:
+                error.read(MAX_RESPONSE_BYTES + 1)
+            finally:
+                error.close()
             raise InvalidRuntimeResponseError(
                 f"Runtime chat returned HTTP {error.code}; runtime was not available."
             ) from error

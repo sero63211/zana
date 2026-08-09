@@ -42,6 +42,8 @@ class TestExactIdentity:
         assert plan.base_model_digest == IDENTITY_DIGEST
         assert plan.model_digest == IDENTITY_DIGEST
         assert plan.runtime_id == "ollama-local"
+        assert plan.model_key == "ollama-local:example-model:tag"
+        assert plan.runtime_model_id == "example-model:tag"
 
     def test_display_name_never_matches_without_digest(self) -> None:
         config = make_image_config()

@@ -104,6 +104,7 @@ class StartPlan(BaseModel):
     runtime_id: str = Field(min_length=1)
     runtime_endpoint: str = Field(min_length=1)
     model_key: str = Field(min_length=1)
+    runtime_model_id: str = Field(min_length=1)
     model_digest: str = Field(min_length=1)
     expected_state_revision: int = Field(ge=0)
     required_artifact_digests: tuple[str, ...] = Field(default_factory=tuple)
@@ -122,6 +123,7 @@ class SessionBinding(BaseModel):
     runtime_id: str = Field(min_length=1)
     runtime_endpoint: str = Field(min_length=1)
     model_key: str = Field(min_length=1)
+    runtime_model_id: str = Field(min_length=1)
     model_digest: str = Field(min_length=1)
     bound_at: datetime = Field(default_factory=utc_now)
 

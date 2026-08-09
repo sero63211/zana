@@ -165,6 +165,7 @@ class FakeRuntimeSessionAdapter(RuntimeSessionAdapter):
         self.stops = 0
         self.status_checks = 0
         self.mismatch = False
+        self.runtime_model_mismatch = False
         self.fail_start = False
         self.fail_stop = False
 
@@ -180,6 +181,9 @@ class FakeRuntimeSessionAdapter(RuntimeSessionAdapter):
             runtime_id=plan.runtime_id,
             runtime_endpoint=plan.runtime_endpoint,
             model_key=plan.model_key,
+            runtime_model_id=(
+                "wrong-native-model" if self.runtime_model_mismatch else plan.runtime_model_id
+            ),
             model_digest=plan.model_digest,
         )
 

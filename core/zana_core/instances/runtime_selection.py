@@ -101,6 +101,7 @@ class RuntimeSelectionService:
             runtime_id=runtime.runtime_id,
             runtime_endpoint=runtime.endpoint,
             model_key=f"{runtime.runtime_id}:{model.model_id}",
+            runtime_model_id=model.model_id,
             model_digest=model.digest,
             expected_state_revision=expected_state_revision,
             required_artifact_digests=(),

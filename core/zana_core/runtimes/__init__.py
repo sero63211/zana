@@ -12,7 +12,11 @@ from zana_core.runtimes.inference import (
 )
 from zana_core.runtimes.ollama import OllamaInferenceAdapter
 from zana_core.runtimes.openai_compat import OpenAICompatInferenceAdapter
-from zana_core.runtimes.transport import StreamTransport, UrllibStreamTransport
+from zana_core.runtimes.transport import (
+    StreamTransport,
+    TransportCleanupError,
+    UrllibStreamTransport,
+)
 
 __all__ = [
     "DEFAULT_INFERENCE_LIMITS",
@@ -25,6 +29,7 @@ __all__ = [
     "OllamaInferenceAdapter",
     "OpenAICompatInferenceAdapter",
     "StreamTransport",
+    "TransportCleanupError",
     "UrllibStreamTransport",
     "sanitized_message",
 ]
