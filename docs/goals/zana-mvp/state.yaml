@@ -1095,6 +1095,16 @@ tasks:
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/api/capabilities.py, capability-only changes in core/zana_core/api/schemas.py, core/zana_core/capabilities/**, capability-only additive changes in core/zana_core/db/repositories.py and unit_of_work.py, focused capability/API tests, .agent-work/handoffs/T900-capability-authoring-api.md"
         gates: "Focused capability-authoring/API pytest only; Ruff/format; Pyright; import/diff/path/atomicity/error review; no full/live/app/model/runtime/training/build verification; one product commit plus receipt; clean; no push."
+      - id: T900-mlx-training-execution
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        branch: codex/zana-t900-mlx-training-execution
+        thread: 019fe8bb-fe02-7340-97c5-fa915f4ba840
+        worktree: /Users/sero/.codex/worktrees/3858/zana
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/training/**, core/tests/training/**, .agent-work/handoffs/T900-mlx-training-execution.md"
+        gates: "Focused training unit tests with injected process boundary only; Ruff/format; Pyright; import/diff/CLI/identity/cancellation review; no MLX import/process, full/live/model/runtime/download/training execution; one product commit plus receipt; clean; no push."
       - id: T900-tauri-core-package
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
