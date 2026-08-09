@@ -85,6 +85,10 @@ MAX_ENDPOINT_BYTES = 4096
 MAX_BEARER_TOKEN_BYTES = 4096
 MAX_TOOL_ARGUMENTS_CHARS = 16_000
 MAX_TOOL_ARGUMENTS_BYTES = 16_000
+MAX_TOOL_CALL_ID_CHARS = 256
+MAX_TOOL_CALL_ID_BYTES = 1024
+MAX_TOOL_NAME_CHARS = 256
+MAX_TOOL_NAME_BYTES = 1024
 MAX_CONTEXT_BYTES = 262_144
 MAX_MESSAGE_BYTES = 65_536
 
@@ -141,6 +145,18 @@ class InferenceLimits(BaseModel):
     )
     max_tool_arguments_bytes: int = Field(
         default=MAX_TOOL_ARGUMENTS_BYTES, strict=True, ge=1, le=MAX_TOOL_ARGUMENTS_BYTES
+    )
+    max_tool_call_id_chars: int = Field(
+        default=MAX_TOOL_CALL_ID_CHARS, strict=True, ge=1, le=MAX_TOOL_CALL_ID_CHARS
+    )
+    max_tool_call_id_bytes: int = Field(
+        default=MAX_TOOL_CALL_ID_BYTES, strict=True, ge=1, le=MAX_TOOL_CALL_ID_BYTES
+    )
+    max_tool_name_chars: int = Field(
+        default=MAX_TOOL_NAME_CHARS, strict=True, ge=1, le=MAX_TOOL_NAME_CHARS
+    )
+    max_tool_name_bytes: int = Field(
+        default=MAX_TOOL_NAME_BYTES, strict=True, ge=1, le=MAX_TOOL_NAME_BYTES
     )
     max_generation_timeout_seconds: float = Field(
         default=MAX_GENERATION_TIMEOUT_SECONDS,
@@ -368,17 +384,27 @@ class BaseRuntimeInferenceAdapter(ABC):
             raise InferenceParametersError(
                 f"Endpoint exceeds the {self.limits.max_endpoint_bytes}-byte limit."
             )
-        parts = urlsplit(self.endpoint)
+        try:
+            parts = urlsplit(self.endpoint)
+        except ValueError as error:
+            raise InferenceParametersError(
+                "Inference endpoint is not a valid http(s) URL."
+            ) from error
         if parts.scheme not in ("http", "https") or not parts.netloc:
             raise InferenceParametersError("Inference endpoints must be http(s) URLs.")
         if parts.username or parts.password:
             raise InferenceParametersError("Embedded credentials in endpoints are rejected.")
-        if self.bearer_token is not None and len(self.bearer_token.encode("utf-8")) > (
-            self.limits.max_bearer_token_bytes
-        ):
+        if parts.query or parts.fragment:
             raise InferenceParametersError(
-                f"Bearer token exceeds the {self.limits.max_bearer_token_bytes}-byte limit."
+                "Inference endpoints must not contain query or fragment parts."
             )
+        if self.bearer_token is not None:
+            if not isinstance(self.bearer_token, str):
+                raise InferenceParametersError("Bearer token must be an exact string.")
+            if len(self.bearer_token.encode("utf-8")) > self.limits.max_bearer_token_bytes:
+                raise InferenceParametersError(
+                    f"Bearer token exceeds the {self.limits.max_bearer_token_bytes}-byte limit."
+                )
         if self.timeout_seconds is not None:
             timeout = float(self.timeout_seconds)
             if not _isfinite(timeout) or timeout <= 0:
@@ -708,6 +734,18 @@ class ToolCallArgumentsError(InferenceProtocolError):
     code = "TOOL_ARGUMENTS_LIMIT"
 
 
+class ToolNameError(ToolCallParseError):
+    """A tool call name exceeded its bounded length or was not a string."""
+
+    code = "TOOL_NAME_LIMIT"
+
+
+class ToolCallIdError(ToolCallParseError):
+    """A tool call id exceeded its bounded length or was not a string."""
+
+    code = "TOOL_CALL_ID_LIMIT"
+
+
 def _tool_call_failure(error: ToolCallLimitError | ToolCallParseError | ToolCallArgumentsError):
     return EngineResult(
         status="failed",
@@ -717,6 +755,26 @@ def _tool_call_failure(error: ToolCallLimitError | ToolCallParseError | ToolCall
             "Tool calls were not accepted because they were malformed or exceeded bounds."
         ),
     )
+
+
+def _validate_tool_name(name: Any, limits: InferenceLimits) -> str:
+    if not isinstance(name, str) or not name:
+        raise ToolCallParseError("a tool call name must be a non-empty string")
+    if len(name) > limits.max_tool_name_chars:
+        raise ToolNameError("tool call name exceeded the character limit")
+    if len(name.encode("utf-8")) > limits.max_tool_name_bytes:
+        raise ToolNameError("tool call name exceeded the byte limit")
+    return name
+
+
+def _validate_tool_call_id(call_id: Any, limits: InferenceLimits) -> str:
+    if not isinstance(call_id, str) or not call_id:
+        raise ToolCallParseError("a tool call id must be a non-empty string")
+    if len(call_id) > limits.max_tool_call_id_chars:
+        raise ToolCallIdError("tool call id exceeded the character limit")
+    if len(call_id.encode("utf-8")) > limits.max_tool_call_id_bytes:
+        raise ToolCallIdError("tool call id exceeded the byte limit")
+    return call_id
 
 
 def _validate_arguments_object(arguments: Any, limits: InferenceLimits) -> dict[str, Any]:
@@ -760,9 +818,7 @@ def parse_complete_tool_calls(
         function = call.get("function")
         if not isinstance(function, dict):
             raise ToolCallParseError("a tool call had no function object")
-        name = function.get("name")
-        if not isinstance(name, str) or not name:
-            raise ToolCallParseError("a tool call had no name")
+        name = _validate_tool_name(function.get("name"), limits)
         parsed = _validate_arguments_object(function.get("arguments"), limits)
         requests.append(_tool_request(name, parsed))
     return tuple(requests)
@@ -802,7 +858,8 @@ class ToolCallAccumulator:
                     raise ToolCallLimitError("tool calls exceeded the bounded count")
                 fragment = _ToolCallFragment(index=index_value)
             call_id = call.get("id")
-            if isinstance(call_id, str) and call_id:
+            if call_id is not None:
+                call_id = _validate_tool_call_id(call_id, self._limits)
                 if fragment.call_id is not None and fragment.call_id != call_id:
                     raise ToolCallParseError("a tool call id changed across fragments")
                 fragment = _ToolCallFragment(
@@ -814,7 +871,8 @@ class ToolCallAccumulator:
             function = call.get("function")
             if isinstance(function, dict):
                 name = function.get("name")
-                if isinstance(name, str) and name:
+                if name is not None:
+                    name = _validate_tool_name(name, self._limits)
                     if fragment.name is not None and fragment.name != name:
                         raise ToolCallParseError("a tool call name changed across fragments")
                     fragment = _ToolCallFragment(

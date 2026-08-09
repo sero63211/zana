@@ -193,6 +193,7 @@ class LifecycleService:
             and binding.image_digest == plan.image_digest
             and binding.base_model_digest == plan.base_model_digest
             and binding.runtime_id == plan.runtime_id
+            and binding.runtime_endpoint == plan.runtime_endpoint
             and binding.model_key == plan.model_key
             and binding.runtime_model_id == plan.runtime_model_id
             and binding.model_digest == plan.model_digest

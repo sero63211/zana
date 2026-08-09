@@ -166,6 +166,7 @@ class FakeRuntimeSessionAdapter(RuntimeSessionAdapter):
         self.status_checks = 0
         self.mismatch = False
         self.runtime_model_mismatch = False
+        self.endpoint_mismatch = False
         self.fail_start = False
         self.fail_stop = False
 
@@ -179,7 +180,9 @@ class FakeRuntimeSessionAdapter(RuntimeSessionAdapter):
             image_digest=plan.image_digest,
             base_model_digest=("sha256:" + "0" * 64 if self.mismatch else plan.base_model_digest),
             runtime_id=plan.runtime_id,
-            runtime_endpoint=plan.runtime_endpoint,
+            runtime_endpoint=(
+                "http://127.0.0.1:9999" if self.endpoint_mismatch else plan.runtime_endpoint
+            ),
             model_key=plan.model_key,
             runtime_model_id=(
                 "wrong-native-model" if self.runtime_model_mismatch else plan.runtime_model_id
