@@ -734,12 +734,16 @@ tasks:
         owns: "core/zana_core/observability/**, core/tests/observability/**, core/zana_core/streaming/redaction.py, core/tests/streaming/test_redaction.py, .agent-work/handoffs/T007-observability.md"
       - id: T007-acquisition
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        reasoning_effort: max
+        status: done
         codex_thread: 019fe603-86a7-7ee2-a8b3-15981062570e
         worktree: /Users/sero/.codex/worktrees/216c/zana
         branch: agent/T007-acquisition
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        agent_head: 1817df72ee52fc5f015bc067878955f3d53028fe
+        integration_commit: 8eaefc506055c551cb703b1fe0cce5c154015046
+        verification: "83 focused pytest; Ruff check; Ruff format; Pyright; diff/security inspection; clean; pushed origin/main"
         owns: "core/zana_core/acquisition/**, core/tests/acquisition/**, .agent-work/handoffs/T007-acquisition.md"
       - id: T007-platform
         agent: router_opencode_go_deepseek_v4_flash

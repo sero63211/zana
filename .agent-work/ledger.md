@@ -55,7 +55,7 @@ operational coordination only and never supersedes it.
 | T007-resources | `router_opencode_go_deepseek_v4_flash`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-resources` at `/Users/sero/.codex/worktrees/9529/zana` | `core/zana_core/resources/**`, `core/tests/resources/**`, `T007-resources.md` | done, PASS; integrated `0d3829f`, `ae5b41d` | hardware/planning PASS; strict lightweight owner constraint | 58 focused pytest; full branch 619 PASS; Ruff/Pyright; bounded leases/admission; zero background threads |
 | T007-diagnostics | `router_opencode_go_deepseek_v4_flash`, thread `019fe603-86a7-7ee2-a8b3-15981062570e`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-diagnostics` at `/Users/sero/.codex/worktrees/216c/zana` | `core/zana_core/diagnostics/**`, `core/tests/diagnostics/**`, `T007-diagnostics.md` | done, PASS; integrated `a93b32f`, `f6f5737` | runtime/hardware/artifact/image PASS | 22 focused pytest; Ruff/Pyright; read-only bounded doctor; no model/service start |
 | T007-observability | `router_opencode_go_deepseek_v4_flash`, thread `019fe65b-1ebf-7132-b240-e6b98772bb56`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-observability` at `/Users/sero/.codex/worktrees/ba7c/zana` | observability package/tests plus canonical `streaming/redaction.py` and its test, `T007-observability.md` | active rework | security/logging spec 16; integrated streaming boundary | consolidate to one globally bounded redactor; constant-retention JSONL/ring buffer; no telemetry/background/unbounded directory listing |
-| T007-acquisition | `router_opencode_go_deepseek_v4_flash`, thread `019fe603-86a7-7ee2-a8b3-15981062570e`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-acquisition` at `/Users/sero/.codex/worktrees/216c/zana` | `core/zana_core/acquisition/**`, `core/tests/acquisition/**`, `T007-acquisition.md` | active wave | runtime/resource PASS; specs 06/07 | focused pytest/Ruff/Pyright; native runtime pull only, streaming progress, preflight disk lease, bounded cancellation/deadline, no byte proxy |
+| T007-acquisition | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe603-86a7-7ee2-a8b3-15981062570e`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-acquisition` at `/Users/sero/.codex/worktrees/216c/zana` | `core/zana_core/acquisition/**`, `core/tests/acquisition/**`, `T007-acquisition.md` | done, PASS; integrated `8eaefc5` | runtime/resource PASS; specs 06/07 | 83 focused pytest; Ruff check/format; Pyright; native runtime pull only, streaming progress, preflight disk lease, bounded cancellation/deadline, no byte proxy |
 | T007-platform | `router_opencode_go_deepseek_v4_flash`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-platform` at `/Users/sero/.codex/worktrees/9529/zana` | `core/zana_core/platform/**`, `core/tests/platform/**`, `T007-platform.md` | done, PASS; integrated `a62bfe2`, `9797f61`, `dd77104`, `852fb18` | strict lightweight portability rule; spec 21 | 46 integrated focused pytest; Ruff/Pyright; strict final root-set validation; bounded probes |
 | T007-streaming | `router_opencode_go_deepseek_v4_flash`, thread `019fe65a-7992-7081-9d8a-3bef3f41e58b`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-streaming` at `/Users/sero/.codex/worktrees/b8bd/zana` | `core/zana_core/streaming/**`, `core/tests/streaming/**`, `T007-streaming.md` | done, PASS; integrated `8282422`, `5d918e2` | jobs/API and chat/acquisition stream contracts; specs 18/22 | 50 integrated focused pytest; Ruff/Pyright; bounded resumable SSE; zero polling/background/event accumulation |
 | T007-jobs-sse | `router_opencode_go_deepseek_v4_flash`, thread `019fe65a-7992-7081-9d8a-3bef3f41e58b`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-jobs-sse` at `/Users/sero/.codex/worktrees/b8bd/zana` | exact jobs API/repository/service/test files, `T007-jobs-sse.md` | active wave | integrated streaming boundary; persisted jobs | focused pytest/Ruff/Pyright; authenticated bounded Last-Event-ID SSE snapshot; paginated DB reads; no polling/background |
@@ -84,4 +84,21 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   their next lead integration is subject to the hardened acceptance/push receipt
 - remote proof: local `master` pushed non-force to `origin/main`; confirmed local
   HEAD and `origin/main` both equal the accepted commit SHA above
+- clean proof: index exit `0`, worktree exit `0`, `git status --porcelain` empty
+
+### T007 native model acquisition
+
+- accepted commit: `8eaefc506055c551cb703b1fe0cce5c154015046`
+- changed paths: `.agent-work/handoffs/T007-acquisition.md`,
+  `core/zana_core/acquisition/**`, `core/tests/acquisition/**`
+- gates: 83 focused pytest PASS; Ruff check PASS; Ruff format check PASS;
+  Pyright PASS with zero errors/warnings; `git diff --check` PASS; lead security
+  and error-path inspection PASS
+- security delta: only native Ollama acquisition is admitted; progress parsing is
+  bounded JSONL with one absolute deadline, resource admission, cancellation,
+  sanitized failures, and no secret, raw-error, background-worker, or proxy path
+- residual risk: transport remains injected and live Ollama/network execution was
+  intentionally excluded; API/job wiring is a later bounded milestone
+- remote proof: non-force push `master:main` succeeded; local HEAD and
+  `origin/main` both equal `8eaefc506055c551cb703b1fe0cce5c154015046`
 - clean proof: index exit `0`, worktree exit `0`, `git status --porcelain` empty
