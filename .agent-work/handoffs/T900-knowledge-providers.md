@@ -1,6 +1,6 @@
 # T900 Knowledge Providers Handoff - Docling and LanceDB Local Providers
 
-Verdict: PASS
+Verdict: PASS (lead review BLOCK addressed in `d7e9a56`)
 
 ## Scope
 
@@ -41,14 +41,48 @@ Implementation commit `3ecadeb` changed:
 - `core/tests/knowledge/test_lancedb_index.py` (new) - 20 focused tests using
   an exact tiny durable local `RecordStore` fixture.
 
+## Lead review fix (`d7e9a56`)
+
+The lead BLOCK requested seven direct integrity fixes, all applied in one
+review-fix commit within the same owned paths:
+
+1. `DoclingParser` now rejects `approved=false` for every kind before any file
+   work, and `_preflight_source` verifies exact regular-file size, configured
+   `max_source_bytes`, and recorded `SourceMetadata.size_bytes` before the
+   SHA-256 loop; hashing is bounded byte-for-byte.  Converter never runs for
+   unapproved, size-drifted, or oversized PDFs (tests assert zero converter
+   calls).
+2. Docling `document.texts` is consumed through a cap+1 iterator; a hostile
+   infinite iterable consumes exactly `max_section_count + 1` items and fails
+   bounded (test asserts the consumed count).
+3. `LanceDBRecordStore.upsert` distinguishes table absence (create, never
+   `mode="overwrite"`) from update failure (merge-insert by `chunk_id`; a
+   failed merge surfaces `IndexCorruptionError` and never recreates the table).
+   Injected backend adapter tests cover create, merge/update, and
+   failure-no-overwrite.
+4. Real store `load_records` performs a bounded `count_rows` preflight against
+   `KnowledgeLimits.max_index_records` before materializing rows; an injected
+   table reporting cap+1 rows is rejected without `to_pylist` materialization.
+5. Query vectors are validated (exact type, dimensions, finite cells, required
+   L2 normalization) before any backend search, LanceDB search selects cosine
+   explicitly, and `_distance` is mapped to `1 - distance` with range checks.
+   Tests cover wrong dimensions, NaN, non-normalized queries, explicit cosine
+   selection, and valid score mapping.
+6. `write_snapshot` is immutable: same identity is idempotent after
+   verification, different identity fails and preserves existing bytes, and
+   final publication failures clean the temporary file.  Tests cover all three.
+7. Unavailable parser mapping returns a bounded canonical message and action
+   set; arbitrary provider text/actions (including secrets or raw tracebacks)
+   are never echoed.  A hostile-exception test covers this.
+
 ## Checks run and evidence
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Smallest provider tests | `pytest core/tests/knowledge/test_docling.py core/tests/knowledge/test_lancedb_index.py -q` | 35 passed |
-| Full knowledge tests | `pytest core/tests/knowledge -q` | 239 passed |
+| Smallest provider tests | `pytest core/tests/knowledge/test_docling.py core/tests/knowledge/test_lancedb_index.py -q` | 53 passed |
+| Full knowledge tests | `pytest core/tests/knowledge -q` | 257 passed |
 | Resource/portability tests | `pytest core/tests/resources core/tests/portability -q` | 165 passed |
-| Full Core suite | `pytest core/tests -q` | 1622 passed |
+| Full Core suite | `pytest core/tests -q` | 1641 passed |
 | Ruff lint | `ruff check core/zana_core/knowledge core/tests/knowledge/test_docling.py core/tests/knowledge/test_lancedb_index.py` | clean |
 | Ruff format | `ruff format --check core/zana_core/knowledge core/tests/knowledge/test_docling.py core/tests/knowledge/test_lancedb_index.py` | clean |
 | Pyright knowledge package | `pyright zana_core/knowledge` | 0 errors, 0 warnings |
@@ -79,6 +113,10 @@ provenance.
   unavailable errors, so no fake successful provider path exists.
 - Results are bounded to the configured candidate/top-K limits and candidate
   records/scores are revalidated before they reach retrieval.
+- File size gates run before hashing; hashing is byte-bounded; parser
+  unavailable errors never echo provider text/actions.
+- LanceDB table materialization is gated by a bounded row-count preflight, and
+  upserts never overwrite a table after an update failure.
 
 ## Residual risk
 
@@ -101,15 +139,17 @@ None.
   `9c1dfb4a2ee4b30fe836d795ef4663e3d921bd75`.
 - Implementation commit: `3ecadeb`
   (`feat: add Docling and LanceDB local knowledge providers`).
-- This handoff is the second, docs-only commit on the same branch.
+- Review-fix commit: `d7e9a56`
+  (`fix: harden Docling and LanceDB provider integrity`).
+- This handoff is the final docs-only commit on the same branch.
 - Merge the eight owned source/test files and this handoff through the PM
   integration lane.  No lockfile, manifest, existing shared contract, API, DB,
   or other lane is included.
 
 ## Clean proof
 
-After the implementation commit, `git status --porcelain` was empty.  The
-handoff docs commit lands last; final index and worktree are clean.
+After the implementation and review-fix commits, `git status --porcelain` was
+empty.  The handoff docs commit lands last; final index and worktree are clean.
 
 ## Push state
 
