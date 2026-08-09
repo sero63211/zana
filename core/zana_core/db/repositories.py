@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import select
+from sqlalchemy import BLOB, String, case, func, select, text
 from sqlalchemy.orm import Session
 
 from zana_core.db.models import (
@@ -28,6 +30,20 @@ from zana_core.db.models import (
 from zana_core.domain.enums import RuntimeSource, RuntimeStatus
 
 EntityT = TypeVar("EntityT", bound=Base)
+
+
+@dataclass(frozen=True)
+class JobEventStreamRow:
+    """Bounded SQL projection for SSE; oversized text/JSON never enters Python."""
+
+    id: int
+    job_id: int
+    kind: str
+    phase: str
+    message: str
+    progress_0_1: float
+    error_json: str | None
+    created_at: datetime
 
 
 class RepositoryBase(Generic[EntityT]):
@@ -107,11 +123,120 @@ class JobRepository(RepositoryBase[Job]):
 class JobEventRepository(RepositoryBase[JobEvent]):
     model = JobEvent
 
-    def list_for_job(self, job_id: int) -> list[JobEvent]:
+    MAX_EVENT_PAGE_SIZE = 100
+    STREAM_MAX_MESSAGE_CHARS = 256
+    STREAM_MAX_PHASE_CHARS = 24
+    STREAM_MAX_KIND_CHARS = 32
+    STREAM_MAX_ERROR_BYTES = 1024
+
+    @staticmethod
+    def _require_positive_int(value: object, name: str, maximum: int) -> int:
+        if type(value) is not int:
+            raise TypeError(f"{name} must be an int")
+        if value <= 0 or value > maximum:
+            raise ValueError(f"{name} must be between 1 and {maximum}")
+        return value
+
+    @staticmethod
+    def _require_non_negative_int(value: object, name: str) -> int:
+        if type(value) is not int:
+            raise TypeError(f"{name} must be an int")
+        if value < 0:
+            raise ValueError(f"{name} must be non-negative")
+        return value
+
+    def list_for_job_stream(
+        self,
+        job_id: int,
+        *,
+        after_event_id: int = 0,
+        limit: int = 50,
+    ) -> list[JobEventStreamRow]:
+        """SQL-side bounded projection for the SSE endpoint.
+
+        Message/phase are capped with SQLite ``substr`` before Python sees
+        them. ``error_json`` is never deserialized: an oversized or invalid
+        JSON value is projected as a small typed sentinel string, and normal
+        values are returned as the raw bounded string. ``LIMIT`` is always
+        enforced and ordering is by stable ascending id.
+        """
+        limit = self._require_positive_int(limit, "limit", self.MAX_EVENT_PAGE_SIZE)
+        after_event_id = self._require_non_negative_int(after_event_id, "after_event_id")
+        job_id = self._require_non_negative_int(job_id, "job_id")
+
+        message_prefix = func.substr(JobEvent.message, 1, self.STREAM_MAX_MESSAGE_CHARS)
+        phase_prefix = func.substr(JobEvent.phase, 1, self.STREAM_MAX_PHASE_CHARS)
+        error_sentinel = text('\'{"code":"REDACTED_ERROR","message":"[truncated]"}\'')
+        error_projection = case(
+            (
+                JobEvent.error_json.is_(None),
+                None,
+            ),
+            (
+                func.length(func.cast(JobEvent.error_json, BLOB)) > self.STREAM_MAX_ERROR_BYTES,
+                error_sentinel,
+            ),
+            else_=func.cast(JobEvent.error_json, String),
+        )
+        kind_prefix = func.substr(JobEvent.kind, 1, self.STREAM_MAX_KIND_CHARS)
+
+        stmt = (
+            select(
+                JobEvent.id,
+                JobEvent.job_id,
+                func.cast(kind_prefix, String).label("kind"),
+                phase_prefix.label("phase"),
+                message_prefix.label("message"),
+                JobEvent.progress_0_1,
+                error_projection.label("error_json"),
+                JobEvent.created_at,
+            )
+            .where(
+                JobEvent.job_id == job_id,
+                JobEvent.id > after_event_id,
+            )
+            .order_by(JobEvent.id)
+            .limit(limit)
+        )
+        rows = self.session.execute(stmt).all()
+        return [
+            JobEventStreamRow(
+                id=row.id,
+                job_id=row.job_id,
+                kind=row.kind,
+                phase=row.phase,
+                message=row.message,
+                progress_0_1=row.progress_0_1,
+                error_json=row.error_json,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+
+    def list_for_job(
+        self,
+        job_id: int,
+        *,
+        after_event_id: int = 0,
+        limit: int = 50,
+    ) -> list[JobEvent]:
+        """Read one bounded ascending page of events for an exact job.
+
+        Always uses SQL ``LIMIT`` and never loads all rows. The default page
+        is conservative and callers must keep the value below the server
+        maximum.
+        """
+        limit = self._require_positive_int(limit, "limit", self.MAX_EVENT_PAGE_SIZE)
+        after_event_id = self._require_non_negative_int(after_event_id, "after_event_id")
+        job_id = self._require_non_negative_int(job_id, "job_id")
         stmt = (
             select(JobEvent)
-            .where(JobEvent.job_id == job_id)
-            .order_by(JobEvent.created_at, JobEvent.id)
+            .where(
+                JobEvent.job_id == job_id,
+                JobEvent.id > after_event_id,
+            )
+            .order_by(JobEvent.id)
+            .limit(limit)
         )
         return list(self.session.scalars(stmt))
 

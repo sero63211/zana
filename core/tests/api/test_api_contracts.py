@@ -1,6 +1,8 @@
-"""Authenticated API registration and real persistence contract tests."""
+"""Authenticated API registration, job SSE, and real persistence tests."""
 
 from __future__ import annotations
+
+import json
 
 from fastapi.testclient import TestClient
 
@@ -15,6 +17,38 @@ from zana_core.domain.enums import (
     RuntimeStatus,
 )
 from zana_core.jobs.services import JobService
+
+
+def _parse_sse(text: str) -> list[dict[str, object]]:
+    """Parse canonical SSE framing into typed event records for tests."""
+    events: list[dict[str, object]] = []
+    current: dict[str, object] | None = None
+    for raw_line in text.split("\n"):
+        if raw_line == "":
+            if current is not None:
+                events.append(current)
+                current = None
+            continue
+        if raw_line.startswith(":"):
+            continue
+        field, _, value = raw_line.partition(":")
+        value = value[1:] if value.startswith(" ") else value
+        if field == "id":
+            if current is None:
+                current = {}
+            current["id"] = value
+        elif field == "event":
+            if current is None:
+                current = {}
+            current["event"] = value
+        elif field == "data":
+            if current is None:
+                current = {}
+            current.setdefault("data", []).append(value)
+    if current is not None:
+        events.append(current)
+    return events
+
 
 AUTH_PROTECTED_PATHS = [
     ("GET", "/api/v1/runtimes"),
@@ -222,8 +256,15 @@ class TestJobsApi:
 
         events = client.get(f"/api/v1/jobs/{job.id}/events", headers=auth_header)
         assert events.status_code == 200
-        kinds = [event["kind"] for event in events.json()]
-        assert kinds == ["CREATED", "STATUS_CHANGED"]
+        assert events.headers["content-type"].startswith("text/event-stream")
+        assert events.headers["cache-control"] == "no-cache, no-transform"
+        assert events.headers["x-accel-buffering"] == "no"
+        parsed = _parse_sse(events.text)
+        assert [event["event"] for event in parsed] == ["job_created", "job_status"]
+        assert [int(event["id"]) for event in parsed] == [1, 2]
+        first_data = json.loads(parsed[0]["data"][0])
+        assert first_data["job_id"] == job.id
+        assert first_data["kind"] == "job_created"
 
         missing = client.get("/api/v1/jobs/999999", headers=auth_header)
         assert missing.status_code == 404

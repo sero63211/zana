@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime
 from typing import Any
 
 from zana_core.db.models import BuildJob, Job, JobEvent
+from zana_core.db.repositories import JobEventStreamRow
 from zana_core.db.unit_of_work import UnitOfWork
 from zana_core.domain.enums import (
     BuildJobStatus,
@@ -24,6 +26,9 @@ from zana_core.jobs.state_machine import (
 
 class JobNotFoundError(KeyError):
     """Raised when a job id does not exist."""
+
+
+MAX_EVENT_PAGE_SIZE = 100
 
 
 class BuildJobNotFoundError(KeyError):
@@ -57,6 +62,7 @@ class JobService:
         return job
 
     def get_job(self, job_id: int) -> Job:
+        _require_non_negative_int(job_id, "job_id")
         job = self.uow.jobs.get(job_id)
         if job is None:
             raise JobNotFoundError(job_id)
@@ -142,9 +148,57 @@ class JobService:
         )
         return job
 
-    def list_events(self, job_id: int) -> list[JobEvent]:
+    def list_events(
+        self,
+        job_id: int,
+        *,
+        after_event_id: int = 0,
+        limit: int = 50,
+    ) -> list[JobEvent]:
+        """Read one bounded ascending page of events for an exact job."""
+        limit = _require_positive_int(limit, "limit")
+        after_event_id = _require_non_negative_int(after_event_id, "after_event_id")
+        _require_non_negative_int(job_id, "job_id")
         self.get_job(job_id)
-        return self.uow.job_events.list_for_job(job_id)
+        return self.uow.job_events.list_for_job(
+            job_id,
+            after_event_id=after_event_id,
+            limit=limit,
+        )
+
+    def list_event_stream_rows(
+        self,
+        job_id: int,
+        *,
+        after_event_id: int = 0,
+        limit: int = 50,
+    ) -> list[JobEventStreamRow]:
+        """Read a SQL-side bounded SSE projection for an exact job."""
+        limit = _require_positive_int(limit, "limit")
+        after_event_id = _require_non_negative_int(after_event_id, "after_event_id")
+        _require_non_negative_int(job_id, "job_id")
+        self.get_job(job_id)
+        return self.uow.job_events.list_for_job_stream(
+            job_id,
+            after_event_id=after_event_id,
+            limit=limit,
+        )
+
+
+def _require_positive_int(value: object, name: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an int")
+    if value <= 0 or value > MAX_EVENT_PAGE_SIZE:
+        raise ValueError(f"{name} must be between 1 and {MAX_EVENT_PAGE_SIZE}")
+    return value
+
+
+def _require_non_negative_int(value: object, name: str) -> int:
+    if type(value) is not int:
+        raise TypeError(f"{name} must be an int")
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative")
+    return value
 
 
 class BuildJobService:
@@ -160,6 +214,7 @@ class BuildJobService:
         model_key: str,
         policy: dict[str, Any],
     ) -> BuildJob:
+        _require_non_negative_int(capability_id, "capability_id")
         build_job = BuildJob(
             capability_id=capability_id,
             model_key=model_key,
@@ -178,6 +233,7 @@ class BuildJobService:
         return build_job
 
     def get_build_job(self, build_job_id: int) -> BuildJob:
+        _require_non_negative_int(build_job_id, "build_job_id")
         build_job = self.uow.build_jobs.get(build_job_id)
         if build_job is None:
             raise BuildJobNotFoundError(build_job_id)
@@ -208,4 +264,15 @@ class BuildJobService:
 
 
 def _clamp_progress(value: float) -> float:
+    """Clamp an exact finite int/float into [0,1] without numeric hooks."""
+    if type(value) is int:
+        if value <= 0:
+            return 0.0
+        if value >= 1:
+            return 1.0
+        return float(value)
+    if type(value) is not float:
+        raise TypeError("progress_0_1 must be an exact int or float")
+    if not math.isfinite(value):
+        raise ValueError("progress_0_1 must be finite")
     return max(0.0, min(1.0, value))
