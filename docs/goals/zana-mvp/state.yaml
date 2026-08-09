@@ -503,6 +503,7 @@ tasks:
       - "Atomic real-filesystem export/import orchestration with temporary workspace cleanup, OCI verification, content-addressed registration, and honest codec availability"
       - "Cross-platform resource admission governor with conservative memory/disk/concurrency leases and zero background worker overhead"
       - "Cheap bounded cross-platform diagnostics that report real optional capability/runtime/storage readiness and actionable recovery without starting services"
+      - "Local-only structured redacted bounded logging/event sinks with deterministic rotation and no telemetry/background worker"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -659,12 +660,14 @@ tasks:
         owns: "core/zana_core/instances/**, core/tests/instances/**, .agent-work/handoffs/T007-instances.md"
       - id: T007-tools
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
         worktree: /Users/sero/.codex/worktrees/ba7c/zana
         branch: agent/T007-tools
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commits: [da7f837, 1d70129]
+        handoff_commits: [99f5b23, dbdb0c6]
         owns: "core/zana_core/tools/**, core/tests/tools/**, .agent-work/handoffs/T007-tools.md"
       - id: T007-embeddings
         agent: router_opencode_go_deepseek_v4_flash
@@ -704,6 +707,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/diagnostics/**, core/tests/diagnostics/**, .agent-work/handoffs/T007-diagnostics.md"
+      - id: T007-observability
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe65b-1ebf-7132-b240-e6b98772bb56
+        worktree: /Users/sero/.codex/worktrees/ba7c/zana
+        branch: agent/T007-observability
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/observability/**, core/tests/observability/**, .agent-work/handoffs/T007-observability.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -748,6 +760,8 @@ tasks:
       - "core/tests/resources/**"
       - "core/zana_core/diagnostics/**"
       - "core/tests/diagnostics/**"
+      - "core/zana_core/observability/**"
+      - "core/tests/observability/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -767,6 +781,7 @@ tasks:
       - ".agent-work/handoffs/T007-portability.md"
       - ".agent-work/handoffs/T007-resources.md"
       - ".agent-work/handoffs/T007-diagnostics.md"
+      - ".agent-work/handoffs/T007-observability.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
