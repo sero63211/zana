@@ -59,7 +59,7 @@ agents:
   deepseek_max: required_flash_reasoning_effort_not_a_separate_model
 
 environment:
-  implementation_state: M2_domain_database_job_and_api_contracts_verified
+  implementation_state: T900_system_runtime_model_api_integrated
   repo_is_git: true
   host: "macOS ARM64, Apple M2 Pro, 16 GB RAM"
   disk_free_gib_observed: 23.0
@@ -1016,13 +1016,23 @@ tasks:
       - id: T900-api-system-runtime
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-api-system-runtime
         thread: 019fe868-40ad-7cd3-b026-5980b0d49978
         worktree: /Users/sero/.codex/worktrees/90b6/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/api/doctor.py, core/zana_core/api/runtimes.py, core/zana_core/api/models.py, core/zana_core/api/system.py, core/zana_core/api/schemas.py, core/zana_core/api/deps.py, core/zana_core/main.py, core/tests/api/test_api_contracts.py, core/tests/api/test_system_runtime_models.py, core/tests/platform/test_main_integration.py, .agent-work/handoffs/T900-api-system-runtime.md"
         gates: "Focused API/platform pytest; Ruff/format; Pyright; auth/error/bounds inspection; full Core compatibility; one implementation commit plus receipt; clean; no push."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: 83428819d137879bce3cf4d8bff4128b631c5f0a
+          source_commits: "9176532, e48e02c, 48b89cb, 797467e"
+          verification: "Lead review PASS; 96 focused API/db/platform tests; 1611 full Core tests; Ruff check/format; Pyright 0 errors/warnings; git diff --check."
+          security_delta: "Authenticated bounded system diagnostics, loopback-only discovery refresh, exact runtime identity, atomic failed-refresh persistence, and explicit-approved local native pull plans without byte proxying."
+          residual_risk: "The acquisition job is persisted but execution/UI progress wiring remains a later T900 vertical; no live runtime, model, network, download, inference, or training operation was run."
+          remote_proof: "Non-force origin/main push confirmed; local HEAD and origin/main both 83428819d137879bce3cf4d8bff4128b631c5f0a before this receipt update."
+          clean_proof: "Canonical index/worktree and source agent worktree were clean."
       - id: T900-runtime-inference
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max

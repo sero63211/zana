@@ -60,7 +60,7 @@ operational coordination only and never supersedes it.
 | T007-streaming | `router_opencode_go_deepseek_v4_flash`, thread `019fe65a-7992-7081-9d8a-3bef3f41e58b`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-streaming` at `/Users/sero/.codex/worktrees/b8bd/zana` | `core/zana_core/streaming/**`, `core/tests/streaming/**`, `T007-streaming.md` | done, PASS; integrated `8282422`, `5d918e2` | jobs/API and chat/acquisition stream contracts; specs 18/22 | 50 integrated focused pytest; Ruff/Pyright; bounded resumable SSE; zero polling/background/event accumulation |
 | T007-jobs-sse | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe827-beb6-7b92-bd3e-bca20dda1198`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-jobs-sse-canonical-integration` at `/Users/sero/.codex/worktrees/715b/zana`, source reference `agent/T007-jobs-sse@2dd18db` | exact jobs API/repository/service/test files, `T007-jobs-sse-canonical-integration.md` | done, PASS; integrated `c75e89b`, receipt `0c63112`, pushed | canonical streaming/observability boundary; persisted jobs | 83 focused API/jobs tests + 6 main integration tests; Ruff/format/Pyright; authenticated bounded Last-Event-ID SSE snapshot; paginated DB reads; no polling/background |
 | T007-portability-canonical-integration | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe827-beb6-7b92-bd3e-bca20dda1198`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t007-portability-canonical-715b` at `/Users/sero/.codex/worktrees/715b/zana`, base `0c63112`, reference `863a84e` | portability package/tests; exact image archive/OCI/import/secrets/models/init files; image tests; exact immutable-fixture compatibility file; canonical handoff | done, PASS; worker `7cc2233`/`0e2497f`; integrated and pushed `f4d58e9` | canonical image/artifact/permission contracts; strict serialization and immutable nested-model compatibility | worker 227 focused + 1588 full; lead 235 focused + 1588 full; Ruff/format/Pyright/import/diff/security PASS; no live runtime/model/network/training |
-| T900-api-system-runtime | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe868-40ad-7cd3-b026-5980b0d49978`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-api-system-runtime` at `/Users/sero/.codex/worktrees/90b6/zana` | single-owner system/runtime/model API boundary and exact tests/handoff | active | canonical T007 domain/services | authenticated typed system profile/doctor, refresh and native pull routes; focused/full gates; no model start/download |
+| T900-api-system-runtime | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe868-40ad-7cd3-b026-5980b0d49978`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-api-system-runtime` at `/Users/sero/.codex/worktrees/90b6/zana` | single-owner system/runtime/model API boundary and exact tests/handoff | done, PASS; integrated/pushed `8342881` | canonical T007 domain/services | lead 96 focused + 1611 full Core; Ruff/format/Pyright/diff; auth, exact identity, savepoint, pruning, approval and route review PASS; no model start/download |
 | T900-runtime-inference | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe870-59d1-74f2-98b2-13d3d0dd9561`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-runtime-inference` at `/Users/sero/.codex/worktrees/2aa0/zana` | exact runtime inference adapter files/tests/handoff | active | canonical runtime transport + instance inference protocol | bounded real Ollama/OpenAI-compatible inference code; fixture-only tests; no live model/server |
 | T900-knowledge-providers | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe870-ce4c-7c71-8e2b-afe450a0a6f3`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-knowledge-providers` at `/Users/sero/.codex/worktrees/934f/zana` | exact Docling/LanceDB adapter files/tests/handoff | active | canonical knowledge models/limits | real optional provider adapters with honest unavailable state; no dependency install/model/network |
 | T900-desktop-models | `router_opencode_go_deepseek_v4_flash` with `max`, local visible task pending | `agent/t900-desktop-models` isolated worktree pending | typed desktop API/client/hooks plus Home/Models/Doctor views/styles/tests/handoff | queued | frozen backend API contract | real discovery/manual/refresh/pull UI states; no dead actions/placeholders; no app launch |
@@ -77,6 +77,28 @@ root manifests and lockfiles, `core/pyproject.toml`, migrations, backend API
 boundary, generated TypeScript API types, build orchestrator, and this ledger.
 
 ## Integration receipts
+
+### T900 system/runtime/model API
+
+- accepted integration head: `83428819d137879bce3cf4d8bff4128b631c5f0a`
+- source commits: `9176532`, `e48e02c`, `48b89cb`, `797467e`
+- changed paths: authenticated system profile/doctor, runtime refresh and model
+  discovery persistence, native pull request API, exact runtime repository query,
+  app-state wiring, focused tests, and the worker handoff
+- gates: direct lead contract/security/error/readability inspection PASS; 96
+  focused API/db/platform tests PASS; 1611 full Core tests PASS; Ruff check and
+  format PASS; Pyright zero errors/warnings; `git diff --check` PASS
+- security delta: loopback-authenticated bounded diagnostics and discovery;
+  exact `(kind, endpoint, source)` runtime identity; online-only model pruning;
+  savepoint rollback on refresh failure; explicit user approval and local-only
+  endpoint validation for native pull plans; no byte proxy or secret persistence
+- residual risk: the pull endpoint currently persists an acquisition plan; the
+  real executor/progress UI remains a later vertical. No live runtime, model,
+  network, download, inference, training, desktop, or bundle operation ran.
+- remote proof: non-force `main` push succeeded; local HEAD and `origin/main`
+  both resolved to `83428819d137879bce3cf4d8bff4128b631c5f0a`
+  before this receipt-only update
+- clean proof: canonical index/worktree and the source agent worktree were clean
 
 ### Agent delivery-cycle policy
 
