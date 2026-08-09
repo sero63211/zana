@@ -459,7 +459,7 @@ tasks:
     assignee: Worker
     status: active
     reasoning_hint: max
-    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking plus local embedding/retrieval adapter contracts, evaluation gates, OCI image integrity/import-export, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, a persistent-safe build lifecycle state machine, fail-closed instance/runtime orchestration contracts, and a trusted permission-gated built-in calculator tool boundary."
+    objective: "Implement the next disjoint, low-memory architecture wave: runtime/model discovery, hardware profiling, capability validation, artifact and permission foundations, knowledge intake/chunking plus local embedding/retrieval adapter contracts, evaluation gates, OCI image integrity/import-export and atomic portability services, mutable instance-memory primitives, deterministic resource-safe build planning, non-executing training-provider/dataset safety contracts, a persistent-safe build lifecycle state machine, fail-closed instance/runtime orchestration contracts, and a trusted permission-gated built-in calculator tool boundary."
     inputs:
       - "Completed T005 receipt and frozen domain/database/API contracts"
       - "06_RUNTIME_AND_MODEL_DISCOVERY.md"
@@ -499,6 +499,7 @@ tasks:
       - "Exact-image/base-model instance lifecycle, context/provenance, permission-checked tool, and injected inference orchestration without starting a runtime"
       - "Typed trusted built-in tool registry and safe calculator execution with default-deny permission decisions and no arbitrary code/shell"
       - "Exact-identity Ollama embedding adapter, vector validation, deterministic retrieval/ranking/provenance, and index-provider boundary without starting an embedding model"
+      - "Atomic real-filesystem export/import orchestration with temporary workspace cleanup, OCI verification, content-addressed registration, and honest codec availability"
       - "Focused unit/contract tests and PASS handoffs for every lane"
     delegated_lanes:
       - id: T007-runtimes
@@ -633,12 +634,14 @@ tasks:
         owns: "core/zana_core/builds/**, core/tests/builds/**, .agent-work/handoffs/T007-builds.md"
       - id: T007-hardware-test
         agent: router_opencode_go_deepseek_v4_flash
-        status: active
+        status: done
         codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
         worktree: /Users/sero/.codex/worktrees/d795/zana
         branch: agent/T007-hardware-test
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        implementation_commit: 1cd4f32
+        handoff_commit: 544cb49
         owns: "core/tests/hardware/test_providers.py, .agent-work/handoffs/T007-hardware-test.md"
       - id: T007-instances
         agent: router_opencode_go_deepseek_v4_flash
@@ -667,6 +670,15 @@ tasks:
         lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/knowledge/embeddings.py, core/zana_core/knowledge/retrieval.py, core/tests/knowledge/test_embeddings.py, core/tests/knowledge/test_retrieval.py, .agent-work/handoffs/T007-embeddings.md"
+      - id: T007-portability
+        agent: router_opencode_go_deepseek_v4_flash
+        status: active
+        codex_thread: 019fe60d-b3d2-79b0-b44a-152cbdb2fb03
+        worktree: /Users/sero/.codex/worktrees/d795/zana
+        branch: agent/T007-portability
+        lead_session: 019fe396-2a2d-7493-ac98-a551ec7e4e1a
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/portability/**, core/tests/portability/**, .agent-work/handoffs/T007-portability.md"
     allowed_files:
       - "core/zana_core/runtimes/**"
       - "core/tests/runtimes/**"
@@ -705,6 +717,8 @@ tasks:
       - "core/zana_core/knowledge/retrieval.py"
       - "core/tests/knowledge/test_embeddings.py"
       - "core/tests/knowledge/test_retrieval.py"
+      - "core/zana_core/portability/**"
+      - "core/tests/portability/**"
       - ".agent-work/handoffs/T007-runtimes.md"
       - ".agent-work/handoffs/T007-hardware.md"
       - ".agent-work/handoffs/T007-capabilities.md"
@@ -721,6 +735,7 @@ tasks:
       - ".agent-work/handoffs/T007-instances.md"
       - ".agent-work/handoffs/T007-tools.md"
       - ".agent-work/handoffs/T007-embeddings.md"
+      - ".agent-work/handoffs/T007-portability.md"
     verify:
       - "Focused pytest for each owned lane"
       - "core/.venv/bin/ruff check on owned lane files"
