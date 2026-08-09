@@ -99,6 +99,7 @@ None.
   (`feat: add bounded local inference adapters`) on branch
   `agent/t900-runtime-inference`, started exactly at base
   `9c1dfb4a2ee4b30fe836d795ef4663e3d921bd75`.
+- Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`).
 - This handoff is committed separately on the same branch.
 - Merge `core/zana_core/runtimes/inference.py`,
   `core/zana_core/runtimes/ollama.py`,
