@@ -276,3 +276,60 @@ reported as INTERFACE for serial main integration.
 
 - `git status --porcelain` was empty immediately after `1c8101d` and is
   re-proven after this receipt commit.
+
+## Lead review correction 3 (2026-08-10)
+
+Verdict: PASS after focused correction commit `7c459c8`.
+
+### Correction commit
+
+- `7c459c8be500e23480cf77884f6fe2dd0add3286`
+  (`fix: structured export cleanup and transaction-local artifact validation`)
+
+### Items addressed
+
+1. Export cleanup is now structured for every exit after temporary layout
+   materialization. Any pre-archive validation, graph, cancellation, or
+   ExportService failure runs `_cleanup_temporary`; a cleanup failure before
+   irreversible archive success raises typed `CLEANUP_UNCERTAIN` chained from
+   the original error. After archive success, cleanup failure is surfaced as
+   `cleanup_uncertain` in `ProductExport` without masking success.
+2. `_write_sidecar_report` now unlinks its owned sibling temp in a `finally`
+   path on every failure and success, including the concurrent `FileExistsError`
+   from `os.link`, without touching the concurrent report. The focused test
+   asserts no `.report.*.tmp` remains after the simulated race.
+3. `_register_import` now performs authoritative transaction-local Artifact
+   validation (`_validate_artifacts_in_uow`) in the same registration UoW
+   immediately before any Image/ImageArtifact write/commit. The earlier
+   `_existing_global_artifacts` read remains advisory only; a focused test
+   bypasses it and proves the second transaction-local read still blocks a
+   conflicting global Artifact.
+4. Focused adversarial tests added for validation failure cleanup,
+   ExportService failure cleanup, sidecar concurrent FileExists temp hygiene,
+   cleanup failure before archive (typed) versus after archive
+   (`cleanup_uncertain`), and same-transaction Artifact mismatch.
+
+### Checks
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused product/API tests | `pytest -q core/tests/portability core/tests/api/test_portability_api.py` | 29 passed |
+| Touched-surface suite | `pytest -q core/tests/portability core/tests/api/test_portability_api.py core/tests/images` | 256 passed |
+| Ruff check/format | owned paths | clean |
+| Pyright | owned source paths | 0 errors, 0 warnings |
+| Diff hygiene | `git diff --check` | pass |
+
+### Residual risks
+
+- Same-user filesystem TOCTOU between DB reads and store opens remains
+  mitigated by dirfd/no-follow boundaries but not eliminated for adversarial
+  races.
+- Mid-loop cancellation inside canonical pack/unpack still requires the future
+  canonical codec boundary.
+- The 4 unrelated `TestExplicitDatabaseCommit` failures reproduce on clean
+  canonical HEAD and remain outside this ownership.
+
+### Clean proof
+
+- `git status --porcelain` was empty immediately after `7c459c8` and is
+  re-proven after this receipt commit.
