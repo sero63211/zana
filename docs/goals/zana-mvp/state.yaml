@@ -1175,6 +1175,20 @@ tasks:
           residual_risk: "No live Ollama/runtime/network/model download, provider, API server, desktop/browser, bundle, broad suite, performance, or load verification ran under the host-safety policy. The production urllib/Ollama interaction and real cancellation timing require a later bounded live session."
           remote_proof: "Non-force origin/main push confirmed independently with git ls-remote; refs/heads/main equals dbad57831579d50c77448e825d1105fd8caa7831."
           clean_proof: "Canonical index/worktree and source agent worktree were clean after accepted commits; no shared repository-contract edit remained."
+      - id: T900-build-evaluation-image-execution
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        branch: agent/t900-build-evaluation-image-execution
+        thread: pending-first-class-task-creation
+        worktree: pending-local-codex-worktree
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/builds/**, core/zana_core/evaluation/**, core/zana_core/images/**, build-only additions under core/zana_core/jobs/**, core/zana_core/api/builds.py, core/zana_core/api/images.py, build/image/evaluation-only additions in core/zana_core/api/schemas.py and core/zana_core/main.py, required build/evaluation/image-only DB model/repository/UoW/migration changes, focused build/evaluation/image/job/API tests, .agent-work/handoffs/T900-build-evaluation-image-execution.md"
+        dependencies: "Integrated capability authoring, runtime inference, knowledge providers, MLX execution, OCI/portability primitives, persistent jobs/SSE, artifacts/resources, and canonical authenticated API at 1900e9e."
+        input_contract: "The exact plan-defined build lifecycle and /api/v1 build/image/evaluation endpoints; current persisted Capability/Model/BuildJob/Artifact/Image records; injected runtime/training/knowledge boundaries in tests; production paths must call real integrated adapters and never synthesize product results."
+        output_contract: "One dependency-complete persisted Build -> baseline -> immutable plan/approval -> candidate phases -> real scored verification report -> gate decision -> immutable content-addressed ZANA Image vertical. Analyze ends PLANNED after actual source/model/hardware/eval analysis plus baseline; approve freezes the plan and starts bounded execution; failed gates remain inspectable and never become verified; progress/cancel/restart/error recovery are durable; exact build reports and image inspection APIs are authenticated and bounded."
+        gates: "Small focused fake/injected unit/API tests for the touched vertical; Ruff/format; Pyright; import/diff; direct lifecycle, transaction, digest, held-out isolation, approval, cancellation, restart, error-redaction and failed-gate/no-promotion review. No live provider/runtime/model/network/API server/app/browser, MLX process/training, model download/load, dependency install, broad/full suite, bundle, E2E, performance or load execution. Exactly one accepted product commit plus handoff; clean; no push."
+        stop_if: "Stop before changing a contract outside the exact build/evaluation/image/API/DB ownership above, before weakening digest/model identity/gate/approval semantics, or if implementation would require live model/provider execution today. Preserve existing interfaces where the controlling spec already defines the endpoint."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
