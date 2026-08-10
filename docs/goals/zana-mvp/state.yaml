@@ -1189,6 +1189,62 @@ tasks:
         output_contract: "One dependency-complete persisted Build -> baseline -> immutable plan/approval -> candidate phases -> real scored verification report -> gate decision -> immutable content-addressed ZANA Image vertical. Analyze ends PLANNED after actual source/model/hardware/eval analysis plus baseline; approve freezes the plan and starts bounded execution; failed gates remain inspectable and never become verified; progress/cancel/restart/error recovery are durable; exact build reports and image inspection APIs are authenticated and bounded."
         gates: "Small focused fake/injected unit/API tests for the touched vertical; Ruff/format; Pyright; import/diff; direct lifecycle, transaction, digest, held-out isolation, approval, cancellation, restart, error-redaction and failed-gate/no-promotion review. No live provider/runtime/model/network/API server/app/browser, MLX process/training, model download/load, dependency install, broad/full suite, bundle, E2E, performance or load execution. Exactly one accepted product commit plus handoff; clean; no push."
         stop_if: "Stop before changing a contract outside the exact build/evaluation/image/API/DB ownership above, before weakening digest/model identity/gate/approval semantics, or if implementation would require live model/provider execution today. Preserve existing interfaces where the controlling spec already defines the endpoint."
+      - id: T900-desktop-product-flows
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: pending-first-class-worktree
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "apps/desktop/src/** and focused desktop source tests; .agent-work/handoffs/T900-desktop-product-flows.md. Excludes apps/desktop/src-tauri/**, dependency manifests/lockfiles, generated bundles, and Core files."
+        dependencies: "Integrated desktop shell/models client at a1c87f4; controlling desktop/API specs; build/instance/portability endpoints may be consumed only through their frozen documented contracts until lead integration."
+        input_contract: "Real authenticated Core API state only; no fake dashboard numbers, placeholder actions, chat on Home, warm/orange palette, or hidden host paths/tokens."
+        output_contract: "One coherent lightweight desktop product flow covering capability authoring/reopen, build plan/approval/progress/evaluation, image inspection, instance/chat/memory and export/import states with real loading/empty/error/recovery behavior and no dead buttons."
+        gates: "Focused Vitest/TypeScript/ESLint for touched source only; direct render/data-flow/accessibility/resource review; no Vite/Tauri/native build, app/browser, live Core/runtime/model, install, broad suite, screenshot automation, or bundle. One product commit plus receipt; clean; no push."
+        stop_if: "Stop before changing a backend contract, src-tauri, manifests/locks, or inventing data/endpoints. Shared desktop primitives are single-owned by this task while active."
+      - id: T900-runtime-native-tools
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: pending-first-class-worktree
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/runtimes/inference.py, core/zana_core/runtimes/ollama.py, core/zana_core/runtimes/openai_compat.py, exact focused runtime inference tests, .agent-work/handoffs/T900-runtime-native-tools.md"
+        dependencies: "Integrated bounded inference at 6d43efe and trusted calculator/tool contracts; current build task has reported the missing native tool-schema request interface."
+        input_contract: "Backward-compatible optional trusted tool definitions and bounded tool-result conversation input; existing behavior-only callers must remain unchanged."
+        output_contract: "Ollama and OpenAI-compatible requests send exact native function schemas only when explicitly supplied, preserve bounded parsed tool requests, accept bounded tool-result continuation, and never execute tools inside the runtime adapter."
+        gates: "Small injected-transport request/stream tests; Ruff/format/Pyright/import/diff and bounds/identity/secret review; no live runtime/model/network/inference, install, broad suite, app, or build. One product commit plus receipt; clean; no push."
+        stop_if: "Stop before editing build/instance/tool/permission code or weakening request/output/identity bounds. Escalate any unavoidable shared protocol change beyond backward-compatible optional inputs."
+      - id: T900-instance-chat-memory-api
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: pending-first-class-worktree
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/instances/**, core/zana_core/memory/**, new core/zana_core/api/instances.py, new core/zana_core/api/chat.py, new instance-local API schema/service files, focused instance/chat/memory tests, .agent-work/handoffs/T900-instance-chat-memory-api.md. Excludes main.py, shared api/schemas.py, db/models.py, db/repositories.py, db/unit_of_work.py and migrations."
+        dependencies: "Integrated immutable Image/Instance/Conversation/Message/Memory tables and instance/runtime/retrieval/tool foundations; build/image registration remains owned by the active build task."
+        input_contract: "Persisted verified image + exact compatible ONLINE runtime/model identity; authenticated API boundary; existing permission, retrieval, inference, lifecycle and memory contracts."
+        output_contract: "Dependency-complete instance service and routers for create/list/get/start/stop/switch/rollback, real bounded chat streaming orchestration with provenance, memory list/reset, cancellation and honest missing-model/runtime states; ready for serial main/router registration."
+        gates: "Focused fake/injected unit/API-router tests only; Ruff/format/Pyright/import/diff plus identity, transaction, permission, memory-reset, cancellation, redaction and resource review; no live model/runtime/API server/app/browser, install, broad suite, E2E or load. One product commit plus receipt; clean; no push."
+        stop_if: "Stop before editing shared DB/API/main contracts or current build/image ownership. Report the exact minimal integration delta instead of crossing it."
+      - id: T900-portability-product-api
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: pending-first-class-worktree
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/portability/**, new core/zana_core/api/portability.py, new portability-local API schema/service files, focused portability/API tests, .agent-work/handoffs/T900-portability-product-api.md. Excludes core/zana_core/images/**, main.py, shared api/schemas.py, DB shared files, manifests and locks."
+        dependencies: "Integrated OCI/archive/import/security primitives and persisted Image/Artifact registry; active build task owns image packing/finalization."
+        input_contract: "Exact registered immutable image/artifact graph and existing safe archive codecs/import validator; authenticated bounded local-file operations only."
+        output_contract: "Complete export/verify/import/delete service and routers with digest-preserving round trip, atomic registration, corrupted/traversal/secret/missing-base-model rejection or actionable status, cancellation/progress boundaries, and no guessed model compatibility; ready for serial main/router registration."
+        gates: "Focused tiny archive/injected API tests; Ruff/format/Pyright/import/diff plus traversal, symlink, corruption, atomicity, secret and cleanup review; no large archive, install, live API/app/browser/model/runtime, broad suite, E2E, performance or load. One product commit plus receipt; clean; no push."
+        stop_if: "Stop before editing images/** or shared DB/API/main contracts, deleting user archives, or requiring optional zstd installation. Report exact integration deltas."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
