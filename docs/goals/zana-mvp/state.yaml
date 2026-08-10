@@ -1118,13 +1118,23 @@ tasks:
       - id: T900-mlx-training-execution
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
-        branch: agent/t900-mlx-training-execution
-        thread: 019fe8bb-fe02-7340-97c5-fa915f4ba840
-        worktree: /Users/sero/.codex/worktrees/3858/zana
+        status: done
+        branch: agent/t900-mlx-final-recovery-2
+        thread: 019fe97c-ac3b-7e31-84a1-301d887977e5
+        worktree: /Users/sero/.codex/worktrees/6412/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/training/**, core/tests/training/**, .agent-work/handoffs/T900-mlx-training-execution.md"
         gates: "Focused training unit tests with injected process boundary only; Ruff/format; Pyright; import/diff/CLI/identity/cancellation review; no MLX import/process, full/live/model/runtime/download/training execution; one product commit plus receipt; clean; no push."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: 254bf10d915991f3e18b4a38b1f945f7a858be9d
+          source_commits: "b91c387, c2f1e39, b893673, 17801ba, 09f452a, b5b71ab, 62c811b, 06c95c6, ebec1f6, 29bfa87"
+          verification: "Lead three-pass source/security/failure-path review PASS; 153 focused fake/unit training tests; Ruff check/format; implementation-package Pyright 0 errors/warnings; import smoke and git diff --check PASS. External codex review was denied by the source-egress guard and was not bypassed."
+          security_delta: "Exact offline MLX-LM invocation identity; held-out split isolation; bounded private staging/logs/adapters; process-group TERM-then-KILL with parent/group/drain proof; fail-closed setup/wait/cancellation; sanitized diagnostics; inode-bound sink deletion; captured-identity workspace cleanup and retry attestation without recursive deletion of unexpected content."
+          residual_risk: "No real MLX import/process, model load/download, training run, live provider/runtime/API/app/browser, broad suite, bundle, performance, or load verification ran under the current host-safety policy. Real process-group/provider behavior remains deferred."
+          remote_proof: "Non-force origin/main push confirmed; remote refs/heads/main, local HEAD, and origin/main all equal 254bf10d915991f3e18b4a38b1f945f7a858be9d."
+          clean_proof: "Canonical index/worktree and recovery source worktree were clean after their accepted commits."
       - id: T900-tauri-core-package
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
