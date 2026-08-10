@@ -38,7 +38,9 @@ if TYPE_CHECKING:
         InferenceResult,
         SessionBinding,
         ToolRequest,
+        ToolResult,
     )
+    from zana_core.tools.models import ToolDefinition
 
 
 def _inference_result(
@@ -89,6 +91,12 @@ MAX_TOOL_CALL_ID_CHARS = 256
 MAX_TOOL_CALL_ID_BYTES = 1024
 MAX_TOOL_NAME_CHARS = 256
 MAX_TOOL_NAME_BYTES = 1024
+MAX_TOOL_DEFINITIONS = 16
+MAX_TOOL_DEFINITION_CHARS = 32_000
+MAX_TOOL_DEFINITION_BYTES = 32_000
+MAX_TOOL_RESULTS = 16
+MAX_TOOL_RESULT_CHARS = 64_000
+MAX_TOOL_RESULT_BYTES = 64_000
 MAX_CONTEXT_BYTES = 262_144
 MAX_MESSAGE_BYTES = 65_536
 
@@ -158,6 +166,28 @@ class InferenceLimits(BaseModel):
     max_tool_name_bytes: int = Field(
         default=MAX_TOOL_NAME_BYTES, strict=True, ge=1, le=MAX_TOOL_NAME_BYTES
     )
+    max_tool_definitions: int = Field(
+        default=MAX_TOOL_DEFINITIONS, strict=True, ge=1, le=MAX_TOOL_DEFINITIONS
+    )
+    max_tool_definition_chars: int = Field(
+        default=MAX_TOOL_DEFINITION_CHARS,
+        strict=True,
+        ge=1,
+        le=MAX_TOOL_DEFINITION_CHARS,
+    )
+    max_tool_definition_bytes: int = Field(
+        default=MAX_TOOL_DEFINITION_BYTES,
+        strict=True,
+        ge=1,
+        le=MAX_TOOL_DEFINITION_BYTES,
+    )
+    max_tool_results: int = Field(default=MAX_TOOL_RESULTS, strict=True, ge=1, le=MAX_TOOL_RESULTS)
+    max_tool_result_chars: int = Field(
+        default=MAX_TOOL_RESULT_CHARS, strict=True, ge=1, le=MAX_TOOL_RESULT_CHARS
+    )
+    max_tool_result_bytes: int = Field(
+        default=MAX_TOOL_RESULT_BYTES, strict=True, ge=1, le=MAX_TOOL_RESULT_BYTES
+    )
     max_generation_timeout_seconds: float = Field(
         default=MAX_GENERATION_TIMEOUT_SECONDS,
         strict=True,
@@ -176,6 +206,24 @@ class InferenceProtocolError(RuntimeProbeError):
 
 class InferenceParametersError(ValueError):
     """A request exceeds the bounded inference limits before any call."""
+
+
+class ToolDefinitionsError(InferenceParametersError):
+    """Trusted tool definitions were duplicate, invalid, or oversized."""
+
+    code = "TOOL_DEFINITIONS_INVALID"
+
+
+class ToolContinuationError(InferenceParametersError):
+    """A bounded tool-result continuation was malformed or out of order."""
+
+    code = "TOOL_CONTINUATION_INVALID"
+
+
+class ToolResultLimitError(InferenceParametersError):
+    """A tool result exceeded the bounded size or count limits."""
+
+    code = "TOOL_RESULT_LIMIT"
 
 
 class InferenceIdentityError(RuntimeProbeError):
@@ -428,6 +476,9 @@ class BaseRuntimeInferenceAdapter(ABC):
         binding: SessionBinding,
         message: str,
         cancellation: CancellationToken | None = None,
+        tool_definitions: Sequence[ToolDefinition] = (),
+        tool_requests: Sequence[ToolRequest] = (),
+        tool_results: Sequence[ToolResult] = (),
     ) -> InferenceResult:
         try:
             self._validate_config()
@@ -437,8 +488,17 @@ class BaseRuntimeInferenceAdapter(ABC):
                 settings=settings,
                 limits=self.limits,
             )
+            definitions, requests, results = validate_tool_inputs(
+                tool_definitions=tool_definitions,
+                tool_requests=tool_requests,
+                tool_results=tool_results,
+                limits=self.limits,
+            )
         except InferenceParametersError as exc:
-            return self._failed_result(str(exc), "PARAMETERS_EXCEEDED")
+            return self._failed_result(
+                str(exc),
+                getattr(exc, "code", "PARAMETERS_EXCEEDED"),
+            )
 
         if cancellation is not None and cancellation.is_cancelled():
             return self._cancelled_result()
@@ -456,6 +516,9 @@ class BaseRuntimeInferenceAdapter(ABC):
                 message=message,
                 settings=settings,
                 binding=binding,
+                tool_definitions=definitions,
+                tool_requests=requests,
+                tool_results=results,
             )
             if len(body) > self.limits.max_request_body_bytes:
                 return self._failed_result(
@@ -652,6 +715,9 @@ class BaseRuntimeInferenceAdapter(ABC):
         message: str,
         settings: GenerationSettings,
         binding: SessionBinding,
+        tool_definitions: Sequence[ToolDefinition],
+        tool_requests: Sequence[ToolRequest],
+        tool_results: Sequence[ToolResult],
     ) -> tuple[str, Mapping[str, str], bytes]:
         """Return URL, headers, and a bounded request body for one provider."""
 
@@ -714,6 +780,301 @@ def verify_identity(
         return
     if payload_model != binding.runtime_model_id:
         raise InferenceIdentityError("runtime reported a different model identity")
+
+
+def native_tool_schema(definition: ToolDefinition) -> dict[str, Any]:
+    """Exact provider function schema from a trusted tool definition.
+
+    Only the canonical name, description, and JSON parameters are serialized;
+    version and code-bearing fields never cross the runtime boundary.
+    """
+
+    return {
+        "type": "function",
+        "function": {
+            "name": definition.id,
+            "description": definition.description,
+            "parameters": definition.input_schema,
+        },
+    }
+
+
+def _definition_json(definition: ToolDefinition) -> str:
+    try:
+        return json.dumps(
+            native_tool_schema(definition),
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise ToolDefinitionsError(
+            "A tool definition must contain JSON-serializable plain data."
+        ) from error
+
+
+def _validate_bounded_name(
+    value: object,
+    label: str,
+    *,
+    max_chars: int,
+    max_bytes: int,
+    error_type: type[InferenceParametersError],
+) -> str:
+    if not isinstance(value, str) or not value:
+        raise error_type(f"A {label} must be a non-empty string.")
+    if len(value) > max_chars:
+        raise error_type(f"A {label} exceeded the bounded character length.")
+    if len(value.encode("utf-8")) > max_bytes:
+        raise error_type(f"A {label} exceeded the bounded byte length.")
+    return value
+
+
+def _validate_definition_fields(
+    definition: ToolDefinition,
+    limits: InferenceLimits,
+) -> None:
+    _validate_bounded_name(
+        definition.id,
+        "tool definition id",
+        max_chars=limits.max_tool_name_chars,
+        max_bytes=limits.max_tool_name_bytes,
+        error_type=ToolDefinitionsError,
+    )
+    if not isinstance(definition.version, str) or not definition.version:
+        raise ToolDefinitionsError("A tool definition version must be a non-empty string.")
+    if (
+        len(definition.version) > limits.max_tool_name_chars
+        or len(definition.version.encode("utf-8")) > limits.max_tool_name_bytes
+    ):
+        raise ToolDefinitionsError("A tool definition version exceeded the bounded length.")
+    if not isinstance(definition.description, str):
+        raise ToolDefinitionsError("A tool definition description must be a string.")
+    schema = definition.input_schema
+    if not isinstance(schema, dict):
+        raise ToolDefinitionsError("A tool definition input schema must be a JSON object.")
+    if schema.get("type") != "object":
+        raise ToolDefinitionsError(
+            "A tool definition input schema must declare JSON object parameters."
+        )
+    serialized = _definition_json(definition)
+    encoded = serialized.encode("utf-8")
+    if len(encoded) > limits.max_tool_definition_bytes:
+        raise ToolDefinitionsError("A tool definition schema exceeded the bounded byte limit.")
+    if len(serialized) > limits.max_tool_definition_chars:
+        raise ToolDefinitionsError("A tool definition schema exceeded the bounded character limit.")
+
+
+def _validate_tool_request(
+    request: object,
+    limits: InferenceLimits,
+    definition_ids: set[str],
+) -> None:
+    from zana_core.instances.models import ToolRequest
+
+    if not isinstance(request, ToolRequest):
+        raise ToolContinuationError(
+            "Prior tool requests must be exact trusted ToolRequest records."
+        )
+    _validate_bounded_name(
+        request.tool_id,
+        "prior tool request id",
+        max_chars=limits.max_tool_name_chars,
+        max_bytes=limits.max_tool_name_bytes,
+        error_type=ToolContinuationError,
+    )
+    if request.tool_id not in definition_ids:
+        raise ToolContinuationError("A prior tool request references an undeclared tool.")
+    try:
+        encoded = json.dumps(
+            request.arguments,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise ToolContinuationError(
+            "Prior tool request arguments must be JSON-serializable plain data."
+        ) from error
+    if len(encoded) > limits.max_tool_arguments_bytes:
+        raise ToolContinuationError("Prior tool request arguments exceeded the bounded byte limit.")
+    if len(encoded) > limits.max_tool_arguments_chars:
+        raise ToolContinuationError(
+            "Prior tool request arguments exceeded the bounded character limit."
+        )
+
+
+def _render_tool_result(result: object) -> str:
+    return json.dumps(
+        result.model_dump(mode="json"),  # type: ignore[attr-defined]
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
+def _validate_tool_result(result: object, limits: InferenceLimits) -> None:
+    from zana_core.instances.models import ToolResult
+
+    if not isinstance(result, ToolResult):
+        raise ToolContinuationError("Tool results must be exact trusted ToolResult records.")
+    _validate_bounded_name(
+        result.tool_id,
+        "tool result id",
+        max_chars=limits.max_tool_name_chars,
+        max_bytes=limits.max_tool_name_bytes,
+        error_type=ToolContinuationError,
+    )
+    content = _render_tool_result(result)
+    if len(content) > limits.max_tool_result_chars:
+        raise ToolResultLimitError("A tool result exceeded the bounded character limit.")
+    if len(content.encode("utf-8")) > limits.max_tool_result_bytes:
+        raise ToolResultLimitError("A tool result exceeded the bounded byte limit.")
+
+
+def validate_tool_inputs(
+    *,
+    tool_definitions: Sequence[ToolDefinition],
+    tool_requests: Sequence[ToolRequest],
+    tool_results: Sequence[ToolResult],
+    limits: InferenceLimits,
+) -> tuple[
+    tuple[ToolDefinition, ...],
+    tuple[ToolRequest, ...],
+    tuple[ToolResult, ...],
+]:
+    """Validate one bounded native tool request/continuation, failing closed."""
+    from zana_core.tools.models import ToolDefinition
+
+    if len(tool_definitions) > limits.max_tool_definitions:
+        raise ToolDefinitionsError("Tool definitions exceed the bounded count.")
+    definition_ids: set[str] = set()
+    for definition in tool_definitions:
+        if not isinstance(definition, ToolDefinition):
+            raise ToolDefinitionsError(
+                "Tool definitions must be exact trusted ToolDefinition records."
+            )
+        _validate_definition_fields(definition, limits)
+        if definition.id in definition_ids:
+            raise ToolDefinitionsError("Duplicate tool definitions are rejected.")
+        definition_ids.add(definition.id)
+
+    if len(tool_requests) > limits.max_tool_requests:
+        raise ToolContinuationError("Prior tool requests exceed the bounded count.")
+    if len(tool_results) > limits.max_tool_results:
+        raise ToolResultLimitError("Tool results exceed the bounded count.")
+    if tool_results and not tool_requests:
+        raise ToolContinuationError("Tool results require matching prior tool requests.")
+    if tool_requests:
+        if not tool_definitions:
+            raise ToolContinuationError(
+                "Tool definitions are required for a bounded tool continuation."
+            )
+        if len(tool_requests) != len(tool_results):
+            raise ToolContinuationError(
+                "Tool results must exactly match prior tool requests in order."
+            )
+    for request, result in zip(tool_requests, tool_results, strict=True):
+        _validate_tool_request(request, limits, definition_ids)
+        _validate_tool_result(result, limits)
+        if request.tool_id != result.tool_id:
+            raise ToolContinuationError("Tool results must match the prior tool requests in order.")
+    return (
+        tuple(tool_definitions),
+        tuple(tool_requests),
+        tuple(tool_results),
+    )
+
+
+def _continuation_call_ids(count: int, limits: InferenceLimits) -> tuple[str, ...]:
+    call_ids = tuple(f"zana-{index}" for index in range(count))
+    for call_id in call_ids:
+        if len(call_id) > limits.max_tool_call_id_chars:
+            raise ToolContinuationError(
+                "A continuation call id exceeded the bounded character limit."
+            )
+        if len(call_id.encode("utf-8")) > limits.max_tool_call_id_bytes:
+            raise ToolContinuationError("A continuation call id exceeded the bounded byte limit.")
+    return call_ids
+
+
+def _build_openai_messages(
+    *,
+    context: str,
+    message: str,
+    tool_requests: Sequence[ToolRequest],
+    tool_results: Sequence[ToolResult],
+    limits: InferenceLimits,
+) -> list[dict[str, Any]]:
+    """Build canonical OpenAI assistant/tool continuation messages."""
+    messages: list[dict[str, Any]] = [{"role": "system", "content": context}]
+    messages.append({"role": "user", "content": message})
+    if tool_requests:
+        call_ids = _continuation_call_ids(len(tool_requests), limits)
+        messages.append(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": call_ids[index],
+                        "type": "function",
+                        "function": {
+                            "name": request.tool_id,
+                            "arguments": json.dumps(
+                                request.arguments,
+                                separators=(",", ":"),
+                                ensure_ascii=False,
+                            ),
+                        },
+                    }
+                    for index, request in enumerate(tool_requests)
+                ],
+            }
+        )
+        messages.extend(
+            {
+                "role": "tool",
+                "tool_call_id": call_ids[index],
+                "content": _render_tool_result(result),
+            }
+            for index, result in enumerate(tool_results)
+        )
+    return messages
+
+
+def _build_ollama_messages(
+    *,
+    context: str,
+    message: str,
+    tool_requests: Sequence[ToolRequest],
+    tool_results: Sequence[ToolResult],
+) -> list[dict[str, Any]]:
+    """Build canonical Ollama assistant/tool continuation messages."""
+    messages: list[dict[str, Any]] = [{"role": "system", "content": context}]
+    messages.append({"role": "user", "content": message})
+    if tool_requests:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": request.tool_id,
+                            "arguments": request.arguments,
+                        }
+                    }
+                    for request in tool_requests
+                ],
+            }
+        )
+        messages.extend(
+            {
+                "role": "tool",
+                "name": result.tool_id,
+                "content": _render_tool_result(result),
+            }
+            for result in tool_results
+        )
+    return messages
 
 
 class ToolCallLimitError(InferenceProtocolError):

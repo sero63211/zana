@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from zana_core.domain.enums import ModelIdentityStrength, RuntimeKind, RuntimeSource, RuntimeStatus
@@ -25,14 +25,22 @@ from zana_core.runtimes.inference import (
     ToolCallArgumentsError,
     ToolCallLimitError,
     ToolCallParseError,
+    _build_openai_messages,
     _tool_call_failure,
+    native_tool_schema,
     parse_json_line,
     verify_identity,
 )
 from zana_core.runtimes.transport import StreamTransport, UrllibTransport
 
 if TYPE_CHECKING:
-    from zana_core.instances import GenerationSettings, SessionBinding
+    from zana_core.instances import (
+        GenerationSettings,
+        SessionBinding,
+        ToolRequest,
+        ToolResult,
+    )
+    from zana_core.tools.models import ToolDefinition
 
 
 class OpenAICompatAdapter:
@@ -232,6 +240,9 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         message: str,
         settings: GenerationSettings,
         binding: SessionBinding,
+        tool_definitions: Sequence[ToolDefinition],
+        tool_requests: Sequence[ToolRequest],
+        tool_results: Sequence[ToolResult],
     ) -> tuple[str, dict[str, str], bytes]:
         url = self.chat_url()
         headers = {
@@ -242,16 +253,21 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
             headers["Authorization"] = f"Bearer {self.bearer_token}"
         body = {
             "model": binding.runtime_model_id,
-            "messages": [
-                {"role": "system", "content": context},
-                {"role": "user", "content": message},
-            ],
+            "messages": _build_openai_messages(
+                context=context,
+                message=message,
+                tool_requests=tool_requests,
+                tool_results=tool_results,
+                limits=self.limits,
+            ),
             "stream": True,
             "temperature": settings.temperature,
             "max_tokens": settings.max_tokens,
             "top_p": settings.top_p,
             "stop": list(settings.stop),
         }
+        if tool_definitions:
+            body["tools"] = [native_tool_schema(definition) for definition in tool_definitions]
         return url, headers, UrllibTransport.json_body(body)
 
     def chat_url(self) -> str:
