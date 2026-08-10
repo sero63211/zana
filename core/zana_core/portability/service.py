@@ -358,45 +358,52 @@ class PortabilityProductService:
             snapshot = self._snapshot_registry(uow, image)
         active_boundary.check(OperationStage.VALIDATE_LAYOUT, fraction=0.2)
         registered = self._materialize_layout(snapshot, active, deadline)
-        self._validate_layout_for_image(registered.path, snapshot.image, active, deadline)
-        self._validate_registry_graph(snapshot, registered.path, active, deadline)
-        # Final pre-commit cancellation before any irreversible filesystem write.
-        active_boundary.check(OperationStage.CODE_WRITE, fraction=0.6)
-        request = ExportRequest(
-            operation_id=uuid.uuid4().hex,
-            layout_path=str(registered.path),
-            destination=str(destination),
-            codec=codec,
-            replace_token=replace_token,
-            replace_allowed=replace_allowed,
-            limits=active,
-        )
-        try:
-            result = self._export_service.export(request)
-        except PortabilityError:
-            raise
+        archive_success = False
+        cleanup_uncertain = False
+        result: Any = None
         report_path = Path(str(destination) + ".report.json")
         report_digest: str | None = None
         report_uncertain = False
         report_written = False
         report_warning = ""
-        cleanup_uncertain = False
         try:
-            report_path, report_digest, report_uncertain = self._write_sidecar_report(
-                destination,
-                result,
-                active,
-                image_digest=digest,
+            self._validate_layout_for_image(registered.path, snapshot.image, active, deadline)
+            self._validate_registry_graph(snapshot, registered.path, active, deadline)
+            # Final pre-commit cancellation before any irreversible filesystem write.
+            active_boundary.check(OperationStage.CODE_WRITE, fraction=0.6)
+            request = ExportRequest(
+                operation_id=uuid.uuid4().hex,
+                layout_path=str(registered.path),
+                destination=str(destination),
+                codec=codec,
+                replace_token=replace_token,
+                replace_allowed=replace_allowed,
+                limits=active,
             )
-            report_written = True
-        except PortabilityError as error:
-            report_warning = error.message
-            report_uncertain = True
-        if registered.temporary:
+            result = self._export_service.export(request)
+            archive_success = True
             try:
-                _remove_owned_layout(registered.path, self._data_root)
-            except PortabilityError:
-                cleanup_uncertain = True
+                report_path, report_digest, report_uncertain = self._write_sidecar_report(
+                    destination,
+                    result,
+                    active,
+                    image_digest=digest,
+                )
+                report_written = True
+            except PortabilityError as error:
+                report_warning = error.message
+                report_uncertain = True
+        except Exception as error:
+            if not archive_success and registered.temporary:
+                cleanup_error = self._cleanup_temporary(registered)
+                if cleanup_error is not None:
+                    raise cleanup_error from error
+            raise
+        finally:
+            if archive_success and registered.temporary:
+                cleanup_error = self._cleanup_temporary(registered)
+                if cleanup_error is not None:
+                    cleanup_uncertain = True
         active_boundary.notify_complete(OperationStage.COMPLETE, fraction=1.0)
         return ProductExport(
             result=result,
@@ -420,6 +427,16 @@ class PortabilityProductService:
             report_warning=report_warning,
             cleanup_uncertain=cleanup_uncertain,
         )
+
+    def _cleanup_temporary(self, registered: RegisteredLayout) -> PortabilityError | None:
+        """Cleanup a temporary layout; returns a typed error instead of raising."""
+        if not registered.temporary:
+            return None
+        try:
+            _remove_owned_layout(registered.path, self._data_root)
+        except PortabilityError as error:
+            return error
+        return None
 
     def import_archive(
         self,
@@ -989,6 +1006,7 @@ class PortabilityProductService:
                 )
             else:
                 idempotent = False
+                self._validate_artifacts_in_uow(uow, roles)
                 uow.images.add(
                     Image(
                         digest=plan.image_digest,
@@ -1034,6 +1052,29 @@ class PortabilityProductService:
             base_model_available=base_model_available,
             artifact_count=len(roles),
         )
+
+    def _validate_artifacts_in_uow(
+        self,
+        uow: UnitOfWork,
+        roles: tuple[LayoutRole, ...],
+    ) -> None:
+        """Authoritative transaction-local Artifact validation before any write."""
+        for role in roles:
+            artifact = uow.artifacts.get(role.digest)
+            if artifact is None:
+                continue
+            if artifact.media_type != role.media_type:
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting media type."
+                )
+            if artifact.size_bytes != role.size:
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting size."
+                )
+            if artifact.local_path != str(self._store.blob_path(role.digest)):
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting path."
+                )
 
     def _existing_global_artifacts(
         self,
@@ -1194,12 +1235,12 @@ class PortabilityProductService:
             )
         temp = sibling_temp_path(report_path, "report")
         parent_fd, temp_name = _open_parent_dirfd(temp, stage=OperationStage.FSYNC)
-        created = False
+        temp_created = False
         durability_uncertain = False
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
             fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
-            created = True
+            temp_created = True
             try:
                 _write_fd_full(fd, data)
                 os.fsync(fd)
@@ -1221,14 +1262,12 @@ class PortabilityProductService:
                 ) from None
             try:
                 os.unlink(temp_name, dir_fd=parent_fd)
+                temp_created = False
             except OSError:
                 durability_uncertain = True
             if not fsync_directory(report_path.parent):
                 durability_uncertain = True
         except OSError as error:
-            if created:
-                with suppress(OSError):
-                    os.unlink(temp_name, dir_fd=parent_fd)
             raise _portability_error(
                 "REPORT_WRITE_FAILED",
                 "The export sidecar report could not be written atomically.",
@@ -1236,6 +1275,9 @@ class PortabilityProductService:
                 actions=("retry_export",),
             ) from error
         finally:
+            if temp_created:
+                with suppress(OSError):
+                    os.unlink(temp_name, dir_fd=parent_fd)
             os.close(parent_fd)
         return report_path, digest_bytes(data), durability_uncertain
 

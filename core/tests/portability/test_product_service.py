@@ -956,3 +956,194 @@ def test_export_cleanup_failure_after_success_is_truthful(
     assert destination.exists()
     assert result.cleanup_uncertain is True
     assert result.report_written is True
+
+
+def test_export_validation_failure_cleans_reconstructed_temp(
+    environment,
+    tmp_path: Path,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    store = ArtifactStore(data_root / "artifacts")
+    image_digest, _config = register_artifact_graph(
+        session_factory,
+        store,
+        tmp_path,
+    )
+    with UnitOfWork(session_factory) as uow:
+        uow.session.execute(
+            delete(ImageArtifact).where(
+                ImageArtifact.image_digest == image_digest,
+                ImageArtifact.role == "behavior",
+            )
+        )
+    with pytest.raises(PortabilityError) as exc:
+        service.export(
+            image_digest,
+            output_path=str(service.exports_root / "validation-fail.tar"),
+            codec=CodecKind.TAR,
+            replace_token=None,
+            replace_allowed=False,
+            user_approved=True,
+        )
+    assert exc.value.code == "REGISTRY_MISMATCH"
+    assert not list((data_root / "portability" / "tmp").iterdir())
+
+
+def test_export_service_failure_cleans_reconstructed_temp(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    store = ArtifactStore(data_root / "artifacts")
+    image_digest, _config = register_artifact_graph(
+        session_factory,
+        store,
+        tmp_path,
+    )
+
+    def fail_export(*args, **kwargs):
+        raise _portability_error(
+            "ARCHIVE_WRITE_FAILED",
+            "simulated export failure",
+            stage=OperationStage.CODE_WRITE,
+            actions=("retry_export",),
+        )
+
+    monkeypatch.setattr(service._export_service, "export", fail_export)
+    with pytest.raises(PortabilityError) as exc:
+        service.export(
+            image_digest,
+            output_path=str(service.exports_root / "export-fail.tar"),
+            codec=CodecKind.TAR,
+            replace_token=None,
+            replace_allowed=False,
+            user_approved=True,
+        )
+    assert exc.value.code == "ARCHIVE_WRITE_FAILED"
+    assert not list((data_root / "portability" / "tmp").iterdir())
+
+
+def test_sidecar_concurrent_file_exists_leaves_no_temp(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    image_digest, _config_digest, _layout = register_layout(
+        session_factory,
+        service._layouts_root,
+        tmp_path,
+    )
+    destination = service.exports_root / "concurrent.tar"
+
+    def fail_link(*args, **kwargs):
+        raise FileExistsError("simulated concurrent report")
+
+    from zana_core.portability import service as service_module
+
+    monkeypatch.setattr(service_module.os, "link", fail_link)
+    result = service.export(
+        image_digest,
+        output_path=str(destination),
+        codec=CodecKind.TAR,
+        replace_token=None,
+        replace_allowed=False,
+        user_approved=True,
+    )
+    assert destination.exists()
+    assert result.report_written is False
+    assert (
+        result.report_warning
+        == "The export report path appeared concurrently and was not overwritten."
+    )
+    leftovers = list(service.exports_root.glob(".concurrent.tar.report.*.tmp"))
+    assert leftovers == []
+
+
+def test_cleanup_failure_before_archive_is_typed(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    store = ArtifactStore(data_root / "artifacts")
+    image_digest, _config = register_artifact_graph(
+        session_factory,
+        store,
+        tmp_path,
+    )
+
+    def fail_export(*args, **kwargs):
+        raise _portability_error(
+            "ARCHIVE_WRITE_FAILED",
+            "simulated export failure",
+            stage=OperationStage.CODE_WRITE,
+            actions=("retry_export",),
+        )
+
+    monkeypatch.setattr(service._export_service, "export", fail_export)
+
+    from zana_core.portability import service as service_module
+
+    def fail_cleanup(*args, **kwargs):
+        raise _portability_error(
+            "CLEANUP_UNCERTAIN",
+            "simulated cleanup failure",
+            stage=OperationStage.CLEANUP,
+            actions=("clear_temp_workspace",),
+        )
+
+    monkeypatch.setattr(service_module, "_remove_owned_layout", fail_cleanup)
+    with pytest.raises(PortabilityError) as exc:
+        service.export(
+            image_digest,
+            output_path=str(service.exports_root / "cleanup-before.tar"),
+            codec=CodecKind.TAR,
+            replace_token=None,
+            replace_allowed=False,
+            user_approved=True,
+        )
+    assert exc.value.code == "CLEANUP_UNCERTAIN"
+
+
+def test_same_transaction_artifact_mismatch_blocks_import(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    layout, image_digest = build_layout(tmp_path / "lay", layer_bytes=b"knowledge")
+    manifest = json.loads((layout / "manifest.json").read_text(encoding="utf-8"))
+    behavior_digest = manifest["layers"][0]["digest"]
+    behavior_path = layout / "blobs" / "sha256" / behavior_digest.removeprefix("sha256:")
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+    store = ArtifactStore(data_root / "artifacts")
+    store.put_file(behavior_path)
+    with UnitOfWork(session_factory) as uow:
+        uow.artifacts.add(
+            Artifact(
+                digest=behavior_digest,
+                media_type="application/wrong",
+                local_path=str(store.blob_path(behavior_digest)),
+                size_bytes=behavior_path.stat().st_size,
+            )
+        )
+    monkeypatch.setattr(service, "_existing_global_artifacts", lambda roles: {})
+    with pytest.raises(PortabilityError) as exc:
+        service.import_archive(
+            local_path=str(source),
+            codec=CodecKind.TAR,
+            user_approved=True,
+        )
+    assert exc.value.code == "IMPORT_CONFLICT"
+    with UnitOfWork(session_factory) as uow:
+        assert uow.images.get(image_digest) is None
+        assert uow.image_artifacts.list_for_image(image_digest) == []
