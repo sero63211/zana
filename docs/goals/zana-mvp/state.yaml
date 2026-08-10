@@ -1245,6 +1245,20 @@ tasks:
         output_contract: "Complete export/verify/import/delete service and routers with digest-preserving round trip, atomic registration, corrupted/traversal/secret/missing-base-model rejection or actionable status, cancellation/progress boundaries, and no guessed model compatibility; ready for serial main/router registration."
         gates: "Focused tiny archive/injected API tests; Ruff/format/Pyright/import/diff plus traversal, symlink, corruption, atomicity, secret and cleanup review; no large archive, install, live API/app/browser/model/runtime, broad suite, E2E, performance or load. One product commit plus receipt; clean; no push."
         stop_if: "Stop before editing images/** or shared DB/API/main contracts, deleting user archives, or requiring optional zstd installation. Report exact integration deltas."
+      - id: T910-desktop-frontend-program
+        agent: gpt-5.6-sol
+        reasoning_effort: high
+        status: queued
+        branch: agent/t910-desktop-frontend-program
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "new files only under docs/desktop-frontend-program/** and .agent-work/handoffs/T910-desktop-frontend-program.md. Excludes every existing product-code path, existing documentation/index file, GoalBuddy state, ledger, manifests, locks, generated assets and current worker handoffs."
+        dependencies: "Complete controlling ZANA specification, acceptance criteria, AGENTS/GoalBuddy coordination truth, current canonical code/contracts/tests, and current primary/official desktop technical sources. Product code is read-only."
+        input_contract: "Separate Founder-authorized documentation/design-program task; preserve implemented-vs-proposed truth and never invent backend states or average conflicting contracts."
+        output_contract: "A cold-readable, source-backed production desktop frontend program package: complete blueprint, navigation/screens, flows/state machines, contract ledger/gaps, technical integration, design/accessibility/performance standards, rollout/verification/recovery, English Kimi K3 Gold implementation prompt, and copy-paste /goal launcher."
+        gates: "Read-only source/code inspection; current primary-source research with access dates; direct coverage/contract/citation review; only new Markdown/YAML/text artifacts in the reserved allowlist; no product implementation, model/provider/runtime execution or download, heavy tests, browser/native build, deployment, stage/commit/push."
+        stop_if: "Stop before editing any existing file or product code, changing a live contract, running a local model/provider, starting an implementation worker, or writing outside the exact reserved allowlist."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
