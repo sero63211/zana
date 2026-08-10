@@ -56,6 +56,29 @@ modified, and no dependency was installed.
   undeclared-tool failures, non-JSON tool-result failures, cancellation,
   and no adapter-side tool execution.
 
+### Ollama contract correction (lead review)
+
+- `core/zana_core/runtimes/ollama.py` now emits the official
+  `tool_name` field (never `name`) on Ollama `role: "tool"` continuation
+  messages, with the request-local provider alias as its value.
+- `OllamaInferenceAdapter.parse_event` parses bounded complete tool calls
+  from nonterminal (`done: false`) message events, tracks request-local
+  duplicate tool-call signatures reset in `begin_generation`, and feeds
+  them through the base accumulator so the official two-event shape
+  (`done: false` with `message.tool_calls`, then `done: true` empty) returns
+  canonical `ToolRequest` records.
+- `_Accumulator.add` fails closed with `TOO_MANY_TOOLS` when cumulative
+  stream tool requests exceed `max_tool_requests`; it never silently
+  truncates a partial tool set.
+- `BaseRuntimeInferenceAdapter._drain` clears accumulated tool requests on
+  stream truncation, partial/failed terminals, malformed later events,
+  timeout, cancellation, cleanup failure, and cumulative overflow; tool
+  requests are preserved only for an exact completed terminal stream.
+- `core/tests/runtimes/test_native_tools.py` adds official two-event
+  Ollama tool-call parsing, hostile multi-event overflow, malformed/failed/
+  truncated terminal clearing, repeated tool-call fail-closed, cross-request
+  signature isolation, and exact `tool_name` continuation bytes.
+
 ## Checks run and evidence
 
 Host-safety rule applied: only the smallest focused tests plus bounded
@@ -65,7 +88,7 @@ runtime/model was started.
 
 | Check | Command | Result |
 | --- | --- | --- |
-| Focused inference + native-tool pytest | `pytest core/tests/runtimes/test_inference.py core/tests/runtimes/test_native_tools.py -q` | 101 passed |
+| Focused inference + native-tool pytest | `pytest core/tests/runtimes/test_inference.py core/tests/runtimes/test_native_tools.py -q` | 108 passed |
 | Ruff lint | `ruff check` on the five owned files | clean |
 | Ruff format | `ruff format --check` on the five owned files | clean |
 | Pyright | `pyright` on the three runtime files and `test_native_tools.py` | 0 errors, 0 warnings |
@@ -99,6 +122,11 @@ were installed.
 - Provider-bound definition/argument/result JSON uses strict serialization
   (`allow_nan=False`) and rejects NaN/Infinity returned by providers before
   a `ToolRequest` is emitted.
+- Ollama tool continuations use the official `tool_name` field and never
+  leak a legacy `name` field to the runtime.
+- Nonterminal Ollama tool-call events are parsed and bounded; duplicate
+  tool calls across stream events fail closed rather than double-executing,
+  and partial tool sets are never returned on any non-completed terminal.
 - Tool-result continuation is accepted only as exact canonical
   `ToolRequest`/`ToolResult` pairs with matching declared tool ids.
 - The adapter only transports and parses; it never resolves, permits, or
@@ -128,6 +156,8 @@ None.
   `23b9034df5c91b19b86a98fba210d1712ba564e6`.
 - Lead correction commit: `c79c78bae8c8418cd80bd5353ade45fbb6a5ad78`
   (`fix: provider-safe tool aliases and strict native JSON bounds`).
+- Ollama-contract correction commit: `409e66c7e0cbd976806ecd94b96530ecd9fbe726`
+  (`fix: Ollama tool continuation contract and fail-closed accumulation`).
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`).
 - Merge the five owned product/test files and this handoff through the PM
   integration lane. No lockfile, manifest, API, DB, desktop, or shared
@@ -139,6 +169,8 @@ None.
   --porcelain` empty, `git diff --check` pass.
 - After the correction commit: index clean, worktree clean, `git status
   --porcelain` empty, `git diff --check` pass.
+- After the Ollama-contract correction commit: index clean, worktree clean,
+  `git status --porcelain` empty, `git diff --check` pass.
 - After the receipt commit: index clean, worktree clean, `git status
   --porcelain` empty, `git diff --check` pass.
 - Remote/push: no push performed per delegated receipt contract; local HEAD
