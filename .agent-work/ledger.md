@@ -227,6 +227,35 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   the writer's temporary out-of-ownership repository edit was removed before
   commit and no shared-contract change remains
 
+### T900 runtime native tools
+
+- accepted coordination head: `f0d75259d24d5a4fde8434e409ab9dd157303859`
+- source product commits: `0083cb4`, `c79c78b`, `409e66c`; canonical product
+  commits: `693e7a6`, `605970f`, `5f805f5`; canonical handoff/receipt head:
+  `2b33316`
+- changed paths: bounded Ollama/OpenAI-compatible inference request and stream
+  adapters, focused inference/native-tool tests, worker handoff, and GoalBuddy
+  acceptance state
+- gates: worker and lead independently ran 108 focused fake-transport tests;
+  Ruff check/format and Pyright passed; direct contract/security/failure-path
+  review covered the official Ollama two-event stream, exact `tool_name`,
+  request-local aliases, cumulative tool bounds, duplicate events, and zero
+  tool requests on malformed, failed, partial, truncated, cancelled, timed-out,
+  cleanup-failed, or overflow results
+- security delta: native schemas cross the provider boundary only when supplied;
+  provider-safe aliases map back to canonical tool identities; undeclared,
+  duplicate, malformed, oversized, non-finite, or partial tool calls fail closed;
+  runtime adapters transport/parse but never permit or execute tools
+- residual risk: no live Ollama/OpenAI-compatible runtime, model, provider
+  network, inference, app, browser, bundle, performance, or load proof ran under
+  the current host-safety policy
+- remote proof: non-force push succeeded and `git ls-remote` confirmed
+  `refs/heads/main` exactly at `f0d75259d24d5a4fde8434e409ab9dd157303859`
+  before this receipt-only update
+- clean proof: canonical index/worktree and the source agent worktree were clean;
+  no manifest, lockfile, API, DB, build, instance, permission, or tool-execution
+  path was included
+
 ### Agent delivery-cycle policy
 
 - accepted commit: `390500c8ce6c9df4702363130c1cc8f6b257bd6e`
