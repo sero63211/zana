@@ -10,13 +10,17 @@ from urllib.parse import urlsplit
 
 from sqlalchemy.orm import Session, sessionmaker
 
-from zana_core.db.models import Model, Runtime
+from zana_core.acquisition.redact import sanitize_terminal_error
+from zana_core.db.models import Job, Model, Runtime
 from zana_core.db.unit_of_work import UnitOfWork
 from zana_core.domain.enums import (
+    JobKind,
+    JobStatus,
     RuntimeKind,
     RuntimeSource,
     RuntimeStatus,
 )
+from zana_core.jobs.services import JobNotFoundError, JobService
 from zana_core.runtimes.base import (
     AdapterType,
     ProbeTarget,
@@ -123,11 +127,76 @@ class RuntimeDiscoveryService:
             )
         return targets
 
-    def refresh(self, uow: UnitOfWork) -> list[RuntimeDescriptor]:
-        """Probe the bounded target set and persist discovered runtime/models."""
-        descriptors = self.registry.probe(self.targets(uow))
-        self.sync(uow, descriptors)
-        return descriptors
+    def refresh(self, session_factory: sessionmaker[Session]) -> Job | None:
+        """Run one bounded discovery refresh with no UoW held across probing.
+
+        A short UoW creates the RUNNING job and snapshots bounded targets,
+        then closes. The registry probe runs with no open DB transaction, and
+        a fresh short UoW atomically syncs descriptors and marks success (or
+        records a sanitized failure after the savepoint rolls back).
+        """
+        with UnitOfWork(session_factory) as uow:
+            service = JobService(uow)
+            job = service.create_job(
+                JobKind.RUNTIME_REFRESH,
+                phase="discovery",
+                message="Refreshing runtime and model discovery.",
+            )
+            service.transition_job(job.id, JobStatus.RUNNING, phase="discovery")
+            targets = self.targets(uow)
+            job_id = job.id
+        try:
+            descriptors = self.registry.probe(targets)
+        except Exception:  # noqa: BLE001 - failures are sanitized below
+            return self._refresh_failed(session_factory, job_id)
+        if type(descriptors) is not list:
+            return self._refresh_failed(session_factory, job_id)
+        sync_failed = False
+        with UnitOfWork(session_factory) as uow:
+            service = JobService(uow)
+            job = service.get_job(job_id)
+            if job is None:
+                return None
+            try:
+                with uow.session.begin_nested():
+                    self.sync(uow, descriptors)
+            except Exception:  # noqa: BLE001 - savepoint rolls back partial sync
+                sync_failed = True
+            else:
+                job = service.transition_job(
+                    job.id,
+                    JobStatus.SUCCEEDED,
+                    phase="complete",
+                    message=(
+                        f"Runtime discovery complete; {len(descriptors)} candidate(s) probed."
+                    ),
+                )
+        if sync_failed:
+            return self._refresh_failed(session_factory, job_id)
+        return job
+
+    @staticmethod
+    def _refresh_failed(
+        session_factory: sessionmaker[Session],
+        job_id: int,
+    ) -> Job | None:
+        with UnitOfWork(session_factory) as uow:
+            service = JobService(uow)
+            try:
+                job = service.get_job(job_id)
+            except JobNotFoundError:
+                return None
+            return service.transition_job(
+                job.id,
+                JobStatus.FAILED,
+                phase="failed",
+                message="Runtime discovery could not complete.",
+                error=sanitize_terminal_error(
+                    code="RUNTIME_REFRESH_FAILED",
+                    message="Runtime discovery could not complete.",
+                    actions=["retry_refresh"],
+                ),
+            )
 
     def sync(self, uow: UnitOfWork, descriptors: list[RuntimeDescriptor]) -> int:
         """Upsert discovered runtimes and their bounded model descriptors.

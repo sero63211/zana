@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import math
 import threading
 import urllib.error
@@ -12,6 +13,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from zana_core.acquisition.limits import AcquisitionLimits
+from zana_core.acquisition.redact import sanitize_model_reference
 
 PULL_PATH = "/api/pull"
 PULL_METHOD = "POST"
@@ -21,18 +23,9 @@ MAX_URL_BYTES = 4096
 MAX_BODY_BYTES = 4096
 MAX_HEADER_VALUE_BYTES = 1024
 MAX_TIMEOUT_SECONDS = 3600.0
-_ALLOWED_HEADERS = frozenset({"content-type", "accept"})
-_FORBIDDEN_HEADER_PARTS = (
-    "authorization",
-    "bearer",
-    "token",
-    "secret",
-    "password",
-    "api-key",
-    "apikey",
-    "cookie",
-    "proxy",
-)
+MAX_IO_TIMEOUT_SECONDS = 4.0
+_CONTENT_TYPE_HEADER = "content-type"
+_EXPECTED_CONTENT_TYPE = "application/json"
 
 
 class NativeTransportError(RuntimeError):
@@ -90,6 +83,38 @@ def _validate_pull_url(url: str) -> None:
         raise NativeTransportProtocolError("Native pull URL must target a loopback host.")
 
 
+def _validate_pull_body(body: bytes | None) -> None:
+    """Validate an exact JSON object containing only model and stream=true."""
+    if type(body) is not bytes or not body:
+        raise NativeTransportProtocolError("Native pull body is invalid.")
+    if len(body) > MAX_BODY_BYTES:
+        raise NativeTransportProtocolError("Native pull body exceeds the byte limit.")
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        raise NativeTransportProtocolError("Native pull body is invalid.") from None
+    seen_keys: list[str] = []
+
+    def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        seen_keys.extend(key for key, _ in pairs)
+        return dict(pairs)
+
+    try:
+        payload = json.loads(text, object_pairs_hook=object_pairs)
+    except ValueError:
+        raise NativeTransportProtocolError("Native pull body is invalid.") from None
+    if type(payload) is not dict:
+        raise NativeTransportProtocolError("Native pull body must be a JSON object.")
+    if len(seen_keys) != 2 or set(seen_keys) != {"model", "stream"}:
+        raise NativeTransportProtocolError("Native pull body keys are invalid.")
+    if payload.get("stream") is not True:
+        raise NativeTransportProtocolError("Native pull body stream must be true.")
+    try:
+        sanitize_model_reference(payload.get("model", ""))
+    except ValueError:
+        raise NativeTransportProtocolError("Native pull body model is invalid.") from None
+
+
 def _validate_request(
     method: str,
     headers: Mapping[str, str] | None,
@@ -98,25 +123,20 @@ def _validate_request(
 ) -> None:
     if method != PULL_METHOD:
         raise NativeTransportProtocolError("Native pull method must be POST.")
-    if type(body) is not bytes or not body:
-        raise NativeTransportProtocolError("Native pull body is invalid.")
-    if len(body) > MAX_BODY_BYTES:
-        raise NativeTransportProtocolError("Native pull body exceeds the byte limit.")
-    if headers is not None:
-        if type(headers) is not dict:
+    if type(headers) is not dict or len(headers) != 1:
+        raise NativeTransportProtocolError("Native pull headers are invalid.")
+    for name, value in headers.items():
+        if type(name) is not str or type(value) is not str:
             raise NativeTransportProtocolError("Native pull headers are invalid.")
-        for name, value in headers.items():
-            if type(name) is not str or type(value) is not str:
-                raise NativeTransportProtocolError("Native pull headers are invalid.")
-            lowered = name.lower()
-            if lowered not in _ALLOWED_HEADERS:
-                raise NativeTransportProtocolError("Native pull header is not allowed.")
-            if any(part in lowered for part in _FORBIDDEN_HEADER_PARTS):
-                raise NativeTransportProtocolError("Native pull header is not allowed.")
-            if not value or len(value.encode("utf-8")) > MAX_HEADER_VALUE_BYTES:
-                raise NativeTransportProtocolError("Native pull header value is invalid.")
-            if any(ord(char) < 32 and char not in "\t" for char in value):
-                raise NativeTransportProtocolError("Native pull header value is invalid.")
+        if name.lower() != _CONTENT_TYPE_HEADER:
+            raise NativeTransportProtocolError("Native pull header is not allowed.")
+        if value != _EXPECTED_CONTENT_TYPE:
+            raise NativeTransportProtocolError("Native pull content type is invalid.")
+        if len(value.encode("utf-8")) > MAX_HEADER_VALUE_BYTES:
+            raise NativeTransportProtocolError("Native pull header value is invalid.")
+        if any((ord(char) < 32 and char not in "\t") or ord(char) == 127 for char in value):
+            raise NativeTransportProtocolError("Native pull header value is invalid.")
+    _validate_pull_body(body)
     if type(timeout) not in (int, float):
         raise NativeTransportProtocolError("Native pull timeout is invalid.")
     numeric = float(timeout)
@@ -133,32 +153,50 @@ class _BoundedNativeStream:
         self._response = response
         self._max_bytes = max_bytes
         self._chunk_size = chunk_size
+        self._lock = threading.Lock()
         self._total = 0
         self._closed = False
+        self._close_error: NativeTransportCleanupError | None = None
 
     def __iter__(self) -> Iterator[bytes]:
         try:
-            while not self._closed:
+            while True:
+                with self._lock:
+                    if self._closed:
+                        return
                 chunk = self._response.read(self._chunk_size)
                 if not chunk:
+                    self.close()
                     return
-                self._total += len(chunk)
-                if self._total > self._max_bytes:
-                    raise NativeTransportProtocolError(
-                        "Native pull stream exceeded the bounded size limit."
-                    )
+                with self._lock:
+                    if self._closed:
+                        return
+                    self._total += len(chunk)
+                    if self._total > self._max_bytes:
+                        raise NativeTransportProtocolError(
+                            "Native pull stream exceeded the bounded size limit."
+                        )
                 yield chunk
         finally:
             self.close()
 
     def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
+        with self._lock:
+            if self._closed:
+                error = self._close_error
+                if error is not None:
+                    raise error
+                return
+            self._closed = True
         try:
             self._response.close()
         except Exception:  # noqa: BLE001 - cleanup is reported, never silent
-            raise NativeTransportCleanupError("Native pull stream cleanup failed.") from None
+            with self._lock:
+                if self._close_error is None:
+                    self._close_error = NativeTransportCleanupError(
+                        "Native pull stream cleanup failed."
+                    )
+            raise self._close_error from None
 
 
 class UrllibNativeStreamTransport:
@@ -168,6 +206,8 @@ class UrllibNativeStreamTransport:
         self.limits = limits or AcquisitionLimits()
         self._lock = threading.Lock()
         self._active_stream: _BoundedNativeStream | None = None
+        self._open_generation: int | None = None
+        self._generation = 0
 
     def open_stream(
         self,
@@ -184,8 +224,6 @@ class UrllibNativeStreamTransport:
             "User-Agent": USER_AGENT,
             "Accept": "application/x-ndjson, application/json",
         }
-        if headers:
-            request_headers.update(headers)
         request = urllib.request.Request(
             url,
             data=body,
@@ -193,37 +231,63 @@ class UrllibNativeStreamTransport:
             method=method,
         )
         with self._lock:
-            if self._active_stream is not None:
+            if self._active_stream is not None or self._open_generation is not None:
                 raise NativeTransportProtocolError(
                     "Only one native pull stream can be open at a time."
                 )
+            opening = self._generation
+            self._open_generation = opening
+        effective_timeout = min(float(timeout), MAX_IO_TIMEOUT_SECONDS)
+        try:
+            response = urllib.request.urlopen(request, timeout=effective_timeout)
+        except urllib.error.HTTPError as error:
+            self._clear_opening(opening)
             try:
-                response = urllib.request.urlopen(request, timeout=timeout)
-            except urllib.error.HTTPError as error:
-                try:
-                    error.read(1_048_576 + 1)
-                finally:
-                    error.close()
-                raise NativeTransportHTTPError("Native runtime returned an HTTP error.") from None
-            except TimeoutError as error:
-                raise NativeTransportTimeoutError(
-                    "Native runtime did not answer within the bounded timeout."
-                ) from error
-            except urllib.error.URLError:
-                raise NativeTransportTimeoutError("Native runtime could not be reached.") from None
-            except OSError:
-                raise NativeTransportError("Native runtime transport failed.") from None
-            stream = _BoundedNativeStream(
-                response,
-                max_bytes=self.limits.max_total_event_bytes + self.limits.max_line_bytes,
-                chunk_size=STREAM_CHUNK_SIZE,
-            )
-            self._active_stream = stream
+                error.read(1_048_576 + 1)
+            finally:
+                error.close()
+            raise NativeTransportHTTPError("Native runtime returned an HTTP error.") from None
+        except TimeoutError:
+            self._clear_opening(opening)
+            raise NativeTransportTimeoutError(
+                "Native runtime did not answer within the bounded timeout."
+            ) from None
+        except urllib.error.URLError:
+            self._clear_opening(opening)
+            raise NativeTransportTimeoutError("Native runtime could not be reached.") from None
+        except OSError:
+            self._clear_opening(opening)
+            raise NativeTransportError("Native runtime transport failed.") from None
+        stream: _BoundedNativeStream | None = None
+        with self._lock:
+            stale = self._open_generation != opening or self._active_stream is not None
+            if not stale:
+                stream = _BoundedNativeStream(
+                    response,
+                    max_bytes=self.limits.max_total_event_bytes + self.limits.max_line_bytes,
+                    chunk_size=STREAM_CHUNK_SIZE,
+                )
+                self._active_stream = stream
+                self._open_generation = None
+        if stale:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001 - late cleanup is reported
+                raise NativeTransportCleanupError("Native pull stream cleanup failed.") from None
+            raise NativeTransportProtocolError("Native pull stream was invalidated before opening.")
+        assert stream is not None
         return stream
+
+    def _clear_opening(self, opening: int) -> None:
+        with self._lock:
+            if self._open_generation == opening:
+                self._open_generation = None
 
     def close(self) -> None:
         with self._lock:
+            self._generation += 1
             stream = self._active_stream
             self._active_stream = None
+            self._open_generation = None
         if stream is not None:
             stream.close()

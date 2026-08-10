@@ -40,9 +40,23 @@ from zana_core.runtimes.registry import RuntimeProbeRegistry
 async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     """Yield while serving, then stop the acquisition supervisor deterministically."""
     yield
-    supervisor = getattr(application.state, "acquisition_supervisor", None)
-    if supervisor is not None:
-        supervisor.shutdown(timeout=5.0)
+    shutdown_error: Exception | None = None
+    try:
+        supervisor = getattr(application.state, "acquisition_supervisor", None)
+        if supervisor is not None:
+            supervisor.shutdown(timeout=5.0)
+    except Exception as error:  # noqa: BLE001 - reported after database cleanup
+        shutdown_error = error
+    finally:
+        database = getattr(application.state, "database", None)
+        if database is not None:
+            try:
+                database.close()
+            except Exception:  # noqa: BLE001 - never hide the shutdown error
+                if shutdown_error is None:
+                    shutdown_error = RuntimeError("Database cleanup failed.")
+    if shutdown_error is not None:
+        raise shutdown_error
 
 
 def create_app(

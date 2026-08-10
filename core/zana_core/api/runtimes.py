@@ -12,12 +12,9 @@ from zana_core.api.errors import http_error
 from zana_core.api.schemas import JobRead, RuntimeCreate, RuntimeRead
 from zana_core.db.models import Job, Runtime
 from zana_core.domain.enums import (
-    JobKind,
-    JobStatus,
     RuntimeSource,
     RuntimeStatus,
 )
-from zana_core.jobs.services import JobService
 from zana_core.runtimes.discovery_service import RuntimeDiscoveryService
 
 router = APIRouter(
@@ -48,43 +45,25 @@ def _validate_manual_endpoint(endpoint: str) -> None:
 
 
 @router.post("/refresh", response_model=JobRead)
-def refresh_runtimes(request: Request, uow: UnitOfWorkDep) -> Job:
+def refresh_runtimes(request: Request) -> Job:
     """Run bounded runtime discovery and persist the real results as a job.
 
-    Discovery persistence runs inside a savepoint so a failed probe cannot
-    leave partial runtime/model rows, while the FAILED job and its event still
-    commit and remain fetchable from the jobs API.
+    The RUNNING job and bounded probe targets are persisted in a short unit
+    of work, the injected registry probes with no open DB transaction, and a
+    fresh short unit of work atomically persists discovery or records a
+    sanitized failure after savepoint rollback.
     """
     discovery: RuntimeDiscoveryService = request.app.state.discovery_service
-    service = JobService(uow)
-    job = service.create_job(
-        JobKind.RUNTIME_REFRESH,
-        phase="discovery",
-        message="Refreshing runtime and model discovery.",
-    )
-    service.transition_job(job.id, JobStatus.RUNNING, phase="discovery")
-    try:
-        with uow.session.begin_nested():
-            descriptors = discovery.refresh(uow)
-        return service.transition_job(
-            job.id,
-            JobStatus.SUCCEEDED,
-            phase="complete",
-            message=f"Runtime discovery complete; {len(descriptors)} candidate(s) probed.",
+    job = discovery.refresh(request.app.state.session_factory)
+    if job is None:
+        raise http_error(
+            500,
+            "RUNTIME_REFRESH_FAILED",
+            "Runtime discovery could not complete.",
+            recoverable=True,
+            actions=["retry_refresh"],
         )
-    except Exception:  # noqa: BLE001 - failures are sanitized below
-        return service.transition_job(
-            job.id,
-            JobStatus.FAILED,
-            phase="failed",
-            message="Runtime discovery could not complete.",
-            error={
-                "code": "RUNTIME_REFRESH_FAILED",
-                "message": "Runtime discovery could not complete.",
-                "recoverable": True,
-                "actions": ["retry_refresh"],
-            },
-        )
+    return job
 
 
 @router.get("", response_model=list[RuntimeRead])

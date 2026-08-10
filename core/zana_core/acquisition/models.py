@@ -16,6 +16,7 @@ from zana_core.acquisition.limits import (
     MAX_RETAINED_EVENTS,
     MAX_SEQUENCE,
 )
+from zana_core.acquisition.redact import sanitize_model_reference
 
 _MAX_TEXT_CHARS = 512
 _MAX_REASON_CHARS = 256
@@ -74,18 +75,7 @@ class NativeAcquisitionRequest(BaseModel):
     @field_validator("model_reference")
     @classmethod
     def _validate_model_reference(cls, value: str) -> str:
-        value = value.strip()
-        if not value or value in {".", ".."}:
-            raise ValueError("model_reference must be a bounded non-empty reference")
-        if len(value) > MAX_MODEL_REFERENCE_BYTES:
-            raise ValueError("model_reference exceeds 200 bytes")
-        if len(value.encode("utf-8")) > MAX_MODEL_REFERENCE_BYTES:
-            raise ValueError("model_reference exceeds 200 UTF-8 bytes")
-        if "\x00" in value or "\n" in value or "\r" in value:
-            raise ValueError("model_reference contains forbidden control bytes")
-        if any(ord(char) < 32 for char in value):
-            raise ValueError("model_reference contains forbidden control characters")
-        return value
+        return sanitize_model_reference(value)
 
     @field_validator("endpoint")
     @classmethod

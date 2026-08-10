@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from zana_core.acquisition.limits import (
@@ -13,6 +14,8 @@ MAX_TEXT_CHARS = 256
 MAX_TEXT_BYTES = 1024
 MAX_CODE_CHARS = 64
 _INVALID = "...[invalid-text]"
+_REFERENCE_PART = r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?"
+_REFERENCE_RE = re.compile(rf"^{_REFERENCE_PART}(?:/{_REFERENCE_PART})*(?::{_REFERENCE_PART})?$")
 
 
 def bounded_text(value: str, *, max_chars: int = MAX_TEXT_CHARS) -> str:
@@ -45,11 +48,16 @@ def bounded_code(value: str) -> str:
 
 
 def sanitize_model_reference(value: str) -> str:
-    """Validate a model reference without ever persisting endpoint data."""
+    """Validate a conservative ASCII Ollama/HF-compatible reference.
+
+    Grammar: one or more slash-separated path parts plus an optional ``:tag``.
+    Parts allow letters, digits, dot, underscore, and hyphen, never start or
+    end with a delimiter, and never become dot traversal segments.
+    """
     if type(value) is not str:
         raise ValueError("model_reference must be a string")
     value = value.strip()
-    if not value or value in {".", ".."}:
+    if not value:
         raise ValueError("model_reference must be a bounded non-empty reference")
     if len(value) > MAX_MODEL_REFERENCE_BYTES:
         raise ValueError("model_reference exceeds the byte limit")
@@ -57,8 +65,12 @@ def sanitize_model_reference(value: str) -> str:
         raise ValueError("model_reference exceeds the UTF-8 byte limit")
     if "\x00" in value or "\n" in value or "\r" in value:
         raise ValueError("model_reference contains forbidden control bytes")
-    if any(ord(char) < 32 for char in value):
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
         raise ValueError("model_reference contains forbidden control characters")
+    if not _REFERENCE_RE.fullmatch(value):
+        raise ValueError(
+            "model_reference must be a safe namespace/path reference with an optional :tag"
+        )
     return value
 
 

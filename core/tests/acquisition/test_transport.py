@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import threading
 import urllib.error
 
 import pytest
@@ -109,6 +110,96 @@ def test_transport_rejects_method_headers_body_and_timeout(monkeypatch) -> None:
     with pytest.raises(NativeTransportProtocolError):
         transport.open_stream(**{**_request(), "timeout": float("nan")})
     assert calls == []
+
+
+def test_transport_rejects_extra_duplicate_and_secret_bodies(monkeypatch) -> None:
+    transport, calls = _transport(monkeypatch)
+    variants = [
+        b'{"model":"qwen2:1.5b","stream":true,"extra":1}',
+        b'{"model":"qwen2:1.5b","model":"x","stream":true}',
+        b'{"model":"https://user:secret@example.com/m","stream":true}',
+        b'{"model":"qwen2:1.5b","stream":false}',
+        b'{"stream":true}',
+        b'{"model":"../secret","stream":true}',
+    ]
+    for body in variants:
+        with pytest.raises(NativeTransportProtocolError):
+            transport.open_stream(**{**_request(), "body": body})
+    assert calls == []
+
+
+def test_transport_rejects_extra_accept_and_missing_content_type(monkeypatch) -> None:
+    transport, calls = _transport(monkeypatch)
+    with pytest.raises(NativeTransportProtocolError):
+        transport.open_stream(
+            **{
+                **_request(),
+                "headers": {
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                },
+            }
+        )
+    with pytest.raises(NativeTransportProtocolError):
+        transport.open_stream(**{**_request(), "headers": {"Accept": "application/json"}})
+    assert calls == []
+
+
+def test_transport_caps_io_timeout_to_shutdown_bound(monkeypatch) -> None:
+    captured: list[float] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        captured.append(timeout)
+        return FakeResponse([b"x"])
+
+    monkeypatch.setattr(transport_module.urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibNativeStreamTransport()
+    stream = transport.open_stream(**{**_request(), "timeout": 30.0})
+    stream.close()
+    assert captured == [4.0]
+
+
+def test_transport_close_invalidates_in_flight_open_without_waiting(monkeypatch) -> None:
+    gate = threading.Event()
+    release = threading.Event()
+    late_response = FakeResponse([b"x"])
+    result: list[Exception | None] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        gate.set()
+        release.wait(timeout=5)
+        return late_response
+
+    monkeypatch.setattr(transport_module.urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibNativeStreamTransport()
+
+    def open_call() -> None:
+        try:
+            transport.open_stream(**_request())
+            result.append(None)
+        except Exception as error:  # noqa: BLE001
+            result.append(error)
+
+    thread = threading.Thread(target=open_call)
+    thread.start()
+    assert gate.wait(timeout=3)
+    transport.close()
+    assert not release.is_set()
+    release.set()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+    assert len(result) == 1
+    assert isinstance(result[0], NativeTransportProtocolError)
+    assert late_response.closed is True
+
+
+def test_transport_stream_close_is_idempotent_and_thread_safe(monkeypatch) -> None:
+    response = FakeResponse([b"x"])
+    transport, _ = _transport(monkeypatch, [response])
+    stream = transport.open_stream(**_request())
+    stream.close()
+    stream.close()
+    assert response.closed is True
 
 
 def test_transport_http_error_is_sanitized(monkeypatch) -> None:

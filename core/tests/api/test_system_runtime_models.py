@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi.testclient import TestClient
 
+from zana_core.db.unit_of_work import UnitOfWork
 from zana_core.domain.enums import (
     ModelIdentityStrength,
     RuntimeKind,
@@ -281,19 +282,29 @@ def test_failed_refresh_persists_failed_job_without_partial_discovery(database) 
     assert client.get("/api/v1/models", headers=_headers()).json() == []
 
 
-def _seed_ollama(client: TestClient, *, endpoint: str = "http://127.0.0.1:11434") -> int:
+def _seed_ollama(
+    client: TestClient,
+    database,
+    *,
+    endpoint: str = "http://127.0.0.1:11434",
+) -> int:
     created = client.post(
         "/api/v1/runtimes/manual",
         json={"kind": "ollama", "endpoint": endpoint},
         headers=_headers(),
     )
     assert created.status_code == 201
-    return created.json()["id"]
+    runtime_id = created.json()["id"]
+    with UnitOfWork(database.session_factory) as uow:
+        runtime = uow.runtimes.get(runtime_id)
+        assert runtime is not None
+        runtime.status = RuntimeStatus.ONLINE
+    return runtime_id
 
 
 def test_model_pull_records_persisted_job(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
 
     pull = client.post(
         "/api/v1/models/pull",
@@ -367,7 +378,7 @@ def test_model_pull_rejects_non_ollama_runtime(database) -> None:
 
 def test_model_pull_requires_explicit_approval(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json={"runtime_id": runtime_id, "model_reference": "qwen2:1.5b", "user_approved": False},
@@ -380,7 +391,7 @@ def test_model_pull_requires_explicit_approval(database) -> None:
 
 def test_model_pull_rejects_missing_approval(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json={"runtime_id": runtime_id, "model_reference": "qwen2:1.5b"},
@@ -392,7 +403,7 @@ def test_model_pull_rejects_missing_approval(database) -> None:
 
 def test_model_pull_rejects_coerced_and_extra_fields(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     coerced = client.post(
         "/api/v1/models/pull",
         json={
@@ -421,7 +432,7 @@ def test_model_pull_rejects_coerced_and_extra_fields(database) -> None:
 
 def test_model_pull_rejects_remote_endpoint(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client, endpoint="http://example.com:11434")
+    runtime_id = _seed_ollama(client, database, endpoint="http://example.com:11434")
     response = client.post(
         "/api/v1/models/pull",
         json={"runtime_id": runtime_id, "model_reference": "qwen2:1.5b", "user_approved": True},
@@ -433,7 +444,7 @@ def test_model_pull_rejects_remote_endpoint(database) -> None:
 
 def test_model_pull_rejects_path_endpoint(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client, endpoint="http://127.0.0.1:11434/v1")
+    runtime_id = _seed_ollama(client, database, endpoint="http://127.0.0.1:11434/v1")
     response = client.post(
         "/api/v1/models/pull",
         json={"runtime_id": runtime_id, "model_reference": "qwen2:1.5b", "user_approved": True},
@@ -445,7 +456,7 @@ def test_model_pull_rejects_path_endpoint(database) -> None:
 
 def test_model_pull_bounds_model_reference(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json={
@@ -470,7 +481,7 @@ def test_model_detail_supports_slash_in_key_without_shadowing_pull(database) -> 
     assert detail.status_code == 200
     assert detail.json()["model_id"] == "qwen2/1.5b"
 
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     pull = client.post(
         "/api/v1/models/pull",
         json={

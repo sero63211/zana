@@ -80,14 +80,19 @@ def _headers() -> dict[str, str]:
     return {"Authorization": "Bearer test-token-abc123"}
 
 
-def _seed_ollama(client: TestClient) -> int:
+def _seed_ollama(client: TestClient, database) -> int:
     response = client.post(
         "/api/v1/runtimes/manual",
         json={"kind": "ollama", "endpoint": "http://127.0.0.1:11434"},
         headers=_headers(),
     )
     assert response.status_code == 201
-    return response.json()["id"]
+    runtime_id = response.json()["id"]
+    with UnitOfWork(database.session_factory) as uow:
+        runtime = uow.runtimes.get(runtime_id)
+        assert runtime is not None
+        runtime.status = RuntimeStatus.ONLINE
+    return runtime_id
 
 
 def _pull_payload(runtime_id: int, **overrides) -> dict[str, object]:
@@ -127,7 +132,7 @@ class FakeTransport:
 def test_pull_dispatches_and_persists_only_sanitized_state(database) -> None:
     supervisor = NoopSupervisor()
     client = _client(database, supervisor=supervisor)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id),
@@ -148,7 +153,7 @@ def test_pull_dispatches_and_persists_only_sanitized_state(database) -> None:
 def test_dispatch_failure_persists_failed_job_not_fake_queued(database) -> None:
     supervisor = RaisingSupervisor(DispatchError("worker start boom"))
     client = _client(database, supervisor=supervisor)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id),
@@ -166,7 +171,7 @@ def test_dispatch_failure_persists_failed_job_not_fake_queued(database) -> None:
 def test_queue_full_persists_failed_job(database) -> None:
     supervisor = RaisingSupervisor(QueueFullError("queue full"))
     client = _client(database, supervisor=supervisor)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id),
@@ -184,7 +189,7 @@ def test_queue_full_persists_failed_job(database) -> None:
 def test_unknown_disk_requirement_blocks_before_dispatch(database) -> None:
     supervisor = NoopSupervisor()
     client = _client(database, supervisor=supervisor)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id, expected_size_bytes=None),
@@ -208,7 +213,7 @@ def test_insufficient_disk_blocks_before_dispatch(database) -> None:
             )
         ),
     )
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     response = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id),
@@ -221,7 +226,7 @@ def test_insufficient_disk_blocks_before_dispatch(database) -> None:
 
 def test_cancel_is_idempotent_and_kind_safe(database) -> None:
     client = _client(database)
-    runtime_id = _seed_ollama(client)
+    runtime_id = _seed_ollama(client, database)
     pull = client.post(
         "/api/v1/models/pull",
         json=_pull_payload(runtime_id),
@@ -264,6 +269,61 @@ def test_pull_rejects_disabled_runtime(database) -> None:
     assert pull.json()["error"]["code"] == "RUNTIME_NOT_ENABLED"
 
 
+def test_pull_rejects_unknown_runtime_without_dispatch(database) -> None:
+    supervisor = NoopSupervisor()
+    client = _client(database, supervisor=supervisor)
+    created = client.post(
+        "/api/v1/runtimes/manual",
+        json={"kind": "ollama", "endpoint": "http://127.0.0.1:11434"},
+        headers=_headers(),
+    )
+    assert created.status_code == 201
+    runtime_id = created.json()["id"]
+    pull = client.post(
+        "/api/v1/models/pull",
+        json=_pull_payload(runtime_id),
+        headers=_headers(),
+    )
+    assert pull.status_code == 409
+    assert pull.json()["error"]["code"] == "RUNTIME_NOT_ENABLED"
+    assert supervisor.dispatched == []
+    with UnitOfWork(database.session_factory) as uow:
+        assert uow.jobs.list() == []
+
+
+def test_rejected_secret_reference_never_persisted_or_exposed(database) -> None:
+    supervisor = NoopSupervisor()
+    client = _client(database, supervisor=supervisor)
+    runtime_id = _seed_ollama(client, database)
+    secret = "https://user:topsecret@example.com/pull?token=abc"
+    response = client.post(
+        "/api/v1/models/pull",
+        json=_pull_payload(runtime_id, model_reference=secret),
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+    assert "topsecret" not in response.text
+    assert supervisor.dispatched == []
+    with UnitOfWork(database.session_factory) as uow:
+        assert uow.jobs.list() == []
+
+
+def test_queued_job_events_never_expose_endpoint_or_secret(database) -> None:
+    client = _client(database)
+    runtime_id = _seed_ollama(client, database)
+    pull = client.post(
+        "/api/v1/models/pull",
+        json=_pull_payload(runtime_id),
+        headers=_headers(),
+    )
+    assert pull.status_code == 201
+    job_id = pull.json()["id"]
+    events = client.get(f"/api/v1/jobs/{job_id}/events", headers=_headers())
+    assert events.status_code == 200
+    assert "http://127.0.0.1:11434" not in events.text
+    assert "topsecret" not in events.text
+
+
 def test_app_shutdown_closes_transport(database) -> None:
     transport = FakeTransport()
     supervisor = AcquisitionSupervisor(
@@ -304,3 +364,33 @@ def test_app_shutdown_reports_transport_cleanup_failure(database) -> None:
     )
     with pytest.raises(AcquisitionShutdownError), TestClient(app) as client:
         assert client.get("/api/v1/health").status_code == 401
+
+
+def test_app_shutdown_closes_database_after_supervisor_error(database) -> None:
+    transport = FakeTransport(close_error=RuntimeError("close boom"))
+    supervisor = AcquisitionSupervisor(
+        session_factory=database.session_factory,
+        transport=transport,
+        admission=FixedAdmission(
+            AdmissionResult(allowed=True, reason="ok", conservative_reserve_bytes=0)
+        ),
+        discovery=object(),
+        runner=NoopRunner(),  # type: ignore[arg-type]
+    )
+    closed: list[int] = []
+    app = create_app(
+        token="test-token-abc123",
+        database_path=database.path,
+        acquisition_supervisor=supervisor,
+    )
+    app_database = app.state.database
+    original_close = app_database.close
+
+    def spy_close() -> None:
+        closed.append(1)
+        original_close()
+
+    app_database.close = spy_close  # type: ignore[method-assign]
+    with pytest.raises(AcquisitionShutdownError), TestClient(app) as client:
+        assert client.get("/api/v1/health").status_code == 401
+    assert closed == [1]

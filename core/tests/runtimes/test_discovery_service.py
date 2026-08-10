@@ -90,8 +90,10 @@ def test_manual_refresh_and_confirm_use_same_discovery_service(session_factory) 
     registry = RecordingRegistry()
     service = RuntimeDiscoveryService(registry)
     runtime_id = _seed_runtime(session_factory)
+    job = service.refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "SUCCEEDED"
     with UnitOfWork(session_factory) as uow:
-        service.refresh(uow)
         runtimes = uow.runtimes.list()
         assert len(runtimes) >= 1
     with UnitOfWork(session_factory) as uow:
@@ -116,6 +118,39 @@ def test_manual_refresh_and_confirm_use_same_discovery_service(session_factory) 
     with UnitOfWork(session_factory) as uow:
         persisted = uow.models.list_by_runtime(runtime_id)
         assert any(item.model_id == "qwen2:1.5b" for item in persisted)
+
+
+def test_refresh_probes_with_no_active_uow_transaction(session_factory) -> None:
+    observations: list[bool] = []
+
+    class NoTransactionRegistry(RuntimeProbeRegistry):
+        def probe(self, targets: Any) -> list[RuntimeDescriptor]:  # noqa: ANN401
+            with UnitOfWork(session_factory) as check:
+                observations.append(check.session.in_transaction())
+            return [_descriptor()]
+
+    service = RuntimeDiscoveryService(NoTransactionRegistry())
+    job = service.refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "SUCCEEDED"
+    assert observations == [False]
+
+
+def test_refresh_sync_failure_records_failed_job_without_partial_rows(
+    session_factory,
+) -> None:
+    class FailingSyncService(RuntimeDiscoveryService):
+        def sync(self, uow, descriptors):  # noqa: ANN001, ARG001
+            raise RuntimeError("sync boom")
+
+    service = FailingSyncService(RecordingRegistry())
+    job = service.refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "FAILED"
+    assert job.error_json["code"] == "RUNTIME_REFRESH_FAILED"
+    with UnitOfWork(session_factory) as uow:
+        assert uow.runtimes.list() == []
+        assert uow.models.list() == []
 
 
 def test_confirm_rejects_runtime_identity_change_before_probe(session_factory) -> None:

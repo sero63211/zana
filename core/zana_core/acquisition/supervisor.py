@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable
+from contextlib import suppress
 from typing import Any
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -124,11 +125,12 @@ class AcquisitionSupervisor:
                 raise DispatchError("Acquisition supervisor is shutting down.")
             if job_id in self._tokens:
                 raise DispatchError("Job is already queued or running.")
-            if len(self._pending) + len(self._tokens) >= self._max_queue:
+            if len(self._tokens) >= self._max_queue:
                 raise QueueFullError("Acquisition queue is full.")
             self._pending.append(job_id)
             self._tokens[job_id] = token
-            if self._worker is None:
+            if self._worker is None or not self._worker.is_alive():
+                self._worker = None
                 try:
                     worker = self._thread_factory(self._run_forever)
                     worker.start()
@@ -159,18 +161,24 @@ class AcquisitionSupervisor:
                 token.cancel()
             self._condition.notify_all()
             worker = self._worker
-        alive = False
-        if worker is not None:
-            worker.join(timeout=timeout)
-            alive = worker.is_alive()
-            if not alive:
-                self._worker = None
-        self._mark_pending_interrupted()
         cleanup_failed = False
         try:
             self._transport.close()
         except Exception:  # noqa: BLE001 - cleanup is reported, never silent
             cleanup_failed = True
+        alive = False
+        if worker is not None:
+            worker.join(timeout=timeout)
+            alive = worker.is_alive()
+            if not alive:
+                with self._condition:
+                    if self._worker is worker:
+                        self._worker = None
+        self._mark_pending_interrupted()
+        if alive and cleanup_failed:
+            raise AcquisitionShutdownError(
+                "Acquisition worker did not stop cleanly; native transport cleanup also failed."
+            )
         if alive:
             raise AcquisitionShutdownError("Acquisition worker did not stop cleanly.")
         if cleanup_failed:
@@ -178,35 +186,41 @@ class AcquisitionSupervisor:
 
     def _run_forever(self) -> None:
         worker_generation = self._generation
-        while True:
-            with self._condition:
-                while not self._pending and not self._stop:
-                    self._condition.wait()
-                if self._stop:
-                    break
-                job_id = self._pending.popleft()
-                token = self._tokens.get(job_id)
-                if token is None:
-                    token = CancelToken(worker_generation)
-                if token.generation != worker_generation:
-                    continue
-            try:
-                self._runner.execute(
-                    job_id,
-                    transport=self._transport,
-                    admission=self._admission,
-                    cancel=token,
-                )
-            except Exception:  # noqa: BLE001 - never crash the worker
-                ModelPullRunner.mark_job_failed(
-                    self._session_factory,
-                    job_id,
-                    "ACQUISITION_RUNNER_FAILED",
-                    "Model acquisition could not be executed.",
-                )
-            finally:
+        try:
+            while True:
                 with self._condition:
-                    self._tokens.pop(job_id, None)
+                    while not self._pending and not self._stop:
+                        self._condition.wait()
+                    if self._stop:
+                        break
+                    job_id = self._pending.popleft()
+                    token = self._tokens.get(job_id)
+                    if token is None:
+                        token = CancelToken(worker_generation)
+                    if token.generation != worker_generation:
+                        continue
+                try:
+                    self._runner.execute(
+                        job_id,
+                        transport=self._transport,
+                        admission=self._admission,
+                        cancel=token,
+                    )
+                except Exception:  # noqa: BLE001 - never crash the worker
+                    with suppress(Exception):
+                        ModelPullRunner.mark_job_failed(
+                            self._session_factory,
+                            job_id,
+                            "ACQUISITION_RUNNER_FAILED",
+                            "Model acquisition could not be executed.",
+                        )
+                finally:
+                    with self._condition:
+                        self._tokens.pop(job_id, None)
+        finally:
+            with self._condition:
+                self._worker = None
+                self._condition.notify_all()
 
     def _mark_pending_interrupted(self) -> None:
         interrupted: list[int] = []

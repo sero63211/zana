@@ -31,6 +31,18 @@ class FakeTransport:
             raise self.close_error
 
 
+class EventTransport(FakeTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed_event = threading.Event()
+
+    def close(self) -> None:
+        self.closed = True
+        self.closed_event.set()
+        if self.close_error is not None:
+            raise self.close_error
+
+
 class FakeAdmission:
     def admit(self, request):  # noqa: ANN001
         raise AssertionError("admission must never run in supervisor tests")
@@ -55,6 +67,32 @@ class BlockingRunner:
         self.calls.append(job_id)
         self.started.set()
         self.release.wait(timeout=5)
+
+
+class FlakyRunner:
+    """Raises once, proving a dead worker pointer cannot strand dispatches."""
+
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+        self.first = True
+        self.started = threading.Event()
+        self.done = threading.Event()
+
+    def execute(
+        self,
+        job_id: int,
+        *,
+        transport,
+        admission,
+        cancel,
+    ) -> None:
+        del transport, admission, cancel
+        self.calls.append(job_id)
+        self.started.set()
+        if self.first:
+            self.first = False
+            raise RuntimeError("injected runner boom")
+        self.done.set()
 
 
 def _supervisor(
@@ -172,3 +210,48 @@ def test_shutdown_reports_transport_cleanup_failure(session_factory) -> None:
         supervisor.shutdown()
     assert "close boom" not in str(raised.value)
     assert "secret" not in str(raised.value)
+
+
+def test_shutdown_closes_transport_before_joining_worker(session_factory) -> None:
+    runner = BlockingRunner()
+    transport = EventTransport()
+    supervisor = _supervisor(session_factory, runner=runner, transport=transport)
+    supervisor.dispatch(1)
+    assert runner.started.wait(timeout=3)
+
+    thread = threading.Thread(target=supervisor.shutdown)
+    thread.start()
+    assert transport.closed_event.wait(timeout=3)
+    assert not runner.release.is_set()
+    runner.release.set()
+    thread.join(timeout=3)
+    assert not thread.is_alive()
+
+
+def test_queue_capacity_counts_active_and_pending_total(session_factory) -> None:
+    runner = BlockingRunner()
+    supervisor = _supervisor(session_factory, runner=runner, max_queue=2)
+    supervisor.dispatch(1)
+    assert runner.started.wait(timeout=3)
+    supervisor.dispatch(2)
+    with pytest.raises(QueueFullError):
+        supervisor.dispatch(3)
+    runner.release.set()
+    supervisor.shutdown()
+
+
+def test_runner_exception_cannot_strand_future_dispatch(session_factory) -> None:
+    runner = FlakyRunner()
+    supervisor = AcquisitionSupervisor(
+        session_factory=session_factory,
+        transport=FakeTransport(),
+        admission=FakeAdmission(),
+        discovery=object(),
+        runner=runner,  # type: ignore[arg-type]
+        max_queue=2,
+    )
+    supervisor.dispatch(1)
+    assert runner.started.wait(timeout=3)
+    supervisor.dispatch(2)
+    assert runner.done.wait(timeout=3)
+    supervisor.shutdown()

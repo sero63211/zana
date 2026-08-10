@@ -166,7 +166,7 @@ def pull_model(
             actions=["fix_model_reference"],
         ) from None
 
-    if runtime.status in {RuntimeStatus.OFFLINE, RuntimeStatus.ERROR}:
+    if runtime.status is not RuntimeStatus.ONLINE:
         raise http_error(
             409,
             "RUNTIME_NOT_ENABLED",
@@ -184,12 +184,12 @@ def pull_model(
     job = service.create_job(
         JobKind.MODEL_PULL,
         phase="queued",
-        message=payload.model_reference,
+        message=acquisition_request.model_reference,
     )
     job.error_json = {
         **sanitize_job_payload(
             runtime_id=runtime.id,
-            model_reference=payload.model_reference,
+            model_reference=acquisition_request.model_reference,
             expected_size_bytes=payload.expected_size_bytes,
             user_approved=payload.user_approved,
             deadline_seconds=payload.deadline_seconds,
