@@ -1245,6 +1245,20 @@ tasks:
         output_contract: "Complete export/verify/import/delete service and routers with digest-preserving round trip, atomic registration, corrupted/traversal/secret/missing-base-model rejection or actionable status, cancellation/progress boundaries, and no guessed model compatibility; ready for serial main/router registration."
         gates: "Focused tiny archive/injected API tests; Ruff/format/Pyright/import/diff plus traversal, symlink, corruption, atomicity, secret and cleanup review; no large archive, install, live API/app/browser/model/runtime, broad suite, E2E, performance or load. One product commit plus receipt; clean; no push."
         stop_if: "Stop before editing images/** or shared DB/API/main contracts, deleting user archives, or requiring optional zstd installation. Report exact integration deltas."
+      - id: T900-resources-observability-api
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: reserved
+        branch: agent/t900-resources-observability-api
+        thread: pending
+        worktree: pending
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/resources/**, core/zana_core/observability/**, new core/zana_core/api/resources.py, new core/zana_core/api/observability.py, new resource/observability-local API schema/service files, core/tests/resources/**, core/tests/observability/**, one new focused resource-observability API test file, .agent-work/handoffs/T900-resources-observability-api.md. Excludes main.py, shared api/schemas.py, DB models/repositories/UoW/migrations, jobs, desktop/Tauri, manifests and locks."
+        dependencies: "Integrated conservative ResourceGovernor/snapshot/lease/accounting primitives and bounded local redacted observability events/sinks; authenticated API/error conventions are read-only inputs."
+        input_contract: "Expose only exact bounded Core-owned resource facts, policy/lease/usage state and already-redacted local observability records/stats; unknown remains unknown; telemetry and background polling remain off."
+        output_contract: "Dependency-complete product services and isolated authenticated routers for resource snapshot/policy/active leases/recent bounded usage and local observability event pagination/sink health, with typed secret/path-safe projections and explicit freshness/truncation/unsupported states, ready for serial main registration."
+        gates: "Focused injected unit/router tests; Ruff/format/Pyright/import/diff plus bounds, pagination/cursor, redaction, host-path/secret/raw-error, unknown/freshness, concurrency/lease-snapshot and telemetry-off review; no live API/app/browser/model/runtime/provider, install, broad suite, background sampler, performance/load, DB or filesystem export. One product commit plus receipt; clean; no push."
+        stop_if: "Stop before changing shared API/error contracts, DB persistence, event producers, main/router registration, desktop UX, remote telemetry, background polling, diagnostic export, or fabricating resource history/metrics absent from accepted primitives. Report the exact serial integration delta instead."
       - id: T910-desktop-frontend-program
         agent: gpt-5.6-sol
         reasoning_effort: high
