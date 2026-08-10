@@ -1180,8 +1180,8 @@ tasks:
         reasoning_effort: max
         status: active
         branch: agent/t900-build-evaluation-image-execution
-        thread: pending-first-class-task-creation
-        worktree: pending-local-codex-worktree
+        thread: 019fe9e0-aeb8-7f83-b6ef-282c28bc811b
+        worktree: /Users/sero/.codex/worktrees/7225/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/builds/**, core/zana_core/evaluation/**, core/zana_core/images/**, build-only additions under core/zana_core/jobs/**, core/zana_core/api/builds.py, core/zana_core/api/images.py, build/image/evaluation-only additions in core/zana_core/api/schemas.py and core/zana_core/main.py, required build/evaluation/image-only DB model/repository/UoW/migration changes, focused build/evaluation/image/job/API tests, .agent-work/handoffs/T900-build-evaluation-image-execution.md"
         dependencies: "Integrated capability authoring, runtime inference, knowledge providers, MLX execution, OCI/portability primitives, persistent jobs/SSE, artifacts/resources, and canonical authenticated API at 1900e9e."
