@@ -1206,10 +1206,12 @@ tasks:
       - id: T900-runtime-native-tools
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-runtime-native-tools
         thread: 019feac3-43a7-7bb0-95e7-8ff70256c72e
         worktree: /Users/sero/.codex/worktrees/4a35/zana
+        source_commits: "0083cb4869922bf291ef0d22e380a4c43beb949d, c79c78bae8c8418cd80bd5353ade45fbb6a5ad78, 409e66c7e0cbd976806ecd94b96530ecd9fbe726"
+        integration_commit: 2b333162fb88f3c73f82af579c14095649803206
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/runtimes/inference.py, core/zana_core/runtimes/ollama.py, core/zana_core/runtimes/openai_compat.py, exact focused runtime inference tests, .agent-work/handoffs/T900-runtime-native-tools.md"
         dependencies: "Integrated bounded inference at 6d43efe and trusted calculator/tool contracts; current build task has reported the missing native tool-schema request interface."
@@ -1217,6 +1219,7 @@ tasks:
         output_contract: "Ollama and OpenAI-compatible requests send exact native function schemas only when explicitly supplied, preserve bounded parsed tool requests, accept bounded tool-result continuation, and never execute tools inside the runtime adapter."
         gates: "Small injected-transport request/stream tests; Ruff/format/Pyright/import/diff and bounds/identity/secret review; no live runtime/model/network/inference, install, broad suite, app, or build. One product commit plus receipt; clean; no push."
         stop_if: "Stop before editing build/instance/tool/permission code or weakening request/output/identity bounds. Escalate any unavoidable shared protocol change beyond backward-compatible optional inputs."
+        verification: "Worker and lead independently: 108 focused fake transport tests PASS; Ruff/format PASS; Pyright 0 errors/warnings; official Ollama two-event tool-call continuation, tool_name, cumulative bounds, duplicate handling and all failed/partial/truncated/cancel/timeout/cleanup paths reviewed fail closed; canonical integration clean. No live runtime/model/network/inference."
       - id: T900-instance-chat-memory-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
