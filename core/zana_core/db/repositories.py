@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
-from sqlalchemy import BLOB, String, case, func, select, text
+from sqlalchemy import BLOB, String, case, delete, func, select, text
 from sqlalchemy.orm import Session
 
 from zana_core.db.models import (
@@ -137,6 +137,19 @@ class CapabilitySourceRepository(RepositoryBase[CapabilitySource]):
     def list_for_capability(self, capability_id: int) -> list[CapabilitySource]:
         stmt = select(CapabilitySource).where(CapabilitySource.capability_id == capability_id)
         return list(self.session.scalars(stmt))
+
+    def delete_for_capability_and_path(self, capability_id: int, local_path: str) -> int:
+        """Delete every exact source row for one logical target; returns row count."""
+        if type(capability_id) is not int or capability_id <= 0:
+            raise ValueError("capability_id must be a positive int")
+        if type(local_path) is not str or not local_path:
+            raise ValueError("local_path must be a non-empty string")
+        stmt = delete(CapabilitySource).where(
+            CapabilitySource.capability_id == capability_id,
+            CapabilitySource.local_path == local_path,
+        )
+        result = self.session.execute(stmt)
+        return int(result.rowcount or 0)
 
 
 class JobRepository(RepositoryBase[Job]):

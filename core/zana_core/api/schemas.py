@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -59,12 +59,16 @@ class ModelRead(BaseModel):
 
 
 class CapabilityCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     name: str = Field(min_length=1, max_length=300)
     version: str = Field(min_length=1, max_length=100)
     manifest_json: dict[str, Any] = Field(default_factory=dict)
 
 
 class CapabilityUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
     name: str | None = Field(default=None, min_length=1, max_length=300)
     version: str | None = Field(default=None, min_length=1, max_length=100)
     manifest_json: dict[str, Any] | None = None
@@ -181,3 +185,106 @@ class ModelPullCreate(BaseModel):
     expected_size_bytes: int | None = Field(default=None, ge=0, le=1 << 40)
     user_approved: bool
     deadline_seconds: float = Field(default=30.0, gt=0, le=3600)
+
+
+class CapabilityBehaviorSourceCreate(BaseModel):
+    """Bounded UTF-8 behavior/system content for the canonical system file."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["behavior"]
+    content: str = Field(min_length=1, max_length=1_000_000)
+
+
+class CapabilityDocumentSourceCreate(BaseModel):
+    """Explicitly approved local PDF/Markdown/TXT document copy."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["document"]
+    local_path: str = Field(min_length=1, max_length=2000)
+    user_approved: bool = False
+
+
+class CapabilityEvaluationSourceCreate(BaseModel):
+    """Bounded UTF-8 domain/regression evaluation JSONL."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    kind: Literal["evaluation"]
+    eval_kind: Literal["domain", "regression"]
+    content: str = Field(min_length=1, max_length=4_000_000)
+
+
+CapabilitySourceCreate = Annotated[
+    CapabilityBehaviorSourceCreate
+    | CapabilityDocumentSourceCreate
+    | CapabilityEvaluationSourceCreate,
+    Field(discriminator="kind"),
+]
+
+
+class CapabilitySourceRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True, extra="forbid")
+
+    id: int
+    capability_id: int
+    original_name: str
+    local_path: str
+    sha256: str
+    media_type: str
+    size_bytes: int
+    metadata_json: dict[str, Any]
+
+
+class CapabilityIssueRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    file: str | None = None
+    line: int | None = None
+
+
+class CapabilityProvenanceRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    relative_path: str
+    sha256: str
+    size_bytes: int
+    role: str
+    title: str
+    title_origin: str
+    declared_license: str | None
+    usage_metadata: dict[str, Any]
+    ingested_at: datetime
+    rights_inferred: bool
+
+
+class CapabilityValidationRead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capability_id: int
+    root_relative: str
+    manifest_present: bool
+    valid: bool
+    issue_count: int
+    returned_issue_count: int
+    issues: list[CapabilityIssueRead]
+    provenance: list[CapabilityProvenanceRead]
+    validated_at: datetime
+
+
+class CapabilityDetailRead(BaseModel):
+    """Typed detail without full host paths or document contents."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int
+    name: str
+    version: str
+    manifest_json: dict[str, Any]
+    workspace_relative: str
+    sources: list[CapabilitySourceRead]
+    created_at: datetime
+    updated_at: datetime
