@@ -27,6 +27,7 @@ from zana_core.portability.models import (
     RegistrationPlan,
     RunnableState,
 )
+from zana_core.portability.service import PortabilityProductService
 
 __all__ = [
     "BlobRegistration",
@@ -46,6 +47,7 @@ __all__ = [
     "PathPolicyError",
     "PortabilityError",
     "PortabilityLimits",
+    "PortabilityProductService",
     "PreconditionError",
     "RecoveryAction",
     "RegistrationPlan",

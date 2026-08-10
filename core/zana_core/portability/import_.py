@@ -6,15 +6,17 @@ import os
 import shutil
 import uuid
 from collections.abc import Callable, Sequence
+from contextlib import suppress
 from pathlib import Path
 
 from zana_core.artifacts import ArtifactStore
+from zana_core.artifacts.digest import validate_digest
 from zana_core.images import archive as _images_archive
 from zana_core.images import import_plan as _images_import_plan
 from zana_core.images import secrets as _images_secrets
 from zana_core.images.archive import ArchiveCodecError, ArchiveFormat, CodecLimits, ImageCodec
 from zana_core.images.import_plan import ImportLimits, ImportValidationError
-from zana_core.images.oci import OciValidationError
+from zana_core.images.oci import OciValidationError, validate_oci_layout
 from zana_core.portability.guards import OperationGuard
 from zana_core.portability.models import (
     ABS_MAX_UNPACKED_BYTES,
@@ -36,7 +38,9 @@ from zana_core.portability.models import (
 from zana_core.portability.paths import (
     confine,
     deadline_digest,
+    fsync_directory,
     open_regular_nofollow,
+    remove_quietly,
     remove_tree_confined,
     require_regular_file,
     secure_mkdir,
@@ -144,13 +148,36 @@ class ImportService:
         self._codec_factory = _default_codec if codec_factory is None else codec_factory
         self._clock = _default_clock if clock is None else clock
 
-    def import_archive(self, request: ImportRequest) -> ImportResult:
-        """Validate, unpack, register, and clean up the temp workspace."""
+    def import_archive(
+        self,
+        request: ImportRequest,
+        *,
+        retain_layouts_root: Path | None = None,
+        available_base_digests: set[str] | None = None,
+    ) -> ImportResult:
+        """Validate, unpack, register, and clean up the temp workspace.
+
+        When ``retain_layouts_root`` is provided it must be a directory under
+        the data root. The validated layout is retained at
+        ``<retain_layouts_root>/<image-digest-hex>`` atomically when absent;
+        an existing retained layout is revalidated against the archive plan
+        before it is accepted, so duplicate imports stay idempotent and
+        conflicting material fails closed.
+        """
         request = _fresh_import_request(request)
         stages: list[OperationStage] = [OperationStage.PREFLIGHT]
         limits = request.limits
         deadline = Deadline(limits.deadline_seconds, clock=self._clock)
         deadline.check(OperationStage.PREFLIGHT)
+        retain_parent = (
+            _validated_retain_root(
+                retain_layouts_root,
+                self._approved_roots,
+                self._data_root,
+            )
+            if retain_layouts_root is not None
+            else None
+        )
         source_path = Path(request.source)
         if source_path.is_symlink():
             raise PortabilityError(
@@ -247,6 +274,7 @@ class ImportService:
                         self._store,
                         workspace,
                         base_available=self._base_available,
+                        available_base_digests=available_base_digests,
                         limits=ImportLimits(
                             max_json_bytes=limits.max_json_bytes,
                             max_blob_bytes=limits.max_member_bytes,
@@ -309,8 +337,25 @@ class ImportService:
                         )
                     )
                 stages.append(OperationStage.COMPLETE)
-                self._cleanup_workspace(workspace)
-                workspace_created = False
+                layout_root_value: str | None = None
+                layout_created = False
+                if retain_parent is not None:
+                    layout_root_value, layout_created = self._retain_layout(
+                        workspace,
+                        plan,
+                        retain_parent,
+                        limits,
+                        deadline,
+                    )
+                    if layout_created:
+                        workspace_created = False
+                cleanup = CleanupEvidence(
+                    removed_paths=() if layout_created else (str(workspace),),
+                    workspace_removed=not layout_created,
+                )
+                if not layout_created:
+                    self._cleanup_workspace(workspace)
+                    workspace_created = False
                 return ImportResult(
                     operation_id=request.operation_id,
                     source=str(source),
@@ -320,6 +365,9 @@ class ImportService:
                         image_digest=plan.image_digest,
                         config_digest=plan.config_digest,
                         manifest_digest=plan.manifest_digest,
+                        config_name=plan.config_name,
+                        config_version=plan.config_version,
+                        base_model_key=plan.base_model_key,
                         blobs=tuple(blobs),
                         runnable=plan.runnability.state,
                         runnable_reason=plan.runnability.reason,
@@ -332,10 +380,9 @@ class ImportService:
                         ),
                     ),
                     stages=tuple(stages),
-                    cleanup=CleanupEvidence(
-                        removed_paths=(str(workspace),),
-                        workspace_removed=True,
-                    ),
+                    cleanup=cleanup,
+                    layout_root=layout_root_value,
+                    layout_created=layout_created,
                     completed_at=utc_now(),
                 )
         finally:
@@ -387,6 +434,88 @@ class ImportService:
                 recovery_action=RecoveryAction.CLEAR_TEMP_WORKSPACE,
             ) from error
 
+    def _retain_layout(
+        self,
+        workspace: Path,
+        plan: _images_import_plan.ImageRegistrationPlan,
+        retain_parent: Path,
+        limits: PortabilityLimits,
+        deadline: Deadline,
+    ) -> tuple[str, bool]:
+        """Retain one validated layout; return (layout_root, created)."""
+        digest = plan.image_digest
+        try:
+            validate_digest(digest)
+        except Exception as error:
+            raise PortabilityError(
+                "registration image digest is not canonical",
+                code="REGISTRATION_INVALID",
+                stage=OperationStage.REGISTER,
+                recovery_action=RecoveryAction.RETRY,
+            ) from error
+        target = retain_parent / digest.removeprefix("sha256:")
+        try:
+            secure_mkdir(retain_parent, mode=0o700, stage=OperationStage.CLEANUP)
+        except Exception as error:
+            raise PortabilityError(
+                "portability layout directory could not be prepared",
+                code="LAYOUT_RETENTION_FAILED",
+                stage=OperationStage.CLEANUP,
+                recovery_action=RecoveryAction.RETRY,
+            ) from error
+        if target.is_symlink() or (target.exists() and not target.is_dir()):
+            raise PortabilityError(
+                "retained portability layout is not a real directory",
+                code="LAYOUT_CONFLICT",
+                stage=OperationStage.CLEANUP,
+                recovery_action=RecoveryAction.REPAIR_ARCHIVE,
+            )
+        if target.exists():
+            try:
+                existing = validate_oci_layout(
+                    target,
+                    max_json_bytes=limits.max_json_bytes,
+                    max_blob_bytes=limits.max_member_bytes,
+                    max_total_bytes=limits.max_unpacked_bytes,
+                    chunk_size=limits.chunk_size,
+                    deadline_seconds=deadline.remaining(),
+                )
+            except OciValidationError as error:
+                raise PortabilityError(
+                    "existing retained layout is corrupted",
+                    code="LAYOUT_CONFLICT",
+                    stage=OperationStage.CLEANUP,
+                    recovery_action=RecoveryAction.REPAIR_ARCHIVE,
+                ) from error
+            if existing.index_digest != plan.image_digest:
+                raise PortabilityError(
+                    "existing retained layout does not match this image digest",
+                    code="LAYOUT_CONFLICT",
+                    stage=OperationStage.CLEANUP,
+                    recovery_action=RecoveryAction.REPAIR_ARCHIVE,
+                )
+            if existing.config_digest != plan.config_digest:
+                raise PortabilityError(
+                    "existing retained layout does not match this image config",
+                    code="LAYOUT_CONFLICT",
+                    stage=OperationStage.CLEANUP,
+                    recovery_action=RecoveryAction.REPAIR_ARCHIVE,
+                )
+            return str(target), False
+        remove_quietly(workspace / "archive.snapshot")
+        try:
+            os.rename(workspace, target)
+        except OSError as error:
+            raise PortabilityError(
+                "validated layout could not be retained",
+                code="LAYOUT_RETENTION_FAILED",
+                stage=OperationStage.CLEANUP,
+                recovery_action=RecoveryAction.RETRY,
+            ) from error
+        with suppress(Exception):
+            fsync_directory(target.parent)
+        return str(target), True
+
     def _resolve_codec(self, source: Path, requested: CodecKind | None) -> ImageCodec:
         suffixes = source.suffixes
         combined = (
@@ -433,6 +562,29 @@ def _relative_files(
         ) from error
     deadline.check(OperationStage.SECRET_SCAN)
     return [name for name, _path in entries]
+
+
+def _validated_retain_root(
+    value: Path,
+    approved_roots: Sequence[Path],
+    data_root: Path,
+) -> Path:
+    if type(value) is not type(Path()):
+        raise PortabilityError(
+            "retain layouts root must be an exact concrete pathlib.Path",
+            code="LAYOUT_RETENTION_FAILED",
+            stage=OperationStage.PREFLIGHT,
+            recovery_action=RecoveryAction.RETRY,
+        )
+    confined = confine(value, approved_roots, stage=OperationStage.PREFLIGHT)
+    if confined == data_root:
+        raise PortabilityError(
+            "retain layouts root must not be the data root itself",
+            code="LAYOUT_RETENTION_FAILED",
+            stage=OperationStage.PREFLIGHT,
+            recovery_action=RecoveryAction.RETRY,
+        )
+    return confined
 
 
 def _safe_store_size(store: ArtifactStore, digest: str) -> int:

@@ -308,6 +308,9 @@ class RegistrationPlan(BaseModel):
     image_digest: Annotated[str, Field(strict=True, max_length=MAX_DIGEST_STRING_CHARS)]
     config_digest: Annotated[str, Field(strict=True, max_length=MAX_DIGEST_STRING_CHARS)]
     manifest_digest: Annotated[str, Field(strict=True, max_length=MAX_DIGEST_STRING_CHARS)]
+    config_name: Annotated[str, Field(strict=True, min_length=1, max_length=300)]
+    config_version: Annotated[str, Field(strict=True, min_length=1, max_length=100)]
+    base_model_key: Annotated[str, Field(strict=True, max_length=500)]
     blobs: tuple[BlobRegistration, ...] = Field(
         default_factory=tuple, max_length=MAX_BLOB_REGISTRATIONS
     )
@@ -365,6 +368,8 @@ class ImportResult(BaseModel):
     registration: RegistrationPlan
     stages: tuple[OperationStage, ...] = Field(default_factory=tuple, max_length=MAX_STAGE_ITEMS)
     cleanup: CleanupEvidence = Field(default_factory=CleanupEvidence)
+    layout_root: Annotated[str | None, Field(strict=True, max_length=MAX_PATH_STRING_CHARS)] = None
+    layout_created: Annotated[bool, Field(strict=True)] = False
     completed_at: datetime
 
     @field_validator("archive_digest")
