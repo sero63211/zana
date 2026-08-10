@@ -201,3 +201,78 @@ job status; no shared jobs/main/DB change is needed to consume the boundary.
 
 - `git status --porcelain` was empty immediately after correction commit
   `2ce852d` and is re-proven after this handoff receipt commit.
+
+## Lead review correction 2 (2026-08-10)
+
+Verdict: PASS after focused correction commit `1c8101d`.
+
+### Correction commit
+
+- `1c8101d521245187d5708f5c00ab526988f528e3`
+  (`fix: harden portability graph validation and export truthfulness`)
+
+### A–G implementation notes
+
+- A: `verify`/`export` now call `_validate_registry_graph` for persistent and
+  reconstructed layouts alike. The persisted ImageArtifact/Artifact graph must
+  exactly match the validated layout roles, digests, media types, sizes, and
+  canonical store paths; duplicate/missing/extra rows fail closed.
+- B: `_register_import` now validates every pre-existing global Artifact row
+  (media type, size, canonical path) against the exact LayoutRole before any
+  Image/ImageArtifact write, and compares the full existing image graph for
+  idempotent re-imports. New images with a valid same-digest Artifact reuse it;
+  wrong media/size/path, same-role/different-digest, extra/missing rows, and
+  duplicate roles fail closed.
+- C: `_read_layout_roles` now requires exact `ROLE_MEDIA_TYPES[role]`, unique
+  layer roles, and exact manifest/config descriptor media types; the retained
+  layout is revalidated against the immutable registration plan immediately
+  before registration.
+- D: `_available_base_digests` truncation is removed. Base availability is a
+  bounded exact lookup for the target digest in both verify and import, and the
+  canonical `ImportService` receives the exact callback.
+- E: sidecar reports use no-clobber `O_EXCL` plus atomic hard-link publication;
+  existing/concurrent sidecars return `REPORT_EXISTS`. Once archive replacement
+  is irreversible, sidecar/report/cleanup failures are surfaced truthfully in
+  `ProductExport` (`report_written`, `report_warning`, `durability_uncertain`,
+  `cleanup_uncertain`) instead of returning a false failure that invites a
+  destructive retry. Pre-commit cancellation is the only cancellable point;
+  `COMPLETE` is a non-failing post-commit notification.
+- F: `_remove_owned_layout` and export output removal now raise typed
+  `CLEANUP_UNCERTAIN`; export returns that uncertainty in the result instead of
+  masking a successful archive.
+- G: import layout roots are confined to `_layouts_root`; `_safe_relative_path`
+  is replaced by `_owned_relative_path`, which raises `RESULT_PATH_ESCAPE` /
+  `RESULT_PATH_INVALID` for any non-contained service result instead of
+  returning a basename.
+
+### Interface delta
+
+`PortabilityExportRead` gains `report_written`, `report_warning`, and
+`cleanup_uncertain`; this is an additive isolated API-schema change only and is
+reported as INTERFACE for serial main integration.
+
+### Checks
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused product/API tests | `pytest -q core/tests/portability core/tests/api/test_portability_api.py` | 24 passed |
+| Touched-surface suite | `pytest -q core/tests/portability core/tests/api/test_portability_api.py core/tests/images` | 251 passed |
+| Ruff check/format | owned paths | clean |
+| Pyright | owned source paths | 0 errors, 0 warnings |
+| Diff hygiene | `git diff --check` | pass |
+
+### Revised residual risks
+
+- Same-user filesystem TOCTOU between DB reads and store opens remains
+  mitigated by dirfd/no-follow boundaries but not eliminated for adversarial
+  races.
+- zstd availability remains honest and environment-dependent.
+- The 4 unrelated `TestExplicitDatabaseCommit` failures reproduce on clean
+  canonical HEAD and remain outside this ownership.
+- Mid-loop cancellation inside canonical pack/unpack still requires the future
+  canonical codec boundary; only phase transitions are cancellable.
+
+### Clean proof
+
+- `git status --porcelain` was empty immediately after `1c8101d` and is
+  re-proven after this receipt commit.
