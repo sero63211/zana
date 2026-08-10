@@ -355,5 +355,6 @@ Verdict: PASS
   registered in `main.py`; that shared-file change belongs to the later serial
   API integration scope. Mid-codec-loop cancellation and live round-trip tests
   remain deferred by host-safety policy.
-- Canonical index/worktree were clean after integration. Remote push receipt is
-  pending and must not be claimed until `origin/main` is verified.
+- Canonical index/worktree were clean after integration. A non-force push was
+  confirmed with `git ls-remote`: `origin/main` exactly matched
+  `623b265b122827f9a2639f9da915804cbfa0c918` before this final receipt commit.

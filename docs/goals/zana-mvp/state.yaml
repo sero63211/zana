@@ -1243,6 +1243,8 @@ tasks:
         worktree: /Users/sero/.codex/worktrees/8037/zana
         source_commits: "27a1f61340b97d361a309fdd7b1f71ecd5d2f7c0, 02952db, 2ce852d, 42d385e, 1c8101d, 800e911, 7c459c8, 7afee5d"
         integration_commit: 9ea7e13
+        acceptance_commit: 623b265b122827f9a2639f9da915804cbfa0c918
+        remote_state: "origin/main confirmed at 623b265b122827f9a2639f9da915804cbfa0c918 before the final receipt commit; non-force push."
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/portability/**, new core/zana_core/api/portability.py, new portability-local API schema/service files, focused portability/API tests, .agent-work/handoffs/T900-portability-product-api.md. Excludes core/zana_core/images/**, main.py, shared api/schemas.py, DB shared files, manifests and locks."
         dependencies: "Integrated OCI/archive/import/security primitives and persisted Image/Artifact registry; active build task owns image packing/finalization."
