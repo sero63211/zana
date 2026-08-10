@@ -1248,10 +1248,10 @@ tasks:
       - id: T900-resources-observability-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t900-resources-observability-api
-        thread: pending
-        worktree: pending
+        thread: 019feaf8-3352-7793-a2e5-df581e834b07
+        worktree: /Users/sero/.codex/worktrees/eadd/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/resources/**, core/zana_core/observability/**, new core/zana_core/api/resources.py, new core/zana_core/api/observability.py, new resource/observability-local API schema/service files, core/tests/resources/**, core/tests/observability/**, one new focused resource-observability API test file, .agent-work/handoffs/T900-resources-observability-api.md. Excludes main.py, shared api/schemas.py, DB models/repositories/UoW/migrations, jobs, desktop/Tauri, manifests and locks."
         dependencies: "Integrated conservative ResourceGovernor/snapshot/lease/accounting primitives and bounded local redacted observability events/sinks; authenticated API/error conventions are read-only inputs."
