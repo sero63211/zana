@@ -256,6 +256,30 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   no manifest, lockfile, API, DB, build, instance, permission, or tool-execution
   path was included
 
+### T900 resources and observability product API
+
+- accepted integration head: `295fc21`
+- source commits: `0c31e3c`, `73bc215`, `4f04fc1`, `4c94c71`; canonical
+  commits: `287a6c8`, `a685567`, `b48c694`, `295fc21`
+- changed paths: bounded resource service/governor history, bounded local
+  observability registry, strict authenticated resource/observability API
+  projections, focused tests, and worker handoff
+- gates: direct lead contract/security/failure/readability inspection PASS;
+  247 focused resource/observability/API tests PASS in the isolated worktree
+  and again on canonical main; Ruff check/format PASS; Pyright zero
+  errors/warnings; `git diff --check` PASS
+- security delta: no raw lease tokens, arbitrary request identifiers, host
+  paths, secrets, or raw exceptions cross the API; event identifiers are
+  sanitized before every sink; retention is bounded by count and exact UTF-8
+  accounting bytes; telemetry and background polling remain disabled
+- residual risk: routers, service construction, log-root setup and deterministic
+  registry shutdown are intentionally deferred to the serial shared `main.py`
+  integration scope; no live API/app/browser/model/runtime/provider, broad,
+  performance or load proof ran under the host-safety policy
+- remote proof: pending the lead acceptance commit and confirmed non-force push
+- clean proof: source worktree clean; canonical product tree clean before this
+  coordination receipt
+
 ### Agent delivery-cycle policy
 
 - accepted commit: `390500c8ce6c9df4702363130c1cc8f6b257bd6e`

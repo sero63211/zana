@@ -253,3 +253,21 @@ In `core/zana_core/main.py` (lead-owned, not edited here):
 - Clean proof after correction commit: `git status --porcelain` empty.
 - Correction commit: `4f04fc1814556dea984c44c0a9fefdb98bca236c`
 - Prior implementation commit preserved: `0c31e3c4dc78bbb832a0ae0216a66fbe7b2a6823`
+
+## Lead acceptance
+
+- Verdict: PASS
+- Canonical integration commits: `287a6c8`, `a685567`, `b48c694`, `295fc21`
+- Independent canonical gates: 247 focused tests PASS; Ruff check/format PASS;
+  Pyright 0 errors/warnings; direct bounds, redaction, failure-path, close,
+  retention and telemetry-off review PASS; `git diff --check` PASS.
+- Security delta: no raw lease token, arbitrary request id, host path, secret or
+  raw exception crosses the new API; sanitized events are the only events sent
+  to sinks; write-time count/byte bounds prevent unbounded histories.
+- Residual risk: isolated routers and service lifecycle are not yet registered
+  in `main.py`; that shared change remains reserved for the serial integration
+  milestone. Broad/live/model/runtime/app/browser tests remain intentionally
+  deferred under the host-safety policy.
+- Source worktree clean proof: `git status --porcelain` empty at `4c94c71`.
+- Canonical remote proof: pending the focused acceptance commit and non-force
+  push; the final receipt will record the confirmed remote SHA.

@@ -1256,10 +1256,12 @@ tasks:
       - id: T900-resources-observability-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-resources-observability-api
         thread: 019feaf8-3352-7793-a2e5-df581e834b07
         worktree: /Users/sero/.codex/worktrees/eadd/zana
+        source_commits: "0c31e3c4dc78bbb832a0ae0216a66fbe7b2a6823, 73bc215c06ac390bbabe73bf8458fb1a1fde637f, 4f04fc1814556dea984c44c0a9fefdb98bca236c, 4c94c71c1961bf61ade1efed4eb6cf9f84590b83"
+        integration_commit: 295fc21
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/resources/**, core/zana_core/observability/**, new core/zana_core/api/resources.py, new core/zana_core/api/observability.py, new resource/observability-local API schema/service files, core/tests/resources/**, core/tests/observability/**, one new focused resource-observability API test file, .agent-work/handoffs/T900-resources-observability-api.md. Excludes main.py, shared api/schemas.py, DB models/repositories/UoW/migrations, jobs, desktop/Tauri, manifests and locks."
         dependencies: "Integrated conservative ResourceGovernor/snapshot/lease/accounting primitives and bounded local redacted observability events/sinks; authenticated API/error conventions are read-only inputs."
@@ -1267,6 +1269,7 @@ tasks:
         output_contract: "Dependency-complete product services and isolated authenticated routers for resource snapshot/policy/active leases/recent bounded usage and local observability event pagination/sink health, with typed secret/path-safe projections and explicit freshness/truncation/unsupported states, ready for serial main registration."
         gates: "Focused injected unit/router tests; Ruff/format/Pyright/import/diff plus bounds, pagination/cursor, redaction, host-path/secret/raw-error, unknown/freshness, concurrency/lease-snapshot and telemetry-off review; no live API/app/browser/model/runtime/provider, install, broad suite, background sampler, performance/load, DB or filesystem export. One product commit plus receipt; clean; no push."
         stop_if: "Stop before changing shared API/error contracts, DB persistence, event producers, main/router registration, desktop UX, remote telemetry, background polling, diagnostic export, or fabricating resource history/metrics absent from accepted primitives. Report the exact serial integration delta instead."
+        verification: "Worker and lead independently: 247 focused resource/observability/API tests PASS on the isolated worktree and canonical main; Ruff check/format PASS; Pyright 0 errors/warnings; direct bounds, redaction, raw-identifier/path/error, retention, partial/all-failed delivery, close and telemetry-off review PASS. No live API/app/browser/model/runtime/provider, broad, performance or load test. Router/lifespan registration remains a separate serial integration scope."
       - id: T910-desktop-frontend-program
         agent: gpt-5.6-sol
         reasoning_effort: high
