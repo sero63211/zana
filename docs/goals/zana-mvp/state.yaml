@@ -1248,10 +1248,10 @@ tasks:
       - id: T910-desktop-frontend-program
         agent: gpt-5.6-sol
         reasoning_effort: high
-        status: queued
+        status: active
         branch: agent/t910-desktop-frontend-program
-        thread: pending
-        worktree: pending
+        thread: 019feade-0a9a-7a63-a41a-5edcdc5c302a
+        worktree: /Users/sero/.codex/worktrees/b5d3/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "new files only under docs/desktop-frontend-program/** and .agent-work/handoffs/T910-desktop-frontend-program.md. Excludes every existing product-code path, existing documentation/index file, GoalBuddy state, ledger, manifests, locks, generated assets and current worker handoffs."
         dependencies: "Complete controlling ZANA specification, acceptance criteria, AGENTS/GoalBuddy coordination truth, current canonical code/contracts/tests, and current primary/official desktop technical sources. Product code is read-only."
