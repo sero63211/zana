@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from zana_core.acquisition.redact import sanitize_terminal_error
@@ -26,6 +27,7 @@ from zana_core.runtimes.base import (
     ProbeTarget,
     RuntimeDescriptor,
 )
+from zana_core.runtimes.limits import MAX_TARGETS
 from zana_core.runtimes.registry import RuntimeProbeRegistry
 
 
@@ -111,9 +113,22 @@ class RuntimeDiscoveryService:
         self.registry = registry
 
     def targets(self, uow: UnitOfWork) -> list[ProbeTarget]:
-        """Combine standard loopback candidates with manual loopback runtimes."""
+        """Combine bounded loopback candidates with a bounded manual query."""
         targets: list[ProbeTarget] = list(self.registry.default_targets())
-        for manual in uow.runtimes.list_manual():
+        default_count = len(targets)
+        manual_budget = MAX_TARGETS - default_count
+        if manual_budget <= 0:
+            return targets
+        manual_rows = list(
+            uow.session.scalars(
+                select(Runtime)
+                .where(Runtime.source == RuntimeSource.MANUAL)
+                .limit(manual_budget + 1)
+            )
+        )
+        if len(manual_rows) > manual_budget:
+            raise ValueError("manual runtime target count exceeds the discovery cap")
+        for manual in manual_rows:
             if not _is_loopback_endpoint(manual.endpoint):
                 continue
             targets.append(
@@ -155,32 +170,32 @@ class RuntimeDiscoveryService:
             return self._refresh_failed(session_factory, job_id)
         if type(descriptors) is not list:
             return self._refresh_failed(session_factory, job_id)
-        sync_failed = False
-        with UnitOfWork(session_factory) as uow:
-            service = JobService(uow)
-            job = service.get_job(job_id)
-            if job is None:
-                return None
-            try:
-                with uow.session.begin_nested():
-                    self.sync(uow, descriptors)
-            except Exception:  # noqa: BLE001 - savepoint rolls back partial sync
-                sync_failed = True
-            else:
-                try:
-                    job = service.transition_job(
-                        job.id,
-                        JobStatus.SUCCEEDED,
-                        phase="complete",
-                        message=(
-                            f"Runtime discovery complete; {len(descriptors)} candidate(s) probed."
-                        ),
-                    )
-                except Exception:  # noqa: BLE001 - transition failure records FAILED
-                    sync_failed = True
-        if sync_failed:
+        try:
+            with UnitOfWork(session_factory) as uow:
+                service = JobService(uow)
+                job = service.get_job(job_id)
+                if job is None:
+                    return None
+                self.sync(uow, descriptors)
+                job = self._mark_succeeded(
+                    service,
+                    job.id,
+                )
+        except Exception:  # noqa: BLE001 - the whole success transaction rolls back
             return self._refresh_failed(session_factory, job_id)
         return job
+
+    @staticmethod
+    def _mark_succeeded(
+        service: JobService,
+        job_id: int,
+    ) -> Job:
+        return service.transition_job(
+            job_id,
+            JobStatus.SUCCEEDED,
+            phase="complete",
+            message="Runtime discovery complete.",
+        )
 
     @staticmethod
     def _refresh_failed(

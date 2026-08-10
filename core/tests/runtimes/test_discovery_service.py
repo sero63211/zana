@@ -153,6 +153,33 @@ def test_refresh_sync_failure_records_failed_job_without_partial_rows(
         assert uow.models.list() == []
 
 
+def test_refresh_over_cap_manual_targets_fails_closed_without_probe(
+    session_factory,
+) -> None:
+    observations: list[bool] = []
+
+    class NoProbeRegistry(RuntimeProbeRegistry):
+        def probe(self, targets: Any) -> list[RuntimeDescriptor]:  # noqa: ANN401
+            observations.append(True)
+            return [_descriptor()]
+
+    with UnitOfWork(session_factory) as uow:
+        for index in range(24):
+            uow.runtimes.add(
+                Runtime(
+                    kind=RuntimeKind.OLLAMA,
+                    endpoint=f"http://127.0.0.1:{10000 + index}",
+                    source=RuntimeSource.MANUAL,
+                    status=RuntimeStatus.UNKNOWN,
+                )
+            )
+    job = RuntimeDiscoveryService(NoProbeRegistry()).refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "FAILED"
+    assert job.error_json["code"] == "RUNTIME_REFRESH_FAILED"
+    assert observations == []
+
+
 def test_refresh_target_failure_records_failed_job_without_probe(session_factory) -> None:
     observations: list[bool] = []
 
@@ -174,14 +201,17 @@ def test_refresh_target_failure_records_failed_job_without_probe(session_factory
 
 
 def test_refresh_success_transition_failure_records_failed_job(session_factory) -> None:
-    class FailingTransitionService(RuntimeDiscoveryService):
-        def sync(self, uow, descriptors):  # noqa: ANN001, ARG001
+    class FailingTransitionDiscovery(RuntimeDiscoveryService):
+        def _mark_succeeded(self, *args, **kwargs):  # noqa: ANN002, ANN003
             raise RuntimeError("transition secret boom")
 
-    job = FailingTransitionService(RecordingRegistry()).refresh(session_factory)
+    job = FailingTransitionDiscovery(RecordingRegistry()).refresh(session_factory)
     assert job is not None
     assert job.status.value == "FAILED"
     assert job.error_json["code"] == "RUNTIME_REFRESH_FAILED"
+    with UnitOfWork(session_factory) as uow:
+        assert uow.runtimes.list() == []
+        assert uow.models.list() == []
 
 
 def test_confirm_rejects_runtime_identity_change_before_probe(session_factory) -> None:
