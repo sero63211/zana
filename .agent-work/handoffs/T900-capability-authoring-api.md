@@ -459,3 +459,24 @@ container, or performance verification ran under the host-safety policy.
 Local HEAD on `agent/t900-capability-authoring-api` is the updated receipt
 commit after this section. No push performed; worker lanes do not push under
 the current isolation policy.
+
+## Canonical integration receipt
+
+Verdict: PASS
+
+- Accepted canonical commit: `9103bd85f22b3fc596558791a10d7a1b1c1371dc`
+  (`feat: complete capability authoring vertical`).
+- Integrated paths: this handoff plus the six owned Capability implementation
+  and focused-test paths listed above; no unrelated worker path was included.
+- Lead gates: 82 focused tests passed; Ruff lint and format passed; Pyright
+  reported 0 errors/0 warnings; import smoke and staged diff hygiene passed.
+- Security/error review: containment, explicit approval, bounded recursive
+  preflight, no-follow copies/backups, path disclosure, DB/filesystem
+  compensation, backup-stage preservation, and the absent-prior-manifest
+  rollback matrix all passed review.
+- Residual risk: live desktop/provider/runtime/model/build/training validation
+  remains deliberately deferred by the current host-safety policy.
+- Push proof: non-force `origin/main` push confirmed at
+  `9103bd85f22b3fc596558791a10d7a1b1c1371dc` before this receipt-only update.
+- Clean proof: canonical index/worktree and the source Capability worktree were
+  clean after the accepted commit.
