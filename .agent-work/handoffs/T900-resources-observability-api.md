@@ -269,5 +269,9 @@ In `core/zana_core/main.py` (lead-owned, not edited here):
   milestone. Broad/live/model/runtime/app/browser tests remain intentionally
   deferred under the host-safety policy.
 - Source worktree clean proof: `git status --porcelain` empty at `4c94c71`.
-- Canonical remote proof: pending the focused acceptance commit and non-force
-  push; the final receipt will record the confirmed remote SHA.
+- Canonical acceptance commit: `f1cfebde49af0d2ccf949f08044e2450c7de52af`.
+- Canonical remote proof: non-force push succeeded and `git ls-remote`
+  confirmed `refs/heads/main` exactly at the acceptance commit before this
+  final receipt update.
+- Canonical clean proof: index and worktree were empty after the acceptance
+  commit and remote verification.

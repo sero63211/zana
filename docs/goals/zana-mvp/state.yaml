@@ -1262,6 +1262,8 @@ tasks:
         worktree: /Users/sero/.codex/worktrees/eadd/zana
         source_commits: "0c31e3c4dc78bbb832a0ae0216a66fbe7b2a6823, 73bc215c06ac390bbabe73bf8458fb1a1fde637f, 4f04fc1814556dea984c44c0a9fefdb98bca236c, 4c94c71c1961bf61ade1efed4eb6cf9f84590b83"
         integration_commit: 295fc21
+        acceptance_commit: f1cfebde49af0d2ccf949f08044e2450c7de52af
+        remote_state: "origin/main confirmed at f1cfebde49af0d2ccf949f08044e2450c7de52af before the final receipt commit; non-force push."
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/resources/**, core/zana_core/observability/**, new core/zana_core/api/resources.py, new core/zana_core/api/observability.py, new resource/observability-local API schema/service files, core/tests/resources/**, core/tests/observability/**, one new focused resource-observability API test file, .agent-work/handoffs/T900-resources-observability-api.md. Excludes main.py, shared api/schemas.py, DB models/repositories/UoW/migrations, jobs, desktop/Tauri, manifests and locks."
         dependencies: "Integrated conservative ResourceGovernor/snapshot/lease/accounting primitives and bounded local redacted observability events/sinks; authenticated API/error conventions are read-only inputs."

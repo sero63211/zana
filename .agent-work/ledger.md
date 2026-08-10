@@ -276,9 +276,10 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   registry shutdown are intentionally deferred to the serial shared `main.py`
   integration scope; no live API/app/browser/model/runtime/provider, broad,
   performance or load proof ran under the host-safety policy
-- remote proof: pending the lead acceptance commit and confirmed non-force push
-- clean proof: source worktree clean; canonical product tree clean before this
-  coordination receipt
+- remote proof: non-force push succeeded and `git ls-remote` confirmed
+  `refs/heads/main` exactly at `f1cfebde49af0d2ccf949f08044e2450c7de52af`
+  before this final receipt commit
+- clean proof: canonical index/worktree and source agent worktree were clean
 
 ### Agent delivery-cycle policy
 
