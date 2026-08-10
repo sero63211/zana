@@ -1237,10 +1237,12 @@ tasks:
       - id: T900-portability-product-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-portability-product-api
         thread: 019feac4-2564-7b73-8a90-7f7b58f24005
         worktree: /Users/sero/.codex/worktrees/8037/zana
+        source_commits: "27a1f61340b97d361a309fdd7b1f71ecd5d2f7c0, 02952db, 2ce852d, 42d385e, 1c8101d, 800e911, 7c459c8, 7afee5d"
+        integration_commit: 9ea7e13
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/portability/**, new core/zana_core/api/portability.py, new portability-local API schema/service files, focused portability/API tests, .agent-work/handoffs/T900-portability-product-api.md. Excludes core/zana_core/images/**, main.py, shared api/schemas.py, DB shared files, manifests and locks."
         dependencies: "Integrated OCI/archive/import/security primitives and persisted Image/Artifact registry; active build task owns image packing/finalization."
@@ -1248,6 +1250,7 @@ tasks:
         output_contract: "Complete export/verify/import/delete service and routers with digest-preserving round trip, atomic registration, corrupted/traversal/secret/missing-base-model rejection or actionable status, cancellation/progress boundaries, and no guessed model compatibility; ready for serial main/router registration."
         gates: "Focused tiny archive/injected API tests; Ruff/format/Pyright/import/diff plus traversal, symlink, corruption, atomicity, secret and cleanup review; no large archive, install, live API/app/browser/model/runtime, broad suite, E2E, performance or load. One product commit plus receipt; clean; no push."
         stop_if: "Stop before editing images/** or shared DB/API/main contracts, deleting user archives, or requiring optional zstd installation. Report exact integration deltas."
+        verification: "Worker and lead independently: 256 focused portability/API/image tests PASS on canonical main; Ruff check/format PASS; Pyright 0 errors/warnings; graph exactness, transaction-local Artifact validation, no-clobber sidecar, pre/post-archive cleanup truth, path confinement, exact base lookup and noncancellable completion reviewed. No large/live/model/runtime/app/browser test. Router registration remains a separate serial integration scope."
       - id: T900-resources-observability-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max

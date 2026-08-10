@@ -333,3 +333,27 @@ Verdict: PASS after focused correction commit `7c459c8`.
 
 - `git status --porcelain` was empty immediately after `7c459c8` and is
   re-proven after this receipt commit.
+
+## Lead canonical integration acceptance (2026-08-10)
+
+Verdict: PASS
+
+- Source commits through `7afee5d` were cherry-picked serially onto clean,
+  fetched canonical `main`; canonical product/receipt tip is `9ea7e13`.
+- Lead reran the touched surface on canonical main: 256 portability/API/image
+  tests passed; Ruff check and format passed; Pyright reported 0 errors and 0
+  warnings; `git diff --check` passed.
+- Lead directly reviewed exact persistent/reconstructed registry graphs,
+  transaction-local Artifact conflict validation, no-clobber sidecar creation,
+  cleanup before and after irreversible archive success, target-digest model
+  availability, path confinement, and non-failing completion notification.
+- Security delta: import/export remain managed-root confined and authenticated;
+  corrupt, missing, extra, duplicate, mismatched, secret-bearing, traversal and
+  symlink material fails closed; archive success is never reported as a false
+  failure merely because report or temporary cleanup is uncertain.
+- Residual risk: the isolated router is implemented but intentionally not yet
+  registered in `main.py`; that shared-file change belongs to the later serial
+  API integration scope. Mid-codec-loop cancellation and live round-trip tests
+  remain deferred by host-safety policy.
+- Canonical index/worktree were clean after integration. Remote push receipt is
+  pending and must not be claimed until `origin/main` is verified.
