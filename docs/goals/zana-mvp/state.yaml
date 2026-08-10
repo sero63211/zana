@@ -1158,14 +1158,14 @@ tasks:
       - id: T900-model-acquisition-execution
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-model-acquisition-execution
         thread: 019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8
         worktree: /Users/sero/.codex/worktrees/4a22/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/acquisition/**, core/zana_core/jobs/**, core/zana_core/runtimes/discovery_service.py, core/zana_core/api/models.py, core/zana_core/api/jobs.py, core/zana_core/api/runtimes.py, core/zana_core/main.py, focused acquisition/job/runtime/API tests, .agent-work/handoffs/T900-model-acquisition-execution.md"
         gates: "Focused injected-transport acquisition/job/API pytest only; Ruff/format; Pyright; import/diff/lifecycle/disk/cancel/redaction review; no live runtime/network/model/download, broad suite, app, browser, build, or install; one product commit plus receipt; clean; no push."
-        queue_note: "Partial implementation remains preserved in its isolated worktree; resume only after the serial MLX lane completes to avoid provider rate-limit contention and shared-contract collisions."
+        queue_note: "Resumed serially after the accepted MLX receipt at 38736cf. Existing partial implementation remains preserved in its exclusive worktree; no owned path changed on canonical main since its 51c08ad base."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
