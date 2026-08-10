@@ -89,7 +89,8 @@ None for this documentation/design-program scope. The contract gaps above are ex
 
 ## Commit, index/worktree, and remote state
 
-- Accepted commit SHA: none. Staging and committing were explicitly prohibited.
-- Index proof: no files were staged; `git diff --cached --quiet` must pass.
-- Worktree proof: the worktree is intentionally not clean because it contains exactly the authorized new deliverables. `git status --short` must contain only `?? docs/desktop-frontend-program/` and `?? .agent-work/handoffs/T910-desktop-frontend-program.md` (Git may order them differently). No tracked file has a worktree diff.
-- Push SHA/remote state: no push attempted. Push was explicitly prohibited; no remote completion is claimed.
+- SOL delivery commit created by the lead after independent acceptance: `f6d9ffa8aadc767896d161b36231be63eb06fd80`.
+- Canonical integration commit: `602e9ac86cb2e5f65201b88dcfbeb1dd9d0697c5`.
+- Independent lead gates: exact nine-file allowlist, direct package/contract/security/readability review, whitespace check, relative-link check, canonical model-acquisition conflict verification, staged diff check, and clean-tree checks PASS.
+- Index/worktree proof: canonical `main` and the source worktree had empty index and tracked worktree after the focused commits; `git status --short` was empty.
+- Push proof: non-force `git push origin main` succeeded and `git ls-remote origin refs/heads/main` returned `602e9ac86cb2e5f65201b88dcfbeb1dd9d0697c5` before this receipt-only update.

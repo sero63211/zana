@@ -1248,10 +1248,12 @@ tasks:
       - id: T910-desktop-frontend-program
         agent: gpt-5.6-sol
         reasoning_effort: high
-        status: active
+        status: done
         branch: agent/t910-desktop-frontend-program
         thread: 019feade-0a9a-7a63-a41a-5edcdc5c302a
         worktree: /Users/sero/.codex/worktrees/b5d3/zana
+        source_commit: f6d9ffa8aadc767896d161b36231be63eb06fd80
+        integration_commit: 602e9ac86cb2e5f65201b88dcfbeb1dd9d0697c5
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "new files only under docs/desktop-frontend-program/** and .agent-work/handoffs/T910-desktop-frontend-program.md. Excludes every existing product-code path, existing documentation/index file, GoalBuddy state, ledger, manifests, locks, generated assets and current worker handoffs."
         dependencies: "Complete controlling ZANA specification, acceptance criteria, AGENTS/GoalBuddy coordination truth, current canonical code/contracts/tests, and current primary/official desktop technical sources. Product code is read-only."
@@ -1259,6 +1261,7 @@ tasks:
         output_contract: "A cold-readable, source-backed production desktop frontend program package: complete blueprint, navigation/screens, flows/state machines, contract ledger/gaps, technical integration, design/accessibility/performance standards, rollout/verification/recovery, English Kimi K3 Gold implementation prompt, and copy-paste /goal launcher."
         gates: "Read-only source/code inspection; current primary-source research with access dates; direct coverage/contract/citation review; only new Markdown/YAML/text artifacts in the reserved allowlist; no product implementation, model/provider/runtime execution or download, heavy tests, browser/native build, deployment, stage/commit/push."
         stop_if: "Stop before editing any existing file or product code, changing a live contract, running a local model/provider, starting an implementation worker, or writing outside the exact reserved allowlist."
+        verification: "SOL coverage/contract/citation/readability PASS; 31/31 official primary-source URLs reported HTTP 200 on 2026-08-10; lead exact allowlist/package/security/relative-link/whitespace review PASS; canonical non-force push confirmed at integration_commit."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"
