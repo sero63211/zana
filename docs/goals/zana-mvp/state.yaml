@@ -1158,14 +1158,23 @@ tasks:
       - id: T900-model-acquisition-execution
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t900-model-acquisition-execution
         thread: 019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8
         worktree: /Users/sero/.codex/worktrees/4a22/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/acquisition/**, core/zana_core/jobs/**, core/zana_core/runtimes/discovery_service.py, core/zana_core/api/models.py, core/zana_core/api/jobs.py, core/zana_core/api/runtimes.py, core/zana_core/main.py, focused acquisition/job/runtime/API tests, .agent-work/handoffs/T900-model-acquisition-execution.md"
         gates: "Focused injected-transport acquisition/job/API pytest only; Ruff/format; Pyright; import/diff/lifecycle/disk/cancel/redaction review; no live runtime/network/model/download, broad suite, app, browser, build, or install; one product commit plus receipt; clean; no push."
-        queue_note: "Resumed serially after the accepted MLX receipt at 38736cf. Existing partial implementation remains preserved in its exclusive worktree; no owned path changed on canonical main since its 51c08ad base."
+        receipt:
+          result: done
+          verdict: PASS
+          integration_head: dbad57831579d50c77448e825d1105fd8caa7831
+          source_commits: "1ffce76, 339f56f, 2a87c1c, efe4b02"
+          verification: "Lead multi-pass lifecycle/security/transaction review PASS; 93 critical fake/unit tests in the source worktree and the same 93 after canonical integration; worker owned-surface gates up to 301 focused tests; Ruff check/format; source Pyright 0 errors/warnings; import smoke and diff hygiene PASS. External codex review remained unavailable under the source-egress guard and was not bypassed."
+          security_delta: "Strict loopback-only exact Ollama pull requests; explicit approval and exact ONLINE runtime identity; fail-closed disk and lease admission; bounded stream/body/event/queue/target limits; cancellation-safe generation-owned supervisor; sanitized persistent/API/SSE errors and conservative model-reference grammar; short atomic DB units around all network boundaries; post-pull exact discovery confirmation; deterministic restart and shutdown cleanup."
+          residual_risk: "No live Ollama/runtime/network/model download, provider, API server, desktop/browser, bundle, broad suite, performance, or load verification ran under the host-safety policy. The production urllib/Ollama interaction and real cancellation timing require a later bounded live session."
+          remote_proof: "Non-force origin/main push confirmed independently with git ls-remote; refs/heads/main equals dbad57831579d50c77448e825d1105fd8caa7831."
+          clean_proof: "Canonical index/worktree and source agent worktree were clean after accepted commits; no shared repository-contract edit remained."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"

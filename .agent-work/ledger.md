@@ -71,7 +71,7 @@ operational coordination only and never supersedes it.
 | T900-capability-authoring-api | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8b6-af8f-76e1-b818-49a3dccebd47`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-capability-authoring-api` at `/Users/sero/.codex/worktrees/f2c9/zana`, base `48a016c` | complete capability draft/source/reopen/validation API vertical and focused tests/handoff | done, PASS; integrated/pushed `9103bd8` | canonical capability/source validator and existing authenticated route contract | worker 82 new focused + 243 owned-surface; lead 82 focused; Ruff/format/Pyright/import/diff; atomicity, containment, bounded preflight, compensation matrix and disclosure review PASS; no build/training/model/live execution |
 | T900-mlx-training-execution | `router_opencode_go_deepseek_v4_flash` with `max`, final thread `019fe97c-ac3b-7e31-84a1-301d887977e5`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-mlx-final-recovery-2` at `/Users/sero/.codex/worktrees/6412/zana`, lineage base `87e10a8` | complete real MLX-LM invocation/staging/executor/adapter-verification vertical and focused tests/handoff | done, PASS; integrated/pushed `254bf10` | canonical training identities/datasets/resources/cancellation; official mlx_lm.lora CLI contract | lead 153 focused fake/unit tests; Ruff/format; source Pyright; import/diff; three-pass lifecycle/ownership review; external codex review denied by source-egress guard; no MLX import/process/model/training run |
 | T900-tauri-core-package | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8a6-6bba-7791-bbfb-cbec9b48b0d0`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-tauri-core-package` at `/Users/sero/.codex/worktrees/edc1/zana`, base `c995466` | Tauri/core sidecar/package scripts and handoff | done, PASS; integrated/pushed `1bad9e3` | canonical M0 Tauri supervisor | lead lifecycle/security review; cargo fmt, bash syntax, JSON, source invariants, diff PASS; no compile/bundle/PyInstaller/app/live Core |
-| T900-model-acquisition-execution | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-model-acquisition-execution` at `/Users/sero/.codex/worktrees/4a22/zana`, base `51c08ad` | real native model-acquisition transport/supervisor, persisted jobs/progress/cancel/recovery, shared discovery service, model/job/runtime API wiring, focused tests/handoff | active after MLX receipt `38736cf`; one exclusive writer resumes preserved partial diff | integrated runtime/model API, acquisition contracts, persistent job/SSE lifecycle; no owned-path drift on main since base | injected transport only; no live runtime/network/model/download; no capability/training/shared schema ownership |
+| T900-model-acquisition-execution | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe8d9-c4a2-7bd3-ba23-c86baeb37ce8`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/t900-model-acquisition-execution` at `/Users/sero/.codex/worktrees/4a22/zana`, base `51c08ad` | real native model-acquisition transport/supervisor, persisted jobs/progress/cancel/recovery, shared discovery service, model/job/runtime API wiring, focused tests/handoff | done, PASS; integrated/pushed `dbad578` | integrated runtime/model API, acquisition contracts, persistent job/SSE lifecycle | lead 93 critical tests before and after integration; worker up to 301 focused; Ruff/format/Pyright/import/diff; no live runtime/network/model/download |
 | T007-platform-wiring | `router_opencode_go_deepseek_v4_flash`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-platform-wiring` at `/Users/sero/.codex/worktrees/9529/zana` | `core/zana_core/main.py`, one platform integration test, `T007-platform-wiring.md` | done, PASS; integrated `72dc76d`, `3e96e51` | integrated canonical platform boundary | 69 integrated platform/API pytest; Ruff/Pyright; explicit DB path bypass preserved; safe canonical production DB path |
 | T007-runtime-hardening | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe5f7-08a9-7972-baaa-95df844cb977`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-runtime-hardening` at `/Users/sero/.codex/worktrees/9529/zana` | exact runtime registry/limits tests, `T007-runtime-hardening.md` | done, PASS; integrated `2f79a9d` | integrated runtime discovery + resource policy | 62 focused; 87 runtime; 987 full Core pytest; Ruff/format/Pyright; strict targets/workers/timeouts; cap+1 hostile iterable bound; sanitized failures; zero surviving threads |
 | T007-runtime-discovery-integration | `router_opencode_go_deepseek_v4_flash` with `max`, thread `019fe7f1-0e6f-7493-92e4-a2a9bc93957d`, lead `019fe396-2a2d-7493-ac98-a551ec7e4e1a`, silent | `agent/T007-runtime-discovery-integration` at `/Users/sero/.codex/worktrees/7d3d/zana` | runtime registry/limits hardening, hostile projection/config tests, `T007-runtime-discovery-integration.md` | done, PASS; integrated `b862637`, receipt `f94f013`, pushed | canonical runtime/resource policy | 120 runtime tests; Ruff/format/Pyright; loopback/query/credential/config/model-identity gates; no live runtime/model/network |
@@ -188,6 +188,37 @@ boundary, generated TypeScript API types, build orchestrator, and this ledger.
   both resolved to `83428819d137879bce3cf4d8bff4128b631c5f0a`
   before this receipt-only update
 - clean proof: canonical index/worktree and the source agent worktree were clean
+
+### T900 model acquisition execution
+
+- accepted integration head: `dbad57831579d50c77448e825d1105fd8caa7831`
+- source commits: `1ffce76`, `339f56f`, `2a87c1c`, `efe4b02`
+- canonical commits: `137ee6a`, `fdaa5aa`, `9e11e64`, `dbad578`
+- changed paths: native loopback pull transport, disk admission, persistent
+  model-pull runner, lazy bounded supervisor, shared short-transaction runtime
+  discovery, authenticated pull/cancel/runtime API wiring, app shutdown cleanup,
+  and focused tests
+- gates: direct multi-pass lead lifecycle/security/transaction inspection PASS;
+  93 critical fake/unit tests PASS in the source worktree and again after
+  canonical integration; worker owned-surface selectors up to 301 PASS; Ruff
+  check/format PASS; Pyright zero errors/warnings; import smoke and diff hygiene
+  PASS
+- security delta: exact loopback `POST /api/pull`; fixed JSON body and headers;
+  conservative secret-safe model references; explicit approval and ONLINE
+  runtime identity; fail-closed disk/lease admission; bounded I/O, events,
+  queues, targets, and persistence; cancellation-safe generation ownership;
+  no DB transaction across injected network work; exact post-pull discovery
+  confirmation; sanitized restart/shutdown/error behavior
+- residual risk: no live Ollama/runtime/network/model download, API server,
+  desktop/browser, bundle, broad suite, performance, or load verification ran;
+  real urllib/Ollama interoperability and cancellation timing remain for a
+  later bounded live session
+- remote proof: non-force push succeeded and `git ls-remote` confirmed
+  `refs/heads/main` exactly at `dbad57831579d50c77448e825d1105fd8caa7831`
+  before this receipt-only update
+- clean proof: canonical index/worktree and source agent worktree were clean;
+  the writer's temporary out-of-ownership repository edit was removed before
+  commit and no shared-contract change remains
 
 ### Agent delivery-cycle policy
 
