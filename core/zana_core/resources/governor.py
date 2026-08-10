@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -25,6 +26,10 @@ from zana_core.resources.models import (
 from zana_core.resources.snapshot import DefaultSnapshotProvider, SnapshotProvider
 
 Clock = Callable[[], datetime]
+DEFAULT_USAGE_HISTORY_LIMIT = 256
+DEFAULT_USAGE_HISTORY_BYTES = 256 * 1024
+MAX_USAGE_HISTORY_LIMIT = 4096
+MAX_USAGE_HISTORY_BYTES = 4 * 1024 * 1024
 
 
 class ResourceAdmissionError(Exception):
@@ -60,7 +65,12 @@ class ResourceGovernor:
         self._token_counter = 0
         self._record_counter = 0
         self._leases: dict[str, ResourceLease] = {}
-        self._records: list[UsageRecord] = []
+        self._records: deque[UsageRecord] = deque()
+        self._records_bytes = 0
+        self._history_dropped_count = 0
+        self._history_dropped_bytes = 0
+        self._usage_history_limit = DEFAULT_USAGE_HISTORY_LIMIT
+        self._usage_history_max_bytes = DEFAULT_USAGE_HISTORY_BYTES
         self._expiry: dict[str, datetime] = {}
         self._active_memory = 0
         self._active_disk = 0
@@ -452,6 +462,37 @@ class ResourceGovernor:
     def usage_records(self) -> tuple[UsageRecord, ...]:
         return tuple(self._records)
 
+    def usage_history_stats(self) -> tuple[int, int, int, int]:
+        """Return retained count/bytes and monotonic dropped count/bytes."""
+        return (
+            len(self._records),
+            self._records_bytes,
+            self._history_dropped_count,
+            self._history_dropped_bytes,
+        )
+
+    def configure_usage_history(
+        self,
+        *,
+        limit: int = DEFAULT_USAGE_HISTORY_LIMIT,
+        max_bytes: int = DEFAULT_USAGE_HISTORY_BYTES,
+    ) -> None:
+        """Set exact count/byte caps before any usage records are written."""
+        if type(limit) is not int or not (1 <= limit <= MAX_USAGE_HISTORY_LIMIT):
+            raise ValueError("usage history limit must be within the hard cap")
+        if type(max_bytes) is not int or not (1 <= max_bytes <= MAX_USAGE_HISTORY_BYTES):
+            raise ValueError("usage history bytes must be within the hard cap")
+        self._usage_history_limit = limit
+        self._usage_history_max_bytes = max_bytes
+        while len(self._records) > self._usage_history_limit or (
+            self._records_bytes > self._usage_history_max_bytes
+        ):
+            removed = self._records.popleft()
+            removed_size = _usage_record_bytes(removed)
+            self._records_bytes -= removed_size
+            self._history_dropped_count += 1
+            self._history_dropped_bytes += removed_size
+
     @contextmanager
     def lease(self, request: OperationRequest) -> Iterator[ResourceLease]:
         """Context manager that always releases on exit, even on exceptions."""
@@ -481,4 +522,34 @@ class ResourceGovernor:
             sequence=self._record_counter,
         )
         self._records.append(record)
+        size = _usage_record_bytes(record)
+        self._records_bytes += size
+        while len(self._records) > self._usage_history_limit or (
+            self._records_bytes > self._usage_history_max_bytes
+        ):
+            removed = self._records.popleft()
+            removed_size = _usage_record_bytes(removed)
+            self._records_bytes -= removed_size
+            self._history_dropped_count += 1
+            self._history_dropped_bytes += removed_size
         return record
+
+
+def _usage_record_bytes(record: UsageRecord) -> int:
+    """Deterministic exact accounting-frame bytes for one usage record.
+
+    This is the exact retained accounting unit used by the bounded history:
+    every field is serialized into one delimiter-separated frame and the
+    encoded UTF-8 byte count is returned. It is a non-parseable accounting
+    frame, not compact JSON and not Python heap bytes. It is deterministic and
+    covers every field, including multibyte request ids and delimiter
+    characters, so callers should label API output as serialized-retention
+    bytes rather than actual memory footprint.
+    """
+    text = (
+        f"{record.token}|{record.request_id}|{record.category.value}|"
+        f"{record.policy_revision}|{record.snapshot_revision}|{record.memory_bytes}|"
+        f"{record.disk_bytes}|{record.workers}|{record.items}|{record.bytes_accounted}|"
+        f"{record.open_files}|{record.released}|{record.sequence}"
+    )
+    return len(text.encode("utf-8"))

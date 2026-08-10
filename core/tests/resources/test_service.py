@@ -126,7 +126,6 @@ def test_policy_revision_is_stable_and_typed() -> None:
     service = ResourceService(provider=FixedSnapshotProvider(_snapshot()), now=Clock())
     policy = service.policy()
     assert policy.memory_reserve_bytes > 0
-    assert service.governor.policy is policy
     assert RESOURCE_POLICY_REVISION == 1
 
 
@@ -179,3 +178,78 @@ def test_service_rejects_bad_constructor_types() -> None:
         ResourceService(governor=object())  # type: ignore[arg-type]
     with pytest.raises(ValueError):
         ResourceService(provider=FixedSnapshotProvider(_snapshot()), stale_after_seconds=-1)
+    with pytest.raises(ValueError):
+        ResourceService(
+            provider=FixedSnapshotProvider(_snapshot()),
+            stale_after_seconds=float("nan"),
+        )
+    with pytest.raises(ValueError):
+        ResourceService(
+            provider=FixedSnapshotProvider(_snapshot()),
+            stale_after_seconds=float("inf"),
+        )
+    with pytest.raises(ValueError):
+        ResourceService(
+            provider=FixedSnapshotProvider(_snapshot()),
+            usage_history_limit=0,
+        )
+    with pytest.raises(ValueError):
+        ResourceService(
+            provider=FixedSnapshotProvider(_snapshot()),
+            usage_history_max_bytes=0,
+        )
+    with pytest.raises(ValueError):
+        ResourceService(
+            governor=ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot())),
+            provider=FixedSnapshotProvider(_snapshot()),
+        )
+
+
+def test_governor_escape_hatch_removed() -> None:
+    service = ResourceService(provider=FixedSnapshotProvider(_snapshot()), now=Clock())
+    assert not hasattr(service, "governor")
+
+
+def test_configure_usage_history_trims_populated_governor() -> None:
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(governor=governor, usage_history_limit=5)
+    for index in range(1, 8):
+        decision = service.admit(_request(f"r-{index}"))
+        assert decision.lease is not None
+        service.release(decision.lease.token)
+    assert len(governor.usage_records()) == 5
+    assert governor.usage_history_stats()[2] == 9
+    service = ResourceService(governor=governor, usage_history_limit=3)
+    assert len(governor.usage_records()) == 3
+    assert governor.usage_history_stats()[2] >= 4
+
+
+def test_usage_reads_do_not_mutate_drop_counters() -> None:
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(governor=governor, usage_history_limit=3)
+    for index in range(1, 6):
+        decision = service.admit(_request(f"r-{index}"))
+        assert decision.lease is not None
+        service.release(decision.lease.token)
+    first = service.usage_page()
+    second = service.usage_page()
+    assert first.history_dropped == second.history_dropped
+    assert first.history_serialized_bytes_dropped == second.history_serialized_bytes_dropped
+    assert first.history_serialized_bytes == second.history_serialized_bytes
+
+
+def test_usage_history_count_and_bytes_are_physically_bounded() -> None:
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(
+        governor=governor,
+        usage_history_limit=3,
+        usage_history_max_bytes=512,
+    )
+    for index in range(1, 12):
+        decision = service.admit(_request(f"r-{index}-{index * 'x'}"))
+        assert decision.lease is not None
+        service.release(decision.lease.token)
+    assert len(governor.usage_records()) <= 3
+    assert governor.usage_history_stats()[1] <= 512
+    assert governor.usage_history_stats()[2] >= 8
+    assert governor.usage_history_stats()[3] > 0

@@ -18,11 +18,15 @@ from zana_core.api.resources_schemas import (
 )
 from zana_core.resources.models import CategoryLimit, ResourceLease, UsageRecord
 from zana_core.resources.service import (
+    MAX_USAGE_HISTORY_BYTES_DEFAULT,
+    MAX_USAGE_HISTORY_DEFAULT,
     MAX_USAGE_PAGE_LIMIT,
     RESOURCE_POLICY_REVISION,
     ResourceService,
     SnapshotView,
     UsagePageView,
+    public_lease_ref,
+    public_request_ref,
 )
 from zana_core.streaming.redaction import redact_value
 
@@ -141,8 +145,8 @@ def _category_read(limit: CategoryLimit) -> CategoryLimitRead:
 
 def _lease_read(lease: ResourceLease) -> ResourceLeaseRead:
     return ResourceLeaseRead(
-        token=lease.token,
-        request_id=lease.request_id,
+        lease_ref=public_lease_ref(lease.token),
+        request_id=public_request_ref(lease.request_id),
         category=lease.category,
         policy_revision=lease.policy_revision,
         snapshot_revision=lease.snapshot_revision,
@@ -158,8 +162,8 @@ def _lease_read(lease: ResourceLease) -> ResourceLeaseRead:
 
 def _usage_read(record: UsageRecord) -> ResourceUsageRead:
     return ResourceUsageRead(
-        token=record.token,
-        request_id=record.request_id,
+        lease_ref=public_lease_ref(record.token),
+        request_id=public_request_ref(record.request_id),
         category=record.category,
         policy_revision=record.policy_revision,
         snapshot_revision=record.snapshot_revision,
@@ -182,4 +186,11 @@ def _usage_page_read(page: UsagePageView) -> ResourceUsagePageRead:
         next_cursor=page.next_cursor,
         truncated=page.truncated,
         total_available=page.total_available,
+        history_limit=page.history_limit,
+        history_default_limit=MAX_USAGE_HISTORY_DEFAULT,
+        history_default_max_bytes=MAX_USAGE_HISTORY_BYTES_DEFAULT,
+        history_dropped=page.history_dropped,
+        history_max_bytes=page.history_max_bytes,
+        history_serialized_bytes=page.history_serialized_bytes,
+        history_serialized_bytes_dropped=page.history_serialized_bytes_dropped,
     )

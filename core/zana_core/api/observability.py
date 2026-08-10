@@ -25,6 +25,7 @@ from zana_core.observability.registry import (
     ObservabilityHealth,
     ObservabilityRegistry,
     RetainedEvent,
+    safe_public_identifier,
 )
 from zana_core.observability.sinks import SinkStats
 from zana_core.streaming.redaction import RedactionLimits, Redactor
@@ -95,6 +96,9 @@ def _event_page_read(page: EventPage) -> ObservabilityEventPageRead:
         truncated=page.truncated,
         total_available=page.total_available,
         retention_dropped=page.retention_dropped,
+        retention_dropped_bytes=page.retention_dropped_bytes,
+        max_retained_bytes=page.max_retained_bytes,
+        retained_bytes=page.retained_bytes,
     )
 
 
@@ -114,7 +118,7 @@ def _event_read(record: RetainedEvent) -> ObservabilityEventRead:
         invalid = True
     return ObservabilityEventRead(
         sequence=record.sequence,
-        event_id=record.event_id,
+        event_id=safe_public_identifier(record.event_id),
         kind=_text(parsed.get("kind"), "unknown", 64),
         severity=_text(parsed.get("severity"), "unknown", 64),
         timestamp=_text(parsed.get("timestamp"), "", 64),
@@ -146,8 +150,14 @@ def _health_read(health: ObservabilityHealth) -> ObservabilityHealthRead:
         jsonl=_jsonl_read(health.jsonl),
         total=_stats_read(health.total),
         max_retained_events=health.max_retained_events,
+        max_retained_bytes=health.max_retained_bytes,
         retained_events=health.retained_events,
+        retained_bytes=health.retained_bytes,
         retention_dropped=health.retention_dropped,
+        retention_dropped_bytes=health.retention_dropped_bytes,
+        failures=health.failures,
+        partial_deliveries=health.partial_deliveries,
+        closed=health.closed,
     )
 
 

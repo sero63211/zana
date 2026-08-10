@@ -60,7 +60,7 @@ class ResourcePolicyRead(_Strict):
 
 
 class ResourceLeaseRead(_Strict):
-    token: str
+    lease_ref: str
     request_id: str
     category: OperationCategory
     policy_revision: int
@@ -75,7 +75,7 @@ class ResourceLeaseRead(_Strict):
 
 
 class ResourceUsageRead(_Strict):
-    token: str
+    lease_ref: str
     request_id: str
     category: OperationCategory
     policy_revision: int
@@ -97,3 +97,10 @@ class ResourceUsagePageRead(_Strict):
     next_cursor: int | None
     truncated: bool
     total_available: int
+    history_limit: int
+    history_default_limit: int
+    history_dropped: int
+    history_max_bytes: int
+    history_default_max_bytes: int
+    history_serialized_bytes: int
+    history_serialized_bytes_dropped: int

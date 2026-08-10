@@ -126,7 +126,9 @@ def _service(
 ) -> ResourceService:
     if provider is None:
         provider = FixedSnapshotProvider(snap or _snapshot())
-    return ResourceService(governor=governor, provider=provider, now=now)
+    if governor is not None:
+        return ResourceService(governor=governor, now=now)
+    return ResourceService(provider=provider, now=now)
 
 
 def _registry() -> ObservabilityRegistry:
@@ -204,14 +206,25 @@ def test_policy_leases_and_usage_are_typed(database) -> None:  # noqa: ANN001
     decision = service.admit(_request("api-req"))
     assert decision.lease is not None
     leases = client.get("/api/v1/resources/leases", headers=AUTH).json()
-    assert [lease["request_id"] for lease in leases] == ["api-req"]
+    assert len(leases) == 1
     assert leases[0]["active"] is True
+    assert "token" not in json.dumps(leases)
+    assert leases[0]["lease_ref"].startswith("lease-")
+    assert leases[0]["request_id"].startswith("request-")
+    assert leases[0]["request_id"] != "api-req"
     service.release(decision.lease.token)
 
     usage = client.get("/api/v1/resources/usage", headers=AUTH).json()
     assert usage["count"] == 2
     assert usage["total_available"] == 2
     assert [record["released"] for record in usage["items"]] == [True, False]
+    assert "token" not in json.dumps(usage)
+    assert all(item["lease_ref"].startswith("lease-") for item in usage["items"])
+    assert all(item["request_id"].startswith("request-") for item in usage["items"])
+    assert all(item["request_id"] != "api-req" for item in usage["items"])
+    assert usage["history_limit"] > 0
+    assert usage["history_dropped"] == 0
+    assert usage["history_serialized_bytes"] > 0
 
 
 def test_usage_pagination_cursor_walks_backward(database) -> None:  # noqa: ANN001
@@ -260,6 +273,59 @@ def test_event_pagination_and_redaction(database) -> None:  # noqa: ANN001
         assert item["severity"] == "info"
         assert item["payload"]["password"] == "***"
         assert "public" not in item["payload"]
+        assert item["event_id"].startswith("op-")
+
+
+def test_identifiers_are_redacted_before_retention_and_api(database) -> None:  # noqa: ANN001
+    registry = _registry()
+    for value in (
+        "/private/tmp/op",
+        "bearer-abc",
+        "token-abc",
+        "BearerToken",
+        "authorization_foo",
+        "credentials",
+        "C:\\Users\\x",
+        "secret-value",
+    ):
+        result = registry.write(
+            Event(
+                kind=EventKind.SYSTEM,
+                severity=Severity.INFO,
+                message="identifiers",
+                operation_id=value,
+                context={
+                    "operation_id": value,
+                    "job_id": value,
+                    "phase": value,
+                    "instance_id": value,
+                    "image_digest": value,
+                },
+            )
+        )
+        assert result.ok is True
+    client = _client(database, registry=registry)
+    body_text = json.dumps(client.get("/api/v1/observability/events", headers=AUTH).json())
+    for value in (
+        "/private/tmp/op",
+        "bearer-abc",
+        "token-abc",
+        "BearerToken",
+        "authorization_foo",
+        "credentials",
+        "C:\\Users\\x",
+        "secret-value",
+    ):
+        assert value not in body_text
+    for item in client.get("/api/v1/observability/events", headers=AUTH).json()["items"]:
+        assert item["event_id"].startswith("redacted-")
+        assert "token" not in item["event_id"].lower()
+        assert "/" not in item["event_id"]
+        assert "\\" not in item["event_id"]
+        assert all(
+            "redacted-" in item["context"].get(key, "")
+            for key in ("operation_id", "job_id", "phase", "instance_id", "image_digest")
+        )
 
 
 def test_event_retention_is_bounded_and_explicit(database) -> None:  # noqa: ANN001
@@ -273,8 +339,13 @@ def test_event_retention_is_bounded_and_explicit(database) -> None:  # noqa: ANN
     health = client.get("/api/v1/observability/health", headers=AUTH).json()
     assert health["retained_events"] == 3
     assert health["retention_dropped"] == 2
+    assert health["retention_dropped_bytes"] > 0
+    assert health["max_retained_bytes"] > 0
+    assert health["retained_bytes"] > 0
     page = client.get("/api/v1/observability/events", headers=AUTH).json()
     assert page["total_available"] == 3
+    assert page["retention_dropped_bytes"] > 0
+    assert page["retained_bytes"] > 0
     assert [item["sequence"] for item in page["items"]] == [5, 4, 3]
 
 
@@ -298,8 +369,39 @@ def test_sink_health_redacts_paths_and_telemetry_is_off(
     assert body["jsonl"]["available"] is True
     assert body["jsonl"]["stats"]["events_written"] == 1
     assert body["total"]["events_written"] == 2
+    assert body["closed"] is False
+    assert body["failures"] == 0
+    assert body["partial_deliveries"] == 0
     assert str(tmp_path) not in json.dumps(body)
     assert body["jsonl"]["log_root"] != str(tmp_path)
+
+
+def test_close_stops_writes_keeps_reads_and_is_idempotent(database, tmp_path) -> None:  # noqa: ANN001
+    jsonl = LocalJsonlSink(log_root=tmp_path, filename="events.jsonl", max_bytes=4096)
+    registry = ObservabilityRegistry(
+        memory_sink=BoundedMemorySink(max_events=10, max_bytes=100_000),
+        jsonl_sink=jsonl,
+    )
+    assert registry.write(_event(1)).ok is True
+    registry.close()
+    registry.close()
+    health = registry.health()
+    assert health.closed is True
+    assert health.retained_events == 1
+    assert health.retained_bytes > 0
+    assert registry.write(_event(2)).ok is False
+    assert registry.write(_event(2)).error == "REGISTRY_CLOSED"
+    assert registry.events().count == 1
+    assert registry.events().total_available == 1
+    assert registry.events().retained_bytes > 0
+    client = _client(database, registry=registry)
+    body = client.get("/api/v1/observability/health", headers=AUTH).json()
+    assert body["closed"] is True
+    assert body["jsonl"]["available"] is False
+    assert body["jsonl"]["reason"] == "CLOSED"
+    page = client.get("/api/v1/observability/events", headers=AUTH).json()
+    assert page["count"] == 1
+    assert page["retained_bytes"] > 0
 
 
 def test_jsonl_unsupported_state_is_explicit(database) -> None:  # noqa: ANN001
@@ -314,6 +416,46 @@ def test_jsonl_unsupported_state_is_explicit(database) -> None:  # noqa: ANN001
     assert body["jsonl"]["reason"] == "PLATFORM_UNSUPPORTED"
     assert body["jsonl"]["log_root"] is None
     assert body["mode"] == "local_memory"
+
+
+def test_partial_sink_failure_returns_explicit_partial_truth(
+    database,
+    tmp_path,
+) -> None:  # noqa: ANN001
+    registry = ObservabilityRegistry(
+        memory_sink=BoundedMemorySink(max_events=10, max_bytes=100_000),
+        jsonl_sink=LocalJsonlSink(
+            log_root=tmp_path,
+            filename="events-partial-api.jsonl",
+            max_bytes=4096,
+        ),
+    )
+    original_write = registry._memory.write
+    registry._memory.write = lambda event: _failed_result()  # type: ignore[method-assign]
+    result = registry.write(_event(1))
+    assert result.ok is True
+    assert result.error == "PARTIAL_DELIVERY"
+    health = registry.health()
+    assert health.partial_deliveries == 1
+    assert health.retained_events == 1
+    registry._memory.write = original_write
+
+    all_failed = ObservabilityRegistry(
+        memory_sink=BoundedMemorySink(max_events=10, max_bytes=100_000)
+    )
+    memory2 = all_failed._memory
+    original2 = memory2.write
+    memory2.write = lambda event: _failed_result()  # type: ignore[method-assign]
+    assert all_failed.write(_event(1)).ok is False
+    assert all_failed.write(_event(1)).error == "ALL_SINKS_FAILED"
+    assert all_failed.health().failures >= 1
+    memory2.write = original2
+
+
+def _failed_result():
+    from zana_core.observability.sinks import WriteResult
+
+    return WriteResult(ok=False, event_id="", error="WRITE_FAILED")
 
 
 def test_resource_and_event_pagination_reject_invalid_bounds(database) -> None:  # noqa: ANN001
@@ -345,3 +487,57 @@ def test_resource_and_event_pagination_reject_invalid_bounds(database) -> None: 
         ).status_code
         == 422
     )
+
+
+def test_usage_history_counters_are_mutation_free_on_repeated_reads(database) -> None:  # noqa: ANN001
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(
+        governor=governor,
+        usage_history_limit=3,
+        usage_history_max_bytes=1024 * 1024,
+    )
+    for index in range(1, 6):
+        decision = service.admit(_request(f"r-{index}"))
+        assert decision.lease is not None
+        service.release(decision.lease.token)
+    first = service.usage_page()
+    second = service.usage_page()
+    assert first.history_dropped == second.history_dropped
+    assert first.history_serialized_bytes_dropped == second.history_serialized_bytes_dropped
+    assert first.history_serialized_bytes == second.history_serialized_bytes
+    assert first.count == second.count
+    assert [record.sequence for record in first.items] == [
+        record.sequence for record in second.items
+    ]
+
+
+def test_configure_usage_history_trims_already_populated_governor() -> None:  # noqa: ANN001
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(governor=governor, usage_history_limit=5)
+    for index in range(1, 8):
+        decision = service.admit(_request(f"r-{index}"))
+        assert decision.lease is not None
+        service.release(decision.lease.token)
+    assert len(governor.usage_records()) == 5
+    service = ResourceService(governor=governor, usage_history_limit=3)
+    assert len(governor.usage_records()) == 3
+    stats = governor.usage_history_stats()
+    assert stats[2] >= 5
+    assert stats[3] > 0
+
+
+def test_public_surface_never_exposes_raw_request_or_token(database) -> None:  # noqa: ANN001
+    governor = ResourceGovernor(ResourcePolicy(), FixedSnapshotProvider(_snapshot()))
+    service = ResourceService(governor=governor)
+    decision = service.admit(_request("raw-request|/private/tmp|x|token-abc"))
+    assert decision.lease is not None
+    service.release(decision.lease.token)
+    client = _client(database, service=service)
+    leases = client.get("/api/v1/resources/leases", headers=AUTH).json()
+    usage = client.get("/api/v1/resources/usage", headers=AUTH).json()
+    body = json.dumps({"leases": leases, "usage": usage})
+    assert "raw-request|/private/tmp|x|token-abc" not in body
+    assert all(item["request_id"].startswith("request-") for item in leases)
+    assert all(item["request_id"].startswith("request-") for item in usage["items"])
+    assert all(item["lease_ref"].startswith("lease-") for item in leases)
+    assert all(item["lease_ref"].startswith("lease-") for item in usage["items"])

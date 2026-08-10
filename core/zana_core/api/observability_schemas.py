@@ -47,8 +47,14 @@ class ObservabilityHealthRead(_Strict):
     jsonl: JsonlSinkHealthRead
     total: SinkStatsRead
     max_retained_events: int
+    max_retained_bytes: int
     retained_events: int
+    retained_bytes: int
     retention_dropped: int
+    retention_dropped_bytes: int
+    failures: int
+    partial_deliveries: int
+    closed: bool
 
 
 class ObservabilityEventRead(_Strict):
@@ -73,3 +79,6 @@ class ObservabilityEventPageRead(_Strict):
     truncated: bool = False
     total_available: int = Field(ge=0)
     retention_dropped: int = Field(ge=0)
+    retention_dropped_bytes: int = Field(ge=0)
+    max_retained_bytes: int = Field(ge=1)
+    retained_bytes: int = Field(ge=0)
