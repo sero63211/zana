@@ -1272,6 +1272,20 @@ tasks:
         gates: "Focused injected unit/router tests; Ruff/format/Pyright/import/diff plus bounds, pagination/cursor, redaction, host-path/secret/raw-error, unknown/freshness, concurrency/lease-snapshot and telemetry-off review; no live API/app/browser/model/runtime/provider, install, broad suite, background sampler, performance/load, DB or filesystem export. One product commit plus receipt; clean; no push."
         stop_if: "Stop before changing shared API/error contracts, DB persistence, event producers, main/router registration, desktop UX, remote telemetry, background polling, diagnostic export, or fabricating resource history/metrics absent from accepted primitives. Report the exact serial integration delta instead."
         verification: "Worker and lead independently: 247 focused resource/observability/API tests PASS on the isolated worktree and canonical main; Ruff check/format PASS; Pyright 0 errors/warnings; direct bounds, redaction, raw-identifier/path/error, retention, partial/all-failed delivery, close and telemetry-off review PASS. No live API/app/browser/model/runtime/provider, broad, performance or load test. Router/lifespan registration remains a separate serial integration scope."
+      - id: T900-global-jobs-product-api
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        branch: agent/t900-global-jobs-product-api
+        thread: 019feb66-e32a-7c51-846c-9a5c66070666
+        worktree: /Users/sero/.codex/worktrees/c1fc/zana
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        owns: "core/zana_core/api/jobs.py, new core/zana_core/api/jobs_schemas.py, core/zana_core/jobs/services.py, new core/zana_core/jobs/query.py, focused new global-jobs tests, .agent-work/handoffs/T900-global-jobs-product-api.md. Excludes main.py, shared api/schemas.py, DB models/repositories/UoW/migrations, acquisition supervisor, build/image/instance/chat/memory, desktop, manifests and locks."
+        dependencies: "Integrated persistent generic jobs/events, model-acquisition cancellation supervisor, authenticated bounded fetch-SSE job events, and canonical API error/auth contracts at 2f283cb."
+        input_contract: "Existing Job/JobEvent persisted truth only; no new persistence fields or invented entity targets. Generic cancellation remains model-pull-only; build cancellation stays on the build route."
+        output_contract: "Authenticated stable cursor-paginated global job list and safe detail projection with deterministic operation identity, exact can-cancel/retry/event facts, bounded redacted fields, snapshot freshness, schema parity and idempotent supported cancellation."
+        gates: "Focused fake/unit/API tests for auth, pagination/filter/cursor stability, SQL-side bounds, redaction, corrupt rows, detail/list parity, SSE compatibility and cancel idempotency; Ruff/format/Pyright/import/diff; no live API/app/browser/runtime/model/provider/network, install, broad/full suite or load/performance. One product commit plus handoff; clean; no push."
+        stop_if: "Stop before editing any excluded shared path, widening cancellation authority, inventing target metadata absent from persisted truth, or weakening event/cursor/auth/error contracts."
       - id: T910-desktop-frontend-program
         agent: gpt-5.6-sol
         reasoning_effort: high
