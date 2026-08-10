@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
@@ -20,12 +22,27 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.status import HTTP_500_INTERNAL_SERVER_ERROR
 
 from zana_core import __version__
+from zana_core.acquisition.admission import FilesystemAdmissionProvider
+from zana_core.acquisition.protocols import AdmissionProvider, NativeStreamTransport
+from zana_core.acquisition.supervisor import AcquisitionSupervisor
+from zana_core.acquisition.transport import UrllibNativeStreamTransport
 from zana_core.api.deps import ServerConfig
 from zana_core.db.database import Database
+from zana_core.jobs.model_pull import recover_interrupted_pull_jobs
 from zana_core.platform.ensure import ensure_roots
 from zana_core.platform.models import PathRoot, PlatformPathError, PlatformPaths
 from zana_core.platform.resolve import PathResolver, derive_child
+from zana_core.runtimes.discovery_service import RuntimeDiscoveryService
 from zana_core.runtimes.registry import RuntimeProbeRegistry
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    """Yield while serving, then stop the acquisition supervisor deterministically."""
+    yield
+    supervisor = getattr(application.state, "acquisition_supervisor", None)
+    if supervisor is not None:
+        supervisor.shutdown(timeout=5.0)
 
 
 def create_app(
@@ -35,6 +52,10 @@ def create_app(
     platform_paths: PlatformPaths | None = None,
     path_resolver_factory: type[PathResolver] | None = None,
     runtime_registry: RuntimeProbeRegistry | None = None,
+    acquisition_transport: NativeStreamTransport | None = None,
+    acquisition_admission: AdmissionProvider | None = None,
+    acquisition_supervisor: AcquisitionSupervisor | None = None,
+    discovery_service: RuntimeDiscoveryService | None = None,
 ) -> FastAPI:
     """Create and configure a FastAPI application with the given launch token.
 
@@ -44,6 +65,7 @@ def create_app(
     app = FastAPI(
         title="ZANA Core",
         version=__version__,
+        lifespan=lifespan,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
@@ -72,6 +94,20 @@ def create_app(
     app.state.database = database
     app.state.data_root = resolved_data_root
     app.state.session_factory = database.session_factory
+    app.state.acquisition_transport = acquisition_transport or UrllibNativeStreamTransport()
+    app.state.acquisition_admission = acquisition_admission or FilesystemAdmissionProvider(
+        resolved_data_root
+    )
+    app.state.discovery_service = discovery_service or RuntimeDiscoveryService(
+        app.state.runtime_registry
+    )
+    app.state.acquisition_supervisor = acquisition_supervisor or AcquisitionSupervisor(
+        session_factory=database.session_factory,
+        transport=app.state.acquisition_transport,
+        admission=app.state.acquisition_admission,
+        discovery=app.state.discovery_service,
+    )
+    recover_interrupted_pull_jobs(database.session_factory)
 
     # Strict CORS: only loopback and Tauri origins
     app.add_middleware(

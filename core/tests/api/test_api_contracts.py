@@ -66,6 +66,7 @@ AUTH_PROTECTED_PATHS = [
     ("GET", "/api/v1/builds/1"),
     ("GET", "/api/v1/jobs/1"),
     ("GET", "/api/v1/jobs/1/events"),
+    ("POST", "/api/v1/jobs/1/cancel"),
     ("GET", "/api/v1/images"),
     ("GET", "/api/v1/images/sha256:abc"),
     ("GET", "/api/v1/system/profile"),

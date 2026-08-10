@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable, Iterator
-from contextlib import suppress
 from time import monotonic
 
 from zana_core.acquisition.limits import AcquisitionLimits
@@ -42,6 +41,18 @@ class StreamMalformedError(ValueError):
 
 class DeadlineExceededError(ValueError):
     """Raised when the acquisition deadline passes."""
+
+
+class ProgressRecordingError(ValueError):
+    """Raised when a progress callback cannot be persisted safely."""
+
+
+class _ResultReturnedError(Exception):
+    """Internal control-flow carrier for a completed acquisition result."""
+
+    def __init__(self, result: NativeAcquisitionResult) -> None:
+        self.result = result
+        super().__init__()
 
 
 class _JsonlFramer:
@@ -142,6 +153,7 @@ class OllamaNativeAcquisitionAdapter:
         admitted: AdmissionResult,
         cancel: CancellationToken | None = None,
         deadline: float | None = None,
+        on_progress: Callable[[NativeAcquisitionProgress, int], None] | None = None,
     ) -> NativeAcquisitionResult:
         if not admitted.allowed:
             return NativeAcquisitionResult(
@@ -164,19 +176,30 @@ class OllamaNativeAcquisitionAdapter:
         retained: list[NativeAcquisitionProgress] = []
         consumed = 0
         sequence = 0
-        attempted_open = False
+        result: NativeAcquisitionResult | None = None
         try:
             remaining = absolute_deadline - self._clock()
             if remaining <= 0:
-                return NativeAcquisitionResult(
-                    request=request,
-                    state=AcquisitionState.FAILED,
-                    events_consumed=0,
-                    retained_events=[],
-                    error_code="DEADLINE_EXCEEDED",
-                    error_message="Acquisition deadline exceeded.",
+                raise _ResultReturnedError(
+                    NativeAcquisitionResult(
+                        request=request,
+                        state=AcquisitionState.FAILED,
+                        events_consumed=0,
+                        retained_events=[],
+                        error_code="DEADLINE_EXCEEDED",
+                        error_message="Acquisition deadline exceeded.",
+                    )
                 )
-            attempted_open = True
+            if cancel is not None and cancel.is_cancelled():
+                raise _ResultReturnedError(
+                    NativeAcquisitionResult(
+                        request=request,
+                        state=AcquisitionState.CANCELLED,
+                        events_consumed=0,
+                        retained_events=[],
+                        error_code="CANCELLED",
+                    )
+                )
             stream = transport.open_stream(
                 "POST",
                 url,
@@ -188,23 +211,27 @@ class OllamaNativeAcquisitionAdapter:
                 if self._clock() >= absolute_deadline:
                     raise DeadlineExceededError("Acquisition deadline exceeded.")
                 if cancel is not None and cancel.is_cancelled():
-                    return NativeAcquisitionResult(
-                        request=request,
-                        state=AcquisitionState.CANCELLED,
-                        events_consumed=consumed,
-                        retained_events=list(retained),
-                        error_code="CANCELLED",
-                    )
-                for line in framer.feed(raw):
-                    if self._clock() >= absolute_deadline:
-                        raise DeadlineExceededError("Acquisition deadline exceeded.")
-                    if cancel is not None and cancel.is_cancelled():
-                        return NativeAcquisitionResult(
+                    raise _ResultReturnedError(
+                        NativeAcquisitionResult(
                             request=request,
                             state=AcquisitionState.CANCELLED,
                             events_consumed=consumed,
                             retained_events=list(retained),
                             error_code="CANCELLED",
+                        )
+                    )
+                for line in framer.feed(raw):
+                    if self._clock() >= absolute_deadline:
+                        raise DeadlineExceededError("Acquisition deadline exceeded.")
+                    if cancel is not None and cancel.is_cancelled():
+                        raise _ResultReturnedError(
+                            NativeAcquisitionResult(
+                                request=request,
+                                state=AcquisitionState.CANCELLED,
+                                events_consumed=consumed,
+                                retained_events=list(retained),
+                                error_code="CANCELLED",
+                            )
                         )
                     if consumed >= self.limits.max_event_count:
                         raise StreamEventCountError("Native stream exceeded the event count cap.")
@@ -214,6 +241,7 @@ class OllamaNativeAcquisitionAdapter:
                     )
                     if progress is None:
                         continue
+                    self._notify_progress(on_progress, progress, consumed + 1)
                     consumed += 1
                     sequence += 1
                     retained.append(progress)
@@ -226,17 +254,19 @@ class OllamaNativeAcquisitionAdapter:
                         progress,
                     )
                     if terminal is not None:
-                        return terminal
+                        raise _ResultReturnedError(terminal)
             for line in framer.finish():
                 if self._clock() >= absolute_deadline:
                     raise DeadlineExceededError("Acquisition deadline exceeded.")
                 if cancel is not None and cancel.is_cancelled():
-                    return NativeAcquisitionResult(
-                        request=request,
-                        state=AcquisitionState.CANCELLED,
-                        events_consumed=consumed,
-                        retained_events=list(retained),
-                        error_code="CANCELLED",
+                    raise _ResultReturnedError(
+                        NativeAcquisitionResult(
+                            request=request,
+                            state=AcquisitionState.CANCELLED,
+                            events_consumed=consumed,
+                            retained_events=list(retained),
+                            error_code="CANCELLED",
+                        )
                     )
                 if consumed >= self.limits.max_event_count:
                     raise StreamEventCountError("Native stream exceeded the event count cap.")
@@ -246,6 +276,7 @@ class OllamaNativeAcquisitionAdapter:
                 )
                 if progress is None:
                     continue
+                self._notify_progress(on_progress, progress, consumed + 1)
                 consumed += 1
                 sequence += 1
                 retained.append(progress)
@@ -258,17 +289,21 @@ class OllamaNativeAcquisitionAdapter:
                     progress,
                 )
                 if terminal is not None:
-                    return terminal
-            return NativeAcquisitionResult(
-                request=request,
-                state=AcquisitionState.FAILED,
-                events_consumed=consumed,
-                retained_events=list(retained),
-                error_code="STREAM_ENDED_WITHOUT_SUCCESS",
-                error_message="Native stream ended without a success event.",
+                    raise _ResultReturnedError(terminal)
+            raise _ResultReturnedError(
+                NativeAcquisitionResult(
+                    request=request,
+                    state=AcquisitionState.FAILED,
+                    events_consumed=consumed,
+                    retained_events=list(retained),
+                    error_code="STREAM_ENDED_WITHOUT_SUCCESS",
+                    error_message="Native stream ended without a success event.",
+                )
             )
+        except _ResultReturnedError as returned:
+            result = returned.result
         except StreamEventCountError:
-            return NativeAcquisitionResult(
+            result = NativeAcquisitionResult(
                 request=request,
                 state=AcquisitionState.FAILED,
                 events_consumed=consumed,
@@ -277,7 +312,7 @@ class OllamaNativeAcquisitionAdapter:
                 error_message="Native stream exceeded the event count cap.",
             )
         except StreamBudgetError:
-            return NativeAcquisitionResult(
+            result = NativeAcquisitionResult(
                 request=request,
                 state=AcquisitionState.FAILED,
                 events_consumed=consumed,
@@ -286,7 +321,7 @@ class OllamaNativeAcquisitionAdapter:
                 error_message="Native stream exceeded the total event byte budget.",
             )
         except (StreamLimitError, StreamMalformedError, json.JSONDecodeError):
-            return NativeAcquisitionResult(
+            result = NativeAcquisitionResult(
                 request=request,
                 state=AcquisitionState.FAILED,
                 events_consumed=consumed,
@@ -295,7 +330,7 @@ class OllamaNativeAcquisitionAdapter:
                 error_message="Native stream contained malformed or oversized data.",
             )
         except DeadlineExceededError:
-            return NativeAcquisitionResult(
+            result = NativeAcquisitionResult(
                 request=request,
                 state=AcquisitionState.FAILED,
                 events_consumed=consumed,
@@ -303,8 +338,17 @@ class OllamaNativeAcquisitionAdapter:
                 error_code="DEADLINE_EXCEEDED",
                 error_message="Acquisition deadline exceeded.",
             )
+        except ProgressRecordingError:
+            result = NativeAcquisitionResult(
+                request=request,
+                state=AcquisitionState.FAILED,
+                events_consumed=consumed,
+                retained_events=list(retained),
+                error_code="PROGRESS_RECORDING_FAILED",
+                error_message="Native progress could not be recorded.",
+            )
         except Exception:  # noqa: BLE001
-            return NativeAcquisitionResult(
+            result = NativeAcquisitionResult(
                 request=request,
                 state=AcquisitionState.FAILED,
                 events_consumed=consumed,
@@ -313,9 +357,40 @@ class OllamaNativeAcquisitionAdapter:
                 error_message="Native acquisition transport failed.",
             )
         finally:
-            if attempted_open:
-                with suppress(Exception):
-                    transport.close()
+            try:
+                transport.close()
+            except Exception:  # noqa: BLE001 - cleanup is reported, never silent
+                result = NativeAcquisitionResult(
+                    request=request,
+                    state=AcquisitionState.FAILED,
+                    events_consumed=consumed,
+                    retained_events=list(retained),
+                    error_code="TRANSPORT_CLOSE_FAILED",
+                    error_message="Native transport cleanup failed.",
+                )
+        if result is None:
+            result = NativeAcquisitionResult(
+                request=request,
+                state=AcquisitionState.FAILED,
+                events_consumed=consumed,
+                retained_events=list(retained),
+                error_code="TRANSPORT_FAILED",
+                error_message="Native acquisition transport failed.",
+            )
+        return result
+
+    @staticmethod
+    def _notify_progress(
+        on_progress: Callable[[NativeAcquisitionProgress, int], None] | None,
+        progress: NativeAcquisitionProgress,
+        count: int,
+    ) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(progress, count)
+        except Exception:  # noqa: BLE001 - persistence failure is canonical
+            raise ProgressRecordingError("Native progress could not be recorded.") from None
 
     def _handle_line(
         self,

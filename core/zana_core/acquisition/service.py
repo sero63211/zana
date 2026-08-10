@@ -12,6 +12,7 @@ from zana_core.acquisition.limits import AcquisitionLimits
 from zana_core.acquisition.models import (
     AcquisitionKind,
     AcquisitionState,
+    NativeAcquisitionProgress,
     NativeAcquisitionRequest,
     NativeAcquisitionResult,
     UnsupportedRuntimeResult,
@@ -68,6 +69,7 @@ class AcquisitionService:
         transport: NativeStreamTransport,
         admission: AdmissionProvider,
         cancel: CancellationToken | None = None,
+        on_progress: Callable[[NativeAcquisitionProgress, int], None] | None = None,
     ) -> NativeAcquisitionResult | UnsupportedRuntimeResult:
         if request.kind != AcquisitionKind.OLLAMA_PULL:
             return unsupported_runtime_result(request.kind.value)
@@ -106,6 +108,7 @@ class AcquisitionService:
                 admitted=admitted,
                 cancel=cancel,
                 deadline=deadline,
+                on_progress=on_progress,
             )
         finally:
             try:

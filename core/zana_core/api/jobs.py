@@ -9,15 +9,18 @@ from contextlib import suppress
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, Query, Request
 from fastapi.responses import StreamingResponse
 
+from zana_core.acquisition.redact import sanitize_terminal_error
 from zana_core.api.deps import UnitOfWorkDep, verify_token
 from zana_core.api.errors import http_error
 from zana_core.api.schemas import JobRead
 from zana_core.db.models import Job
 from zana_core.db.repositories import JobEventStreamRow
+from zana_core.domain.enums import JobKind
 from zana_core.jobs.services import MAX_EVENT_PAGE_SIZE, JobNotFoundError, JobService
+from zana_core.jobs.state_machine import TERMINAL_JOB_STATES
 from zana_core.streaming.encoder import SSEEncoder, StreamEncodeError, StreamLimitError
 from zana_core.streaming.models import (
     EventCursor,
@@ -59,6 +62,40 @@ def get_job(job_id: int, uow: UnitOfWorkDep) -> Job:
             "No job exists with this id.",
             actions=["list_capabilities"],
         ) from None
+
+
+@router.post("/{job_id}/cancel", response_model=JobRead)
+def cancel_model_pull(job_id: int, request: Request, uow: UnitOfWorkDep) -> Job:
+    """Cancel a queued or running model pull; terminal cancels are idempotent."""
+    service = JobService(uow)
+    try:
+        job = service.get_job(job_id)
+    except JobNotFoundError:
+        raise http_error(
+            404,
+            "JOB_NOT_FOUND",
+            "No job exists with this id.",
+            actions=["list_capabilities"],
+        ) from None
+    if job.kind != JobKind.MODEL_PULL:
+        raise http_error(
+            409,
+            "JOB_NOT_CANCELLABLE",
+            "Only model pull jobs can be cancelled through this endpoint.",
+            recoverable=True,
+            actions=["list_jobs"],
+        )
+    if job.status in TERMINAL_JOB_STATES:
+        return job
+    supervisor = request.app.state.acquisition_supervisor
+    if supervisor is not None:
+        supervisor.cancel(job.id)
+    service.cancel_job(job.id, reason="Model acquisition cancelled by user.")
+    job.error_json = sanitize_terminal_error(
+        code="CANCELLED",
+        message="Model acquisition cancelled by user.",
+    )
+    return job
 
 
 @router.get("/{job_id}/events")

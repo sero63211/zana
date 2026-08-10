@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -92,11 +93,32 @@ class RaisingRegistry(RuntimeProbeRegistry):
         raise RuntimeProbeError("injected discovery failure")
 
 
-def _client(database, registry: RuntimeProbeRegistry | None = None) -> TestClient:
+class NoopSupervisor:
+    """Injected supervisor that records jobs without starting transport work."""
+
+    def __init__(self) -> None:
+        self.dispatched: list[int] = []
+
+    def dispatch(self, job_id: int) -> None:
+        self.dispatched.append(job_id)
+
+    def cancel(self, job_id: int) -> bool:  # noqa: ARG001
+        return False
+
+    def shutdown(self, timeout: float = 5.0) -> None:  # noqa: ARG001
+        return None
+
+
+def _client(
+    database,
+    registry: RuntimeProbeRegistry | None = None,
+    supervisor=None,  # noqa: ANN001
+) -> TestClient:
     app = create_app(
         token="test-token-abc123",
         database_path=database.path,
         runtime_registry=registry if registry is not None else FakeRegistry(),
+        acquisition_supervisor=supervisor if supervisor is not None else NoopSupervisor(),
     )
     return TestClient(app)
 
@@ -291,13 +313,15 @@ def test_model_pull_records_persisted_job(database) -> None:
     assert job["phase"] == "queued"
     assert job["message"] == "qwen2:1.5b"
     assert job["error_json"]["code"] == "ACQUISITION_QUEUED"
-    request_data = job["error_json"]["request"]
-    assert request_data["model_reference"] == "qwen2:1.5b"
-    assert request_data["endpoint"] == "http://127.0.0.1:11434"
-    assert request_data["user_approved"] is True
-    assert request_data["expected_size_bytes"] == 1_000_000_000
-    assert request_data["deadline_seconds"] == 60.0
-    assert job["error_json"]["plan"]["model_reference"] == "qwen2:1.5b"
+    assert "request" not in job["error_json"]
+    assert "plan" not in job["error_json"]
+    assert "runtime_endpoint" not in job["error_json"]
+    assert "http://127.0.0.1:11434" not in json.dumps(job)
+    assert job["error_json"]["model_reference"] == "qwen2:1.5b"
+    assert job["error_json"]["user_approved"] is True
+    assert job["error_json"]["expected_size_bytes"] == 1_000_000_000
+    assert job["error_json"]["deadline_seconds"] == 60.0
+    assert len(job["error_json"]["runtime_identity"]) == 64
 
     fetched = client.get(f"/api/v1/jobs/{job['id']}", headers=_headers())
     assert fetched.status_code == 200
@@ -449,7 +473,12 @@ def test_model_detail_supports_slash_in_key_without_shadowing_pull(database) -> 
     runtime_id = _seed_ollama(client)
     pull = client.post(
         "/api/v1/models/pull",
-        json={"runtime_id": runtime_id, "model_reference": "qwen2:1.5b", "user_approved": True},
+        json={
+            "runtime_id": runtime_id,
+            "model_reference": "qwen2:1.5b",
+            "user_approved": True,
+            "expected_size_bytes": 100,
+        },
         headers=_headers(),
     )
     assert pull.status_code == 201
