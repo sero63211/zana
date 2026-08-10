@@ -71,6 +71,11 @@ def _status_for(code: str) -> int:
         "STALE_REPLACE_TOKEN",
         "REPLACE_PRECONDITION_FAILED",
         "CANCELLED",
+        "REPORT_EXISTS",
+        "RESULT_PATH_INVALID",
+        "RESULT_PATH_ESCAPE",
+        "CLEANUP_UNCERTAIN",
+        "LAYOUT_METADATA_INVALID",
     ):
         return HTTP_409_CONFLICT
     if code in ("APPROVAL_REQUIRED", "DELETE_CONFIRMATION_REQUIRED"):
@@ -127,7 +132,10 @@ def export_image(
         report_digest=result.report_digest,
         codec=export.codec,
         stages=[stage.value for stage in export.stages],
-        durability_uncertain=export.durability_uncertain,
+        durability_uncertain=result.durability_uncertain,
+        report_written=result.report_written,
+        report_warning=result.report_warning,
+        cleanup_uncertain=result.cleanup_uncertain,
     )
 
 

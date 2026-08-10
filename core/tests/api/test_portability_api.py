@@ -19,12 +19,20 @@ from tests.portability.helpers import archive_file, build_layout
 from zana_core.api import portability as portability_api
 from zana_core.api.deps import ServerConfig
 from zana_core.api.portability import router as portability_router
+from zana_core.artifacts import ArtifactStore, digest_bytes
 from zana_core.db.database import Database
-from zana_core.db.models import Image
+from zana_core.db.models import Artifact, Image, ImageArtifact
 from zana_core.db.unit_of_work import UnitOfWork
 from zana_core.domain.enums import VerificationStatus
 from zana_core.images import archive as images_archive
 from zana_core.images.models import RunnableState
+from zana_core.images.oci import (
+    MEDIA_TYPE_OCI_INDEX,
+    MEDIA_TYPE_OCI_LAYOUT,
+    MEDIA_TYPE_OCI_MANIFEST,
+    MEDIA_TYPE_ZANA_BEHAVIOR,
+    MEDIA_TYPE_ZANA_CONFIG,
+)
 from zana_core.portability import models as portability_models
 
 
@@ -88,6 +96,15 @@ def test_verify_and_export_round_trip_without_host_paths(
     config_digest = json.loads(manifest)["config"]["digest"]
     target = data_root / "portability" / "layouts" / image_digest.removeprefix("sha256:")
     shutil.copytree(layout, target)
+    store = ArtifactStore(data_root / "artifacts")
+    manifest_path = layout / "manifest.json"
+    index_path = layout / "index.json"
+    oci_layout_path = layout / "oci-layout"
+    config_blob = layout / "blobs" / "sha256" / config_digest.removeprefix("sha256:")
+    behavior_digest = json.loads(manifest)["layers"][0]["digest"]
+    behavior_blob = layout / "blobs" / "sha256" / behavior_digest.removeprefix("sha256:")
+    for path in (manifest_path, index_path, oci_layout_path, config_blob, behavior_blob):
+        store.put_file(path)
     with UnitOfWork(session_factory) as uow:
         uow.images.add(
             Image(
@@ -100,6 +117,49 @@ def test_verify_and_export_round_trip_without_host_paths(
                 base_model_digest="",
             )
         )
+        rows = (
+            (
+                "manifest",
+                digest_bytes(manifest_path.read_bytes()),
+                MEDIA_TYPE_OCI_MANIFEST,
+                manifest_path,
+            ),
+            (
+                "index",
+                digest_bytes(index_path.read_bytes()),
+                MEDIA_TYPE_OCI_INDEX,
+                index_path,
+            ),
+            (
+                "oci-layout",
+                digest_bytes(oci_layout_path.read_bytes()),
+                MEDIA_TYPE_OCI_LAYOUT,
+                oci_layout_path,
+            ),
+            ("config", config_digest, MEDIA_TYPE_ZANA_CONFIG, config_blob),
+            (
+                "behavior",
+                behavior_digest,
+                MEDIA_TYPE_ZANA_BEHAVIOR,
+                behavior_blob,
+            ),
+        )
+        for role, digest, media_type, path in rows:
+            uow.artifacts.add(
+                Artifact(
+                    digest=digest,
+                    media_type=media_type,
+                    local_path=str(store.blob_path(digest)),
+                    size_bytes=path.stat().st_size,
+                )
+            )
+            uow.image_artifacts.add(
+                ImageArtifact(
+                    image_digest=image_digest,
+                    artifact_digest=digest,
+                    role=role,
+                )
+            )
 
     verified = client.post(f"/api/v1/images/{image_digest}/verify")
     assert verified.status_code == 200

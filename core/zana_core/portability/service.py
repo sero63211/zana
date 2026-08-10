@@ -117,6 +117,10 @@ class ProductExport:
     relative_path: str
     report_relative_path: str
     report_digest: str
+    durability_uncertain: bool
+    report_written: bool
+    report_warning: str
+    cleanup_uncertain: bool
 
 
 @dataclass(frozen=True)
@@ -188,6 +192,7 @@ class PortabilityProductService:
             self._store,
             roots,
             resolved,
+            base_available=self._exact_base_available,
         )
 
     @property
@@ -197,6 +202,17 @@ class PortabilityProductService:
     @property
     def imports_root(self) -> Path:
         return self._imports_root
+
+    def _exact_base_available(self, digest: str | None) -> bool:
+        """Exact bounded model lookup; never truncates an availability set."""
+        if digest is None:
+            return False
+        try:
+            validate_digest(digest)
+        except Exception:
+            return False
+        with UnitOfWork(self._session_factory) as uow:
+            return _base_available(uow, digest)
 
     def verify(
         self,
@@ -225,54 +241,30 @@ class PortabilityProductService:
         active_boundary.check(OperationStage.VALIDATE_LAYOUT, fraction=0.2)
         base_digest = snapshot.base_digest
         base_available = snapshot.base_available
+        registered: RegisteredLayout | None = None
         try:
             registered = self._materialize_layout(snapshot, active, deadline)
-        except PortabilityError as error:
-            if error.code == "IMAGE_MATERIAL_MISSING":
-                return ProductVerify(
-                    digest=canonical,
-                    status="material-missing",
-                    runnable=RunnableState.NOT_RUNNABLE_UNKNOWN,
-                    runnable_reason="Image material is missing from the local registry.",
-                    base_model_digest=base_digest,
-                    base_model_available=base_available,
-                    layout_source="missing",
-                )
-            if error.code in (
-                "REGISTRY_MISMATCH",
-                "IMAGE_MATERIAL_CORRUPTED",
-            ):
-                status = "registry-mismatch" if error.code == "REGISTRY_MISMATCH" else "corrupted"
-                return ProductVerify(
-                    digest=canonical,
-                    status=status,
-                    runnable=RunnableState.NOT_RUNNABLE_UNKNOWN,
-                    runnable_reason=error.message,
-                    base_model_digest=base_digest,
-                    base_model_available=base_available,
-                    layout_source=snapshot.persistent_layout is not None
-                    and "persisted"
-                    or "reconstructed",
-                )
-            raise
-        active_boundary.check(OperationStage.SECRET_SCAN, fraction=0.6)
-        try:
             validated = self._validate_layout_for_image(
                 registered.path,
                 snapshot.image,
                 active,
                 deadline,
             )
+            self._validate_registry_graph(snapshot, registered.path, active, deadline)
         except PortabilityError as error:
             if error.code in (
                 "IMAGE_MATERIAL_CORRUPTED",
                 "REGISTRY_MISMATCH",
                 "BASE_MODEL_MISMATCH",
+                "IMAGE_MATERIAL_MISSING",
+                "LAYOUT_METADATA_INVALID",
             ):
                 status = {
                     "IMAGE_MATERIAL_CORRUPTED": "corrupted",
                     "REGISTRY_MISMATCH": "registry-mismatch",
                     "BASE_MODEL_MISMATCH": "base-model-mismatch",
+                    "IMAGE_MATERIAL_MISSING": "material-missing",
+                    "LAYOUT_METADATA_INVALID": "registry-mismatch",
                 }[error.code]
                 return ProductVerify(
                     digest=canonical,
@@ -281,11 +273,19 @@ class PortabilityProductService:
                     runnable_reason=error.message,
                     base_model_digest=base_digest,
                     base_model_available=base_available,
-                    layout_source=registered.source,
+                    layout_source=(
+                        registered.source
+                        if registered is not None
+                        else (
+                            "persisted"
+                            if snapshot.persistent_layout is not None
+                            else "reconstructed"
+                        )
+                    ),
                 )
             raise
         finally:
-            if registered.temporary:
+            if registered is not None and registered.temporary:
                 _remove_owned_layout(registered.path, self._data_root)
         active_boundary.check(OperationStage.COMPLETE, fraction=1.0)
         runnable_set = None if base_digest is None else ({base_digest} if base_available else set())
@@ -297,7 +297,7 @@ class PortabilityProductService:
             runnable_reason=runnability.reason,
             base_model_digest=base_digest,
             base_model_available=base_available,
-            layout_source=registered.source,
+            layout_source=registered.source if registered is not None else "missing",
         )
 
     def export(
@@ -345,12 +345,22 @@ class PortabilityProductService:
                 stage=OperationStage.PREFLIGHT,
                 actions=("use_supported_codec", "install_zstd"),
             )
+        report_path = Path(str(destination) + ".report.json")
+        if report_path.exists() or report_path.is_symlink():
+            raise _portability_error(
+                "REPORT_EXISTS",
+                "The export report path already exists and will not be overwritten.",
+                stage=OperationStage.PREFLIGHT,
+                actions=("choose_new_output_path",),
+            )
         with UnitOfWork(self._session_factory) as uow:
             image = _image_or_404(uow, canonical)
             snapshot = self._snapshot_registry(uow, image)
         active_boundary.check(OperationStage.VALIDATE_LAYOUT, fraction=0.2)
         registered = self._materialize_layout(snapshot, active, deadline)
         self._validate_layout_for_image(registered.path, snapshot.image, active, deadline)
+        self._validate_registry_graph(snapshot, registered.path, active, deadline)
+        # Final pre-commit cancellation before any irreversible filesystem write.
         active_boundary.check(OperationStage.CODE_WRITE, fraction=0.6)
         request = ExportRequest(
             operation_id=uuid.uuid4().hex,
@@ -363,22 +373,52 @@ class PortabilityProductService:
         )
         try:
             result = self._export_service.export(request)
-        finally:
-            if registered.temporary:
+        except PortabilityError:
+            raise
+        report_path = Path(str(destination) + ".report.json")
+        report_digest: str | None = None
+        report_uncertain = False
+        report_written = False
+        report_warning = ""
+        cleanup_uncertain = False
+        try:
+            report_path, report_digest, report_uncertain = self._write_sidecar_report(
+                destination,
+                result,
+                active,
+                image_digest=digest,
+            )
+            report_written = True
+        except PortabilityError as error:
+            report_warning = error.message
+            report_uncertain = True
+        if registered.temporary:
+            try:
                 _remove_owned_layout(registered.path, self._data_root)
-        active_boundary.check(OperationStage.FSYNC, fraction=0.9)
-        report_path, report_digest = self._write_sidecar_report(
-            destination,
-            result,
-            active,
-            image_digest=digest,
-        )
-        active_boundary.check(OperationStage.COMPLETE, fraction=1.0)
+            except PortabilityError:
+                cleanup_uncertain = True
+        active_boundary.notify_complete(OperationStage.COMPLETE, fraction=1.0)
         return ProductExport(
             result=result,
-            relative_path=_safe_relative_path(result.archive_path, self._data_root),
-            report_relative_path=_safe_relative_path(str(report_path), self._data_root),
-            report_digest=report_digest,
+            relative_path=_owned_relative_path(
+                result.archive_path,
+                self._exports_root,
+                self._data_root,
+            ),
+            report_relative_path=(
+                _owned_relative_path(
+                    str(report_path),
+                    self._exports_root,
+                    self._data_root,
+                )
+                if report_written
+                else ""
+            ),
+            report_digest=report_digest or "",
+            durability_uncertain=result.durability_uncertain or report_uncertain,
+            report_written=report_written,
+            report_warning=report_warning,
+            cleanup_uncertain=cleanup_uncertain,
         )
 
     def import_archive(
@@ -402,13 +442,12 @@ class PortabilityProductService:
                 actions=("confirm_import_path",),
             )
         active = _fresh_limits(limits, deadline_seconds)
+        deadline = Deadline(active.deadline_seconds)
         source = confine(
             Path(local_path),
             [self._imports_root],
             stage=OperationStage.PREFLIGHT,
         )
-        with UnitOfWork(self._session_factory) as uow:
-            base_digests = _available_base_digests(uow)
         active_boundary.check(OperationStage.UNPACK, fraction=0.3)
         import_result = self._import_service.import_archive(
             ImportRequest(
@@ -418,25 +457,36 @@ class PortabilityProductService:
                 limits=active,
             ),
             retain_layouts_root=self._layouts_root,
-            available_base_digests=base_digests,
         )
         active_boundary.check(OperationStage.OCI_VALIDATION, fraction=0.7)
+        base_model_available = self._exact_base_available(
+            import_result.registration.base_model_digest
+        )
+        # Final pre-commit cancellation before the atomic DB registration.
+        active_boundary.check(OperationStage.REGISTER, fraction=0.95)
         try:
-            product = self._register_import(import_result, active, base_digests)
-        except Exception:
+            product = self._register_import(
+                import_result,
+                active,
+                deadline,
+                base_model_available=base_model_available,
+            )
+        except Exception as error:
             if import_result.layout_created and import_result.layout_root:
-                with suppress(Exception):
+                try:
                     _remove_owned_layout(
                         Path(import_result.layout_root),
                         self._data_root,
                     )
-            raise
-        active_boundary.check(OperationStage.COMPLETE, fraction=1.0)
+                except Exception as cleanup_error:
+                    raise cleanup_error
+            raise error
+        active_boundary.notify_complete(OperationStage.COMPLETE, fraction=1.0)
         return ProductImport(
             result=import_result,
             idempotent=product.idempotent,
             created=product.created,
-            base_model_available=product.base_model_available,
+            base_model_available=base_model_available,
             artifact_count=product.artifact_count,
         )
 
@@ -507,6 +557,7 @@ class PortabilityProductService:
         for row in uow.image_artifacts.list_for_image(image.digest):
             artifact = uow.artifacts.get(row.artifact_digest)
             if artifact is None:
+                rows.append((row.role, row.artifact_digest, "", -1, ""))
                 continue
             rows.append(
                 (
@@ -802,11 +853,69 @@ class PortabilityProductService:
             ) from error
         return validated
 
+    def _validate_registry_graph(
+        self,
+        snapshot: RegistrySnapshot,
+        layout: Path,
+        limits: PortabilityLimits,
+        deadline: Deadline,
+    ) -> None:
+        """Validate the exact persisted ImageArtifact/Artifact graph regardless
+        of whether the layout is persistent or reconstructed."""
+        expected = _read_layout_roles(layout, max_bytes=limits.max_json_bytes)
+        expected_by_role = {role.role: role for role in expected}
+        if len(expected_by_role) != len(expected):
+            raise _registry_mismatch("The image layout contains duplicate artifact roles.")
+        rows = _unique_registry_rows(snapshot.artifact_rows)
+        for role, expected_role in expected_by_role.items():
+            row = rows.get(role)
+            if row is None:
+                raise _registry_mismatch(f"The registry is missing the {role} artifact record.")
+            if row[1] != expected_role.digest:
+                raise _registry_mismatch(f"The registered {role} digest does not match the layout.")
+            if row[2] != expected_role.media_type:
+                raise _registry_mismatch(
+                    f"The registered {role} media type does not match the layout."
+                )
+            if row[3] != expected_role.size:
+                raise _registry_mismatch(f"The registered {role} size does not match the layout.")
+            self._verify_canonical_row_path(row)
+            self._verify_store_digest(row[1])
+        for role, row in rows.items():
+            if role in expected_by_role:
+                continue
+            if role == "oci-layout":
+                self._verify_layout_metadata_row(row, layout, limits, deadline)
+                continue
+            raise _registry_mismatch(f"The registry carries an unexpected {role} artifact record.")
+        deadline.check(OperationStage.VALIDATE_LAYOUT)
+
+    def _verify_layout_metadata_row(
+        self,
+        row: tuple[str, str, str, int, str],
+        layout: Path,
+        limits: PortabilityLimits,
+        deadline: Deadline,
+    ) -> None:
+        if row[2] != MEDIA_TYPE_OCI_LAYOUT:
+            raise _registry_mismatch("Registered oci-layout media type is invalid.")
+        data = _json_bytes(layout / "oci-layout", max_bytes=limits.max_json_bytes)
+        canonical = canonical_json_bytes(OciLayoutFile())
+        if row[1] != digest_bytes(canonical) or row[3] != len(canonical):
+            raise _registry_mismatch("Registered oci-layout content is not canonical.")
+        if data != canonical:
+            raise _registry_mismatch("The persisted oci-layout file is not canonical.")
+        self._verify_canonical_row_path(row)
+        self._verify_store_digest(row[1])
+        deadline.check(OperationStage.VALIDATE_LAYOUT)
+
     def _register_import(
         self,
         import_result: Any,
         limits: PortabilityLimits,
-        available_base_digests: set[str],
+        deadline: Deadline,
+        *,
+        base_model_available: bool,
     ) -> ProductImport:
         if not import_result.layout_root:
             raise _portability_error(
@@ -815,27 +924,71 @@ class PortabilityProductService:
                 stage=OperationStage.REGISTER,
                 actions=("retry_import",),
             )
-        layout_root = Path(import_result.layout_root)
+        layout_root = confine(
+            Path(import_result.layout_root),
+            [self._layouts_root],
+            stage=OperationStage.REGISTER,
+        )
+        plan = import_result.registration
+        validated = self._revalidate_import_layout(
+            layout_root,
+            plan,
+            limits,
+            deadline,
+        )
         roles = _read_layout_roles(layout_root, max_bytes=limits.max_json_bytes)
+        expected = {role.role: role for role in roles}
+        if len(expected) != len(roles):
+            raise _import_conflict("The retained layout contains duplicate artifact roles.")
         for role in roles:
             self._ensure_role_material(role, layout_root, limits)
-        plan = import_result.registration
-        base_model_available = _base_model_available_from_digest(
-            plan.base_model_digest,
-            available_base_digests,
-        )
+        if validated.config.name != plan.config_name:
+            raise _import_conflict("The retained layout name changed before registration.")
+        if validated.config.version != plan.config_version:
+            raise _import_conflict("The retained layout version changed before registration.")
+        exact_base = validated.config.base_model.identity_digest
+        if exact_base != plan.base_model_digest:
+            raise _import_conflict("The retained layout base model changed before registration.")
+        if (validated.config.base_model.display_name or "unknown") != plan.base_model_key:
+            raise _import_conflict(
+                "The retained layout base model key changed before registration."
+            )
+
+        existing_artifacts = self._existing_global_artifacts(roles)
+        for role in roles:
+            artifact = existing_artifacts.get(role.digest)
+            if artifact is None:
+                continue
+            if artifact.media_type != role.media_type:
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting media type."
+                )
+            if artifact.size_bytes != role.size:
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting size."
+                )
+            if artifact.local_path != str(self._store.blob_path(role.digest)):
+                raise _import_conflict(
+                    f"An existing Artifact for {role.role} has a conflicting path."
+                )
         uow = UnitOfWork(self._session_factory)
         try:
             existing = uow.images.get(plan.image_digest)
-            idempotent = existing is not None
             if existing is not None and _conflicts_with_image(existing, plan):
-                raise _portability_error(
-                    "IMPORT_CONFLICT",
-                    "The archive conflicts with an already registered image record.",
-                    stage=OperationStage.REGISTER,
-                    actions=("list_images",),
+                raise _import_conflict(
+                    "The archive conflicts with an already registered image record."
                 )
-            if existing is None:
+            existing_rows = self._existing_registry_rows(uow, plan.image_digest)
+            if existing is not None:
+                expected_rows = self._registry_rows_from_layout(roles)
+                _compare_registry_graph(expected_rows, existing_rows, self._store)
+                idempotent = True
+            elif existing_rows:
+                raise _import_conflict(
+                    "Image artifact rows exist without a registered image record."
+                )
+            else:
+                idempotent = False
                 uow.images.add(
                     Image(
                         digest=plan.image_digest,
@@ -847,31 +1000,20 @@ class PortabilityProductService:
                         base_model_digest=plan.base_model_digest or "",
                     )
                 )
-            for role in roles:
-                artifact = uow.artifacts.get(role.digest)
-                if artifact is None:
-                    artifact = Artifact(
-                        digest=role.digest,
-                        media_type=role.media_type,
-                        local_path=str(self._store.blob_path(role.digest)),
-                        size_bytes=role.size,
-                    )
-                    uow.artifacts.add(artifact)
-                elif (
-                    artifact.local_path != str(self._store.blob_path(role.digest))
-                    or artifact.media_type != role.media_type
-                ):
-                    raise _portability_error(
-                        "IMPORT_CONFLICT",
-                        "An existing artifact record conflicts with the archive.",
-                        stage=OperationStage.REGISTER,
-                        actions=("repair_image_registry",),
-                    )
-                row = uow.session.get(
-                    ImageArtifact,
-                    (plan.image_digest, role.digest, role.role),
-                )
-                if row is None:
+                for role in roles:
+                    artifact = uow.artifacts.get(role.digest)
+                    if artifact is None:
+                        uow.artifacts.add(
+                            Artifact(
+                                digest=role.digest,
+                                media_type=role.media_type,
+                                local_path=str(self._store.blob_path(role.digest)),
+                                size_bytes=role.size,
+                            )
+                        )
+                    else:
+                        # Already validated against the exact LayoutRole.
+                        pass
                     uow.image_artifacts.add(
                         ImageArtifact(
                             image_digest=plan.image_digest,
@@ -892,6 +1034,74 @@ class PortabilityProductService:
             base_model_available=base_model_available,
             artifact_count=len(roles),
         )
+
+    def _existing_global_artifacts(
+        self,
+        roles: tuple[LayoutRole, ...],
+    ) -> dict[str, Artifact]:
+        collected: dict[str, Artifact] = {}
+        with UnitOfWork(self._session_factory) as uow:
+            for role in roles:
+                artifact = uow.artifacts.get(role.digest)
+                if artifact is not None:
+                    collected[role.digest] = artifact
+        return collected
+
+    def _revalidate_import_layout(
+        self,
+        layout_root: Path,
+        plan: Any,
+        limits: PortabilityLimits,
+        deadline: Deadline,
+    ) -> Any:
+        try:
+            validated = validate_oci_layout(
+                layout_root,
+                max_json_bytes=limits.max_json_bytes,
+                max_blob_bytes=limits.max_member_bytes,
+                max_total_bytes=limits.max_unpacked_bytes,
+                chunk_size=limits.chunk_size,
+                deadline_seconds=deadline.remaining(),
+            )
+        except OciValidationError as error:
+            raise _import_conflict(
+                "The retained layout failed revalidation before registration."
+            ) from error
+        if validated.index_digest != plan.image_digest:
+            raise _import_conflict("The retained layout digest changed before registration.")
+        if validated.manifest_digest != plan.manifest_digest:
+            raise _import_conflict("The retained manifest digest changed before registration.")
+        if validated.config_digest != plan.config_digest:
+            raise _import_conflict("The retained config digest changed before registration.")
+        return validated
+
+    def _registry_rows_from_layout(
+        self,
+        roles: tuple[LayoutRole, ...],
+    ) -> dict[str, LayoutRole]:
+        return {role.role: role for role in roles}
+
+    def _existing_registry_rows(
+        self,
+        uow: UnitOfWork,
+        image_digest: str,
+    ) -> dict[str, tuple[str, str, int, str]]:
+        collected: dict[str, tuple[str, str, int, str]] = {}
+        for row in uow.image_artifacts.list_for_image(image_digest):
+            artifact = uow.artifacts.get(row.artifact_digest)
+            if artifact is None:
+                value = (row.artifact_digest, "", -1, "")
+            else:
+                value = (
+                    row.artifact_digest,
+                    artifact.media_type,
+                    artifact.size_bytes,
+                    artifact.local_path,
+                )
+            if row.role in collected:
+                raise _import_conflict("The registry contains duplicate image artifact roles.")
+            collected[row.role] = value
+        return collected
 
     def _ensure_role_material(
         self,
@@ -921,6 +1131,17 @@ class PortabilityProductService:
                 stage=OperationStage.REGISTER,
                 actions=("retry_import",),
             ) from error
+        try:
+            actual_size = self._store.size(role.digest)
+        except Exception as error:
+            raise _portability_error(
+                "IMAGE_MATERIAL_MISSING",
+                "A registered image blob size could not be verified.",
+                stage=OperationStage.REGISTER,
+                actions=("retry_import",),
+            ) from error
+        if actual_size != role.size:
+            raise _import_conflict(f"The registered {role.role} size conflicts with the archive.")
 
     def _write_sidecar_report(
         self,
@@ -929,7 +1150,7 @@ class PortabilityProductService:
         limits: PortabilityLimits,
         *,
         image_digest: str,
-    ) -> tuple[Path, str]:
+    ) -> tuple[Path, str, bool]:
         """Atomically write a bounded secret-free sidecar export report."""
         from zana_core.portability.models import utc_now
         from zana_core.portability.paths import (
@@ -964,9 +1185,17 @@ class PortabilityProductService:
                 actions=("retry_export",),
             )
         report_path = Path(str(destination) + ".report.json")
+        if report_path.exists() or report_path.is_symlink():
+            raise _portability_error(
+                "REPORT_EXISTS",
+                "The export report path already exists and will not be overwritten.",
+                stage=OperationStage.FSYNC,
+                actions=("choose_new_output_path",),
+            )
         temp = sibling_temp_path(report_path, "report")
         parent_fd, temp_name = _open_parent_dirfd(temp, stage=OperationStage.FSYNC)
         created = False
+        durability_uncertain = False
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
             fd = os.open(temp_name, flags, 0o600, dir_fd=parent_fd)
@@ -976,9 +1205,26 @@ class PortabilityProductService:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-            os.rename(temp_name, report_path.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
-            with suppress(Exception):
-                fsync_directory(report_path.parent)
+            try:
+                os.link(
+                    temp_name,
+                    report_path.name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                raise _portability_error(
+                    "REPORT_EXISTS",
+                    "The export report path appeared concurrently and was not overwritten.",
+                    stage=OperationStage.FSYNC,
+                    actions=("choose_new_output_path",),
+                ) from None
+            try:
+                os.unlink(temp_name, dir_fd=parent_fd)
+            except OSError:
+                durability_uncertain = True
+            if not fsync_directory(report_path.parent):
+                durability_uncertain = True
         except OSError as error:
             if created:
                 with suppress(OSError):
@@ -991,7 +1237,7 @@ class PortabilityProductService:
             ) from error
         finally:
             os.close(parent_fd)
-        return report_path, digest_bytes(data)
+        return report_path, digest_bytes(data), durability_uncertain
 
 
 def _canonical_digest(value: str) -> str:
@@ -1065,24 +1311,15 @@ def _image_base_digest(image: Image) -> str | None:
         return None
 
 
-def _available_base_digests(uow: UnitOfWork) -> set[str]:
-    values = uow.session.scalars(
-        select(Model.digest).where(Model.digest.is_not(None)).limit(1024)
-    ).all()
-    collected: set[str] = set()
-    for value in values:
-        if type(value) is str:
-            try:
-                collected.add(validate_digest(value))
-            except Exception:
-                continue
-    return collected
-
-
 def _base_available(uow: UnitOfWork, digest: str | None) -> bool:
     if digest is None:
         return False
-    return digest in _available_base_digests(uow)
+    try:
+        validate_digest(digest)
+    except Exception:
+        return False
+    row = uow.session.execute(select(Model.key).where(Model.digest == digest).limit(1)).first()
+    return row is not None
 
 
 def _base_model_available_from_digest(
@@ -1126,6 +1363,13 @@ def _read_layout_roles(layout: Path, *, max_bytes: int) -> tuple[LayoutRole, ...
             actions=("retry_import",),
         )
     manifest_descriptor = _exact_dict(manifests[0], "index manifest")
+    if manifest_descriptor.get("mediaType") != MEDIA_TYPE_OCI_MANIFEST:
+        raise _portability_error(
+            "LAYOUT_METADATA_INVALID",
+            "The retained OCI index manifest media type is invalid.",
+            stage=OperationStage.REGISTER,
+            actions=("retry_import",),
+        )
     manifest_digest = _exact_digest(manifest_descriptor.get("digest"))
     manifest_size = _exact_int(manifest_descriptor.get("size"), "manifest size")
     roles.append(
@@ -1146,6 +1390,13 @@ def _read_layout_roles(layout: Path, *, max_bytes: int) -> tuple[LayoutRole, ...
         )
     )
     config = _exact_dict(manifest_payload.get("config"), "manifest config")
+    if config.get("mediaType") != MEDIA_TYPE_ZANA_CONFIG:
+        raise _portability_error(
+            "LAYOUT_METADATA_INVALID",
+            "The retained OCI manifest config media type is invalid.",
+            stage=OperationStage.REGISTER,
+            actions=("retry_import",),
+        )
     config_digest = _exact_digest(config.get("digest"))
     config_size = _exact_int(config.get("size"), "config size")
     roles.append(
@@ -1157,13 +1408,14 @@ def _read_layout_roles(layout: Path, *, max_bytes: int) -> tuple[LayoutRole, ...
         )
     )
     layers = _exact_list(manifest_payload.get("layers"), "manifest layers")
+    seen_roles: set[str] = set()
     for layer in layers:
         descriptor = _exact_dict(layer, "layer descriptor")
         media_type = descriptor.get("mediaType")
-        if type(media_type) is not str or not media_type.startswith("application/"):
+        if type(media_type) is not str:
             raise _portability_error(
                 "LAYOUT_METADATA_INVALID",
-                "A retained layout layer has an invalid media type.",
+                "A retained layout layer media type is invalid.",
                 stage=OperationStage.REGISTER,
                 actions=("retry_import",),
             )
@@ -1176,6 +1428,21 @@ def _read_layout_roles(layout: Path, *, max_bytes: int) -> tuple[LayoutRole, ...
                 stage=OperationStage.REGISTER,
                 actions=("retry_import",),
             )
+        if role in seen_roles:
+            raise _portability_error(
+                "LAYOUT_METADATA_INVALID",
+                "A retained layout contains duplicate image roles.",
+                stage=OperationStage.REGISTER,
+                actions=("retry_import",),
+            )
+        seen_roles.add(role)
+        if media_type != ROLE_MEDIA_TYPES[role]:
+            raise _portability_error(
+                "LAYOUT_METADATA_INVALID",
+                "A retained layout layer role does not match its media type.",
+                stage=OperationStage.REGISTER,
+                actions=("retry_import",),
+            )
         roles.append(
             LayoutRole(
                 role=role,
@@ -1183,6 +1450,13 @@ def _read_layout_roles(layout: Path, *, max_bytes: int) -> tuple[LayoutRole, ...
                 media_type=media_type,
                 size=_exact_int(descriptor.get("size"), "layer size"),
             )
+        )
+    if len(seen_roles) != len(roles) - 3:
+        raise _portability_error(
+            "LAYOUT_METADATA_INVALID",
+            "A retained layout contains duplicate artifact roles.",
+            stage=OperationStage.REGISTER,
+            actions=("retry_import",),
         )
     if len(roles) > MAX_LAYOUT_ROLES:
         raise _portability_error(
@@ -1275,24 +1549,65 @@ def _exact_digest(value: Any) -> str:
     return _canonical_digest(value)
 
 
-def _safe_relative_path(path: str, data_root: Path) -> str:
-    try:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            return candidate.name
-        relative = candidate.relative_to(data_root)
-        return "/".join(relative.parts)
-    except (ValueError, OSError):
-        return Path(path).name
+def _owned_relative_path(path: str, root: Path, data_root: Path) -> str:
+    candidate = Path(path)
+    if not candidate.is_absolute():
+        raise _portability_error(
+            "RESULT_PATH_INVALID",
+            "A service result path must be absolute.",
+            stage=OperationStage.COMPLETE,
+            actions=("repair_image_registry",),
+        )
+    if candidate == root or not candidate.is_relative_to(root):
+        raise _portability_error(
+            "RESULT_PATH_ESCAPE",
+            "A service result path escaped its managed root.",
+            stage=OperationStage.COMPLETE,
+            actions=("repair_image_registry",),
+        )
+    if candidate == data_root or not candidate.is_relative_to(data_root):
+        raise _portability_error(
+            "RESULT_PATH_ESCAPE",
+            "A service result path escaped the app data root.",
+            stage=OperationStage.COMPLETE,
+            actions=("repair_image_registry",),
+        )
+    return "/".join(candidate.relative_to(data_root).parts)
 
 
 def _remove_owned_layout(path: Path, data_root: Path) -> None:
-    try:
-        if path.is_symlink() or not path.is_dir():
-            return
-        remove_tree_confined(path, data_root)
-    except Exception:
+    if path.is_symlink() or not path.is_dir():
         return
+    try:
+        remove_tree_confined(path, data_root)
+    except Exception as error:
+        raise _portability_error(
+            "CLEANUP_UNCERTAIN",
+            "Owned portability layout cleanup could not be confirmed.",
+            stage=OperationStage.CLEANUP,
+            actions=("clear_temp_workspace", "retry_cleanup"),
+        ) from error
+
+
+def _remove_owned_output(path: Path, data_root: Path) -> None:
+    if path.is_symlink() or not path.is_file():
+        return
+    from zana_core.portability.paths import _open_parent_dirfd
+
+    try:
+        parent_fd, name = _open_parent_dirfd(path, stage=OperationStage.CLEANUP)
+        try:
+            os.unlink(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except Exception as error:
+        raise _portability_error(
+            "CLEANUP_UNCERTAIN",
+            "Owned export output cleanup could not be confirmed.",
+            stage=OperationStage.CLEANUP,
+            actions=("clear_temp_workspace", "retry_cleanup"),
+        ) from error
 
 
 def _unique_registry_rows(
@@ -1323,6 +1638,39 @@ def _registry_mismatch(message: str) -> PortabilityError:
         stage=OperationStage.VALIDATE_LAYOUT,
         actions=("repair_image_registry", "reimport_image"),
     )
+
+
+def _import_conflict(message: str) -> PortabilityError:
+    return _portability_error(
+        "IMPORT_CONFLICT",
+        message,
+        stage=OperationStage.REGISTER,
+        actions=("repair_image_registry", "list_images"),
+    )
+
+
+def _compare_registry_graph(
+    expected: dict[str, LayoutRole],
+    existing: dict[str, tuple[str, str, int, str]],
+    store: ArtifactStore,
+) -> None:
+    for role, wanted in expected.items():
+        row = existing.get(role)
+        if row is None:
+            raise _import_conflict(f"The registry is missing the {role} artifact record.")
+        digest, media_type, size_bytes, local_path = row
+        if digest != wanted.digest:
+            raise _import_conflict(f"The registered {role} digest conflicts with the archive.")
+        if media_type != wanted.media_type:
+            raise _import_conflict(f"The registered {role} media type conflicts with the archive.")
+        if size_bytes != wanted.size:
+            raise _import_conflict(f"The registered {role} size conflicts with the archive.")
+        canonical_path = str(store.blob_path(wanted.digest))
+        if local_path != canonical_path:
+            raise _import_conflict(f"The registered {role} path conflicts with the artifact store.")
+    for role in existing:
+        if role not in expected:
+            raise _import_conflict(f"The registry carries an unexpected {role} artifact record.")
 
 
 def _portability_error(

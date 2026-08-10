@@ -92,6 +92,9 @@ class PortabilityExportRead(BaseModel):
     codec: ArchiveFormat
     stages: list[str]
     durability_uncertain: bool
+    report_written: bool
+    report_warning: str
+    cleanup_uncertain: bool
 
 
 class PortabilityImportRead(BaseModel):

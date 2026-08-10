@@ -111,6 +111,17 @@ class OperationBoundary:
                     stage=stage,
                 ) from error
 
+    def notify_complete(self, stage: OperationStage, *, fraction: float | None = None) -> None:
+        """Non-failing post-commit notification; never cancels and never raises."""
+        if type(stage) is not OperationStage:
+            return
+        if self._progress is None:
+            return
+        try:
+            self._progress(stage.value, fraction if fraction is not None else 1.0)
+        except Exception:
+            return
+
     @staticmethod
     def noop() -> OperationBoundary:
         return OperationBoundary()

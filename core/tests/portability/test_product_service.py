@@ -39,8 +39,11 @@ from zana_core.images.oci import (
     assemble_oci_layout,
 )
 from zana_core.portability.boundary import OperationBoundary, OperationCancelledError
-from zana_core.portability.models import CodecKind, PortabilityError
-from zana_core.portability.service import PortabilityProductService
+from zana_core.portability.models import CodecKind, OperationStage, PortabilityError
+from zana_core.portability.service import (
+    PortabilityProductService,
+    _portability_error,
+)
 
 
 @pytest.fixture
@@ -75,6 +78,25 @@ def register_layout(
     shutil.copytree(layout, target)
     manifest = json.loads((layout / "manifest.json").read_text(encoding="utf-8"))
     config_digest = manifest["config"]["digest"]
+    manifest_path = layout / "manifest.json"
+    index_path = layout / "index.json"
+    oci_layout_path = layout / "oci-layout"
+    manifest_digest = digest_bytes(manifest_path.read_bytes())
+    index_digest = digest_bytes(index_path.read_bytes())
+    oci_layout_digest = digest_bytes(oci_layout_path.read_bytes())
+    behavior_digest = digest_bytes(
+        (
+            layout / "blobs" / "sha256" / manifest["layers"][0]["digest"].removeprefix("sha256:")
+        ).read_bytes()
+    )
+    store = ArtifactStore(layouts_root.parent.parent / "artifacts")
+    store.put_file(manifest_path)
+    store.put_file(index_path)
+    store.put_file(oci_layout_path)
+    store.put_file(layout / "blobs" / "sha256" / config_digest.removeprefix("sha256:"))
+    store.put_file(
+        layout / "blobs" / "sha256" / manifest["layers"][0]["digest"].removeprefix("sha256:")
+    )
     with UnitOfWork(session_factory) as uow:
         uow.images.add(
             Image(
@@ -87,6 +109,41 @@ def register_layout(
                 base_model_digest=base_model_digest or "",
             )
         )
+        for role, digest, media_type, path in (
+            ("manifest", manifest_digest, MEDIA_TYPE_OCI_MANIFEST, manifest_path),
+            ("index", index_digest, MEDIA_TYPE_OCI_INDEX, index_path),
+            ("oci-layout", oci_layout_digest, MEDIA_TYPE_OCI_LAYOUT, oci_layout_path),
+            (
+                "config",
+                config_digest,
+                MEDIA_TYPE_ZANA_CONFIG,
+                layout / "blobs" / "sha256" / config_digest.removeprefix("sha256:"),
+            ),
+            (
+                "behavior",
+                behavior_digest,
+                MEDIA_TYPE_ZANA_BEHAVIOR,
+                layout
+                / "blobs"
+                / "sha256"
+                / manifest["layers"][0]["digest"].removeprefix("sha256:"),
+            ),
+        ):
+            uow.artifacts.add(
+                Artifact(
+                    digest=digest,
+                    media_type=media_type,
+                    local_path=str(store.blob_path(digest)),
+                    size_bytes=path.stat().st_size,
+                )
+            )
+            uow.image_artifacts.add(
+                ImageArtifact(
+                    image_digest=image_digest,
+                    artifact_digest=digest,
+                    role=role,
+                )
+            )
     return image_digest, config_digest, target
 
 
@@ -746,4 +803,156 @@ def test_progress_boundary_records_only_real_stages(environment, tmp_path: Path)
         boundary=boundary,
     )
     assert imported.created is True
-    assert stages == ["preflight", "unpack", "oci_validation", "complete"]
+    assert stages == ["preflight", "unpack", "oci_validation", "register", "complete"]
+
+
+def test_import_rejects_existing_artifact_conflicts_before_link(
+    environment,
+    tmp_path: Path,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    layout, image_digest = build_layout(tmp_path / "lay", layer_bytes=b"knowledge")
+    manifest = json.loads((layout / "manifest.json").read_text(encoding="utf-8"))
+    behavior_digest = manifest["layers"][0]["digest"]
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+
+    store = ArtifactStore(data_root / "artifacts")
+    store.put_file(layout / "blobs" / "sha256" / behavior_digest.removeprefix("sha256:"))
+    with UnitOfWork(session_factory) as uow:
+        uow.artifacts.add(
+            Artifact(
+                digest=behavior_digest,
+                media_type="application/wrong",
+                local_path=str(store.blob_path(behavior_digest)),
+                size_bytes=123,
+            )
+        )
+    with pytest.raises(PortabilityError) as conflict:
+        service.import_archive(
+            local_path=str(source),
+            codec=CodecKind.TAR,
+            user_approved=True,
+        )
+    assert conflict.value.code == "IMPORT_CONFLICT"
+    with UnitOfWork(session_factory) as uow:
+        assert uow.images.get(image_digest) is None
+        assert uow.image_artifacts.list_for_image(image_digest) == []
+
+
+def test_import_reuses_valid_same_digest_artifact(
+    environment,
+    tmp_path: Path,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    layout, image_digest = build_layout(tmp_path / "lay", layer_bytes=b"knowledge")
+    manifest = json.loads((layout / "manifest.json").read_text(encoding="utf-8"))
+    behavior_digest = manifest["layers"][0]["digest"]
+    behavior_path = layout / "blobs" / "sha256" / behavior_digest.removeprefix("sha256:")
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+
+    store = ArtifactStore(data_root / "artifacts")
+    store.put_file(behavior_path)
+    with UnitOfWork(session_factory) as uow:
+        uow.artifacts.add(
+            Artifact(
+                digest=behavior_digest,
+                media_type=MEDIA_TYPE_ZANA_BEHAVIOR,
+                local_path=str(store.blob_path(behavior_digest)),
+                size_bytes=behavior_path.stat().st_size,
+            )
+        )
+    imported = service.import_archive(
+        local_path=str(source),
+        codec=CodecKind.TAR,
+        user_approved=True,
+    )
+    assert imported.created is True
+    with UnitOfWork(session_factory) as uow:
+        artifact = uow.artifacts.get(behavior_digest)
+        assert artifact is not None
+        assert artifact.media_type == MEDIA_TYPE_ZANA_BEHAVIOR
+        assert uow.images.get(image_digest) is not None
+
+
+def test_export_sidecar_failure_is_truthful_not_fatal(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    image_digest, _config_digest, _layout = register_layout(
+        session_factory,
+        service._layouts_root,
+        tmp_path,
+    )
+    destination = service.exports_root / "truthful.tar"
+
+    def fail_report(*args, **kwargs):
+        raise _portability_error(
+            "REPORT_WRITE_FAILED",
+            "simulated sidecar failure",
+            stage=OperationStage.FSYNC,
+            actions=("retry_export",),
+        )
+
+    monkeypatch.setattr(service, "_write_sidecar_report", fail_report)
+    result = service.export(
+        image_digest,
+        output_path=str(destination),
+        codec=CodecKind.TAR,
+        replace_token=None,
+        replace_allowed=False,
+        user_approved=True,
+    )
+    assert destination.exists()
+    assert result.report_written is False
+    assert result.report_warning == "simulated sidecar failure"
+    assert result.durability_uncertain is True
+    assert result.report_relative_path == ""
+    assert result.report_digest == ""
+
+
+def test_export_cleanup_failure_after_success_is_truthful(
+    environment,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    store = ArtifactStore(data_root / "artifacts")
+    image_digest, _config = register_artifact_graph(
+        session_factory,
+        store,
+        tmp_path,
+    )
+    destination = service.exports_root / "cleanup-uncertain.tar"
+
+    def fail_cleanup(*args, **kwargs):
+        raise _portability_error(
+            "CLEANUP_UNCERTAIN",
+            "simulated cleanup failure",
+            stage=OperationStage.CLEANUP,
+            actions=("clear_temp_workspace",),
+        )
+
+    from zana_core.portability import service as service_module
+
+    monkeypatch.setattr(service_module, "_remove_owned_layout", fail_cleanup)
+    result = service.export(
+        image_digest,
+        output_path=str(destination),
+        codec=CodecKind.TAR,
+        replace_token=None,
+        replace_allowed=False,
+        user_approved=True,
+    )
+    assert destination.exists()
+    assert result.cleanup_uncertain is True
+    assert result.report_written is True
