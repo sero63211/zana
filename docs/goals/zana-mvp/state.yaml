@@ -1192,7 +1192,7 @@ tasks:
       - id: T900-desktop-product-flows
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-desktop-product-flows
         thread: 019feac2-2d73-78d2-b40e-de8625e99ad4
         worktree: /Users/sero/.codex/worktrees/eb61/zana
@@ -1206,7 +1206,7 @@ tasks:
       - id: T900-runtime-native-tools
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-runtime-native-tools
         thread: 019feac3-43a7-7bb0-95e7-8ff70256c72e
         worktree: /Users/sero/.codex/worktrees/4a35/zana
@@ -1220,7 +1220,7 @@ tasks:
       - id: T900-instance-chat-memory-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-instance-chat-memory-api
         thread: 019feac3-b7cc-7d11-bf78-baa239c76566
         worktree: /Users/sero/.codex/worktrees/dd50/zana
@@ -1234,7 +1234,7 @@ tasks:
       - id: T900-portability-product-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t900-portability-product-api
         thread: 019feac4-2564-7b73-8a90-7f7b58f24005
         worktree: /Users/sero/.codex/worktrees/8037/zana
