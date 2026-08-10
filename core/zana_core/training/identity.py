@@ -31,7 +31,7 @@ def enforce_exact_base_identity(
         )
     if not provider_version:
         return CompatibilityDecision.NOT_TRAINABLE, "provider version is required"
-    if training_source.provider not in ("mlx_lm", "hf_peft"):
+    if training_source.provider != "mlx_lm":
         return (
             CompatibilityDecision.NOT_TRAINABLE,
             f"unsupported training provider {training_source.provider!r}",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from zana_core.training.contracts import DatasetSplitManifest
@@ -17,7 +18,7 @@ def _manifest(role: str, digest: str, ids: tuple[str, ...]) -> DatasetSplitManif
     return DatasetSplitManifest(
         role=role,
         path=Path(f"/data/{role}.jsonl"),
-        sha256=digest,
+        sha256=hashlib.sha256(digest.encode()).hexdigest(),
         size_bytes=1,
         record_ids=ids,
     )
@@ -38,7 +39,7 @@ class TestSplitIsolation:
             _manifest("evaluation", "aaa", ("eval-1",)),
         )
         assert report.ok is False
-        assert "aaa" in report.shared_file_digests
+        assert hashlib.sha256(b"aaa").hexdigest() in report.shared_file_digests
 
     def test_shared_record_id_detected(self) -> None:
         report = check_split_isolation(

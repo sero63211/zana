@@ -52,32 +52,33 @@ class MLXLMProviderProbe:
     """Probes mlx_lm on Apple Silicon without importing it."""
 
     provider = "mlx_lm"
-    modules = ("mlx_lm",)
-    executables = ("mlx_lm.train",)
 
     def __init__(self, env: ProviderEnvironment | None = None) -> None:
         self.env = env or ProviderEnvironment()
+
+    def resolve_executable(self) -> str | None:
+        """Return the resolved mlx_lm.lora path; never exposed in probe evidence."""
+        return self.env.which("mlx_lm.lora")
 
     def probe(self) -> ProviderProbe:
         evidence: list[str] = []
         system = self.env.system or platform.system()
         machine = self.env.machine or platform.machine()
         platform_ok = system.lower() == "darwin" and machine.lower() in ("arm64", "aarch64")
-        present = [
-            module for module in self.modules if self.env.module_available(module) is not None
-        ]
+        module_present = self.env.module_available("mlx_lm") is not None
         version = self.env.version("mlx-lm")
-        if present:
-            evidence.append("module:" + ",".join(present))
-        for executable in self.executables:
-            path = self.env.which(executable)
-            if path:
-                evidence.append(f"executable:{path}")
+        executable = self.env.which("mlx_lm.lora")
+        if module_present:
+            evidence.append("module:mlx_lm")
         if version:
             evidence.append(f"version:{version}")
-        if not platform_ok:
-            evidence.append(f"platform:{system}/{machine}")
-        available = platform_ok and bool(present or evidence) and version is not None
+        if executable is not None:
+            # Basename only: resolved paths stay internal to the executor.
+            evidence.append("executable:mlx_lm.lora")
+        evidence.append(f"platform:{system}-{machine}")
+        available = (
+            platform_ok and module_present and version is not None and executable is not None
+        )
         status = ProviderProbeStatus.AVAILABLE if available else ProviderProbeStatus.UNAVAILABLE
         return ProviderProbe(
             provider=self.provider,
@@ -88,57 +89,28 @@ class MLXLMProviderProbe:
             error=(
                 None
                 if available
-                else "MLX-LM training is unavailable on this platform or package set"
+                else "MLX-LM training requires Apple Silicon, installed mlx_lm, "
+                "the mlx-lm package version, and a resolvable mlx_lm.lora executable"
             ),
         )
 
 
 class HfPeftProviderProbe:
-    """Probes PEFT/Transformers on CUDA hosts without importing frameworks."""
+    """Explicitly unavailable; ZANA v1 does not implement HF PEFT execution."""
 
     provider = "hf_peft"
-    modules = ("peft", "transformers")
 
     def __init__(self, env: ProviderEnvironment | None = None) -> None:
         self.env = env or ProviderEnvironment()
 
     def probe(self) -> ProviderProbe:
-        evidence: list[str] = []
-        system = self.env.system or platform.system()
-        machine = self.env.machine or platform.machine()
-        present = [
-            module for module in self.modules if self.env.module_available(module) is not None
-        ]
-        version = self.env.version("peft")
-        if present:
-            evidence.append("module:" + ",".join(present))
-        if version:
-            evidence.append(f"version:{version}")
-        cuda = self.env.which("nvidia-smi")
-        if cuda:
-            evidence.append("executable:nvidia-smi")
-        platform_ok = system.lower() == "linux" and machine.lower() in (
-            "x86_64",
-            "amd64",
-            "aarch64",
-            "arm64",
-        )
-        available = (
-            platform_ok
-            and len(present) == len(self.modules)
-            and cuda is not None
-            and version is not None
-        )
-        status = ProviderProbeStatus.AVAILABLE if available else ProviderProbeStatus.UNAVAILABLE
         return ProviderProbe(
             provider=self.provider,
-            status=status,
-            version=version,
-            platform_ok=platform_ok,
-            evidence=evidence,
-            error=(
-                None if available else "HF PEFT training requires Linux CUDA plus PEFT/Transformers"
-            ),
+            status=ProviderProbeStatus.UNAVAILABLE,
+            version=None,
+            platform_ok=False,
+            evidence=["hf_peft:not_implemented"],
+            error="HF PEFT training execution is not implemented in ZANA v1",
         )
 
 

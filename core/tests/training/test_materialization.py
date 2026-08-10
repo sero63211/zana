@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from zana_core.training.contracts import (
     AdapterBaseIdentity,
     AdapterMetadata,
@@ -10,14 +12,18 @@ from zana_core.training.contracts import (
 from zana_core.training.materialization import decide_materialization
 
 
+def digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
 def _metadata(provider: str = "mlx_lm") -> AdapterMetadata:
     return AdapterMetadata(
-        base_model_digest="sha256:base",
+        base_model_digest=digest("base"),
         training_provider=provider,
         training_provider_version="0.5.0",
-        dataset_digest="sha256:train",
-        config_digest="sha256:config",
-        adapter_digest="sha256:adapter",
+        dataset_digest=digest("train"),
+        config_digest=digest("config"),
+        adapter_digest=digest("adapter"),
         seed=7,
         state=AdapterState.COMPLETE,
     )
@@ -26,8 +32,8 @@ def _metadata(provider: str = "mlx_lm") -> AdapterMetadata:
 class TestMaterialization:
     def test_compatible_mlx_runtime(self) -> None:
         base = AdapterBaseIdentity(
-            base_model_digest="sha256:base",
-            training_source_digest="sha256:base",
+            base_model_digest=digest("base"),
+            training_source_digest=digest("base"),
             training_source_provider="mlx_lm",
             provider_version="0.5.0",
         )
@@ -36,8 +42,8 @@ class TestMaterialization:
 
     def test_base_mismatch_incompatible(self) -> None:
         base = AdapterBaseIdentity(
-            base_model_digest="sha256:other",
-            training_source_digest="sha256:other",
+            base_model_digest=digest("other"),
+            training_source_digest=digest("other"),
             training_source_provider="mlx_lm",
             provider_version="0.5.0",
         )
@@ -47,18 +53,18 @@ class TestMaterialization:
 
     def test_hf_peft_not_materializable_on_ollama(self) -> None:
         base = AdapterBaseIdentity(
-            base_model_digest="sha256:base",
-            training_source_digest="sha256:base",
-            training_source_provider="hf_peft",
-            provider_version="0.10.0",
+            base_model_digest=digest("base"),
+            training_source_digest=digest("base"),
+            training_source_provider="mlx_lm",
+            provider_version="0.5.0",
         )
         result = decide_materialization("ollama", base, _metadata(provider="hf_peft"))
         assert result.compatible is False
 
     def test_unknown_runtime_incompatible(self) -> None:
         base = AdapterBaseIdentity(
-            base_model_digest="sha256:base",
-            training_source_digest="sha256:base",
+            base_model_digest=digest("base"),
+            training_source_digest=digest("base"),
             training_source_provider="mlx_lm",
             provider_version="0.5.0",
         )

@@ -18,15 +18,15 @@ from zana_core.training.contracts import AdapterState, CancellationState, Invoca
 def _spec() -> InvocationSpec:
     return InvocationSpec(
         provider="mlx_lm",
-        executable="mlx_lm.train",
-        args=("--seed", "7"),
+        executable="mlx_lm.lora",
+        args=("--seed", "7", "--train", "--iters", "3"),
         env={},
         provider_version="0.5.0",
         package_version="0.5.0",
         seed=7,
         dataset_digest="sha256:train",
         config_digest="sha256:config",
-        output_path=Path("/data/out/adapter.safetensors"),
+        output_path=Path("/data/out"),
     )
 
 

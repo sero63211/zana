@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from zana_core.training.contracts import ResourceGuard, ResourceGuardDecision
+from math import isfinite
+
+from zana_core.training.contracts import (
+    ResourceGuard,
+    ResourceGuardDecision,
+    validate_finite_positive,
+)
 
 
 class ResourceGuards:
@@ -18,6 +24,27 @@ class ResourceGuards:
         disk_reserve_bytes: int,
         dry_run_required: bool,
     ) -> None:
+        if isinstance(max_memory_fraction, bool) or not isinstance(
+            max_memory_fraction, int | float
+        ):
+            raise ValueError("max_memory_fraction must be a finite number")
+        if not isfinite(float(max_memory_fraction)) or not 0 < max_memory_fraction <= 1:
+            raise ValueError("max_memory_fraction must be a finite value in (0, 1]")
+        if isinstance(disk_reserve_bytes, bool) or not isinstance(disk_reserve_bytes, int):
+            raise ValueError("disk_reserve_bytes must be a strict integer")
+        if disk_reserve_bytes < 0:
+            raise ValueError("disk_reserve_bytes must be non-negative")
+        for name, value in (
+            ("available RAM", available_ram_bytes),
+            ("available VRAM", available_vram_bytes),
+            ("available disk", disk_free_bytes),
+        ):
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int | float)
+            ):
+                raise ValueError(f"{name} must be a finite number")
+            if value is not None and (not isfinite(float(value)) or value < 0):
+                raise ValueError(f"{name} must be finite and non-negative")
         self.available_ram_bytes = available_ram_bytes
         self.available_vram_bytes = available_vram_bytes
         self.disk_free_bytes = disk_free_bytes
@@ -26,6 +53,7 @@ class ResourceGuards:
         self.dry_run_required = dry_run_required
 
     def ram_guard(self, required_bytes: int) -> ResourceGuard:
+        required_bytes = int(validate_finite_positive(required_bytes, "required RAM", 1 << 60))
         if self.available_ram_bytes is None:
             return ResourceGuard(
                 resource="ram",
@@ -47,6 +75,7 @@ class ResourceGuards:
         )
 
     def vram_guard(self, required_bytes: int) -> ResourceGuard:
+        required_bytes = int(validate_finite_positive(required_bytes, "required VRAM", 1 << 60))
         if self.available_vram_bytes is None:
             return ResourceGuard(
                 resource="vram",
@@ -65,6 +94,7 @@ class ResourceGuards:
         )
 
     def disk_guard(self, required_bytes: int) -> ResourceGuard:
+        required_bytes = int(validate_finite_positive(required_bytes, "required disk", 1 << 60))
         if self.disk_free_bytes is None:
             return ResourceGuard(
                 resource="disk",
@@ -91,16 +121,10 @@ class ResourceGuards:
                 decision=ResourceGuardDecision.ALLOW,
                 reason="dry run not required",
             )
-        if not provider_supports_dry_run:
-            return ResourceGuard(
-                resource="dry_run",
-                decision=ResourceGuardDecision.BLOCK,
-                reason="provider dry-run is required but unsupported",
-            )
         return ResourceGuard(
             resource="dry_run",
-            decision=ResourceGuardDecision.ALLOW,
-            reason="provider dry-run support available",
+            decision=ResourceGuardDecision.BLOCK,
+            reason="provider dry-run is not supported by this code path",
         )
 
     def evaluate(
@@ -120,4 +144,15 @@ class ResourceGuards:
 
     @staticmethod
     def all_allow(guards: list[ResourceGuard]) -> bool:
-        return all(guard.decision == ResourceGuardDecision.ALLOW for guard in guards)
+        """Fail closed unless exactly the mandatory unique guards are explicit ALLOW."""
+        required = {"ram", "vram", "disk", "dry_run"}
+        if len(guards) != len(required):
+            return False
+        seen: set[str] = set()
+        for guard in guards:
+            if guard.resource not in required or guard.resource in seen:
+                return False
+            if guard.decision != ResourceGuardDecision.ALLOW:
+                return False
+            seen.add(guard.resource)
+        return seen == required
