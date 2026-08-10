@@ -168,3 +168,88 @@ the full Core suite under the lead's loopback policy.
 - Clean proof after product commit: `git status --porcelain` empty.
 - Remote: no push attempted; explicit push blocker is lead integration under
   ZANA remote policy. No remote SHA is claimed.
+
+## Correction addendum (lead BLOCK repairs)
+
+Lead review blocked the initial product commit on resource/observability
+resource-safety issues. The following were repaired in owned paths only in
+one focused correction commit:
+
+- Public token/request leak closed: `ResourceLeaseRead` and `ResourceUsageRead`
+  now expose `lease_ref` and `request_id` as stable salted SHA-256 public
+  references (`lease-...` / `request-...`); the raw release token and arbitrary
+  request id never reach API output. Exact absence tests cover leases, usage,
+  and hostile request ids.
+- Governor memory bounded at write time: `ResourceGovernor._records` is now a
+  `deque` with exact count and serialized-retention-byte caps; `_append_record`
+  evicts oldest exactly once and monotonic `history_dropped` /
+  `history_serialized_bytes_dropped` counters are never incremented by reads.
+  `configure_usage_history` immediately trims an already-populated injected
+  governor. Defaults are conservative (256 records / 256 KiB) with hard caps.
+- Registry memory bounded by count and bytes: `ObservabilityRegistry` now
+  tracks `retained_bytes`, `retention_dropped_bytes`, `max_retained_bytes`, and
+  evicts oldest on either bound; defaults are 500 events / 2 MiB with hard
+  caps. Multibyte and byte-bound behavior is tested.
+- Deterministic lifecycle: idempotent thread-safe `close()` closes the owned
+  JSONL sink and reports `closed=true`; writes after close fail with
+  `REGISTRY_CLOSED`; retained events and truthful byte/count stats remain
+  readable after close; JSONL health becomes `available=false`,
+  `reason="CLOSED"` after close. No fd leak.
+- Partial delivery truth: `write()` returns `ok=true` with
+  `error="PARTIAL_DELIVERY"` when at least one sink accepts and another
+  fails; all-failed returns `ALL_SINKS_FAILED`; health reports bounded
+  `failures` and `partial_deliveries` counters. Invalid events, serialization
+  failure, and `NO_SINKS_CONFIGURED` also increment `failures`.
+- Identifier privacy: one exact sanitized `Event` is built before persistence
+  and is passed to every sink, serialization, and returned event id. Every
+  public identifier field is sanitized (`operation_id`, `job_id`, `phase`,
+  `recovery_code`, and all `EventContext` identifiers). Raw path, control,
+  credential/token/bearer/secret lookalikes are replaced with a bounded
+  `redacted-...` reference; empty optional identifiers stay empty. Tests read
+  actual memory sink snapshots and JSONL files to prove raw hostile
+  identifiers never persist.
+- Thread-safety/config: the public governor escape hatch is removed; callers
+  use service wrappers. Passing an exact governor together with
+  policy/provider is rejected. `stale_after_seconds` rejects NaN/infinity and
+  invalid injected clocks are rejected before side effects.
+- Serialized-retention bytes: `_usage_record_bytes` is documented as a
+  deterministic non-parseable accounting frame, not compact JSON and not heap
+  bytes; API fields are named `history_serialized_bytes` /
+  `history_serialized_bytes_dropped` and tested with multibyte content.
+
+### Revised serial integration delta
+
+In `core/zana_core/main.py` (lead-owned, not edited here):
+
+1. Construct a `ResourceService` over the canonical data root, e.g.
+   `ResourceService(provider=DefaultSnapshotProvider(workspace_path=resolved_data_root))`
+   and set `app.state.resource_service`.
+2. Create/validate the logs directory through the accepted platform boundary:
+   call `ensure_roots(paths, kinds=(PathRoot.LOG,))` when `platform_paths` is
+   available, then construct
+   `ObservabilityRegistry(memory_sink=BoundedMemorySink(max_events=200, max_bytes=1*1024*1024), jsonl_sink=LocalJsonlSink(log_root=paths.log_root, filename="zana.jsonl", max_bytes=64*1024, max_retention=5))`.
+   If `LocalJsonlSink` raises `PlatformUnsupportedError`, construct the
+   registry with `jsonl_error="PLATFORM_UNSUPPORTED"` instead. Set
+   `app.state.observability_registry`.
+3. Include the isolated routers:
+   `app.include_router(resources_router)` from
+   `zana_core.api.resources` and `app.include_router(observability_router)`
+   from `zana_core.api.observability`.
+4. Close the registry deterministically in `lifespan` shutdown before the
+   database cleanup: `observability_registry.close()` (idempotent). After
+   close, health reports `closed=true` and JSONL `available=false`.
+5. Add the new paths to the canonical `AUTH_PROTECTED_PATHS` contract test when
+   the routers are registered.
+
+### Correction gates
+
+- New focused tests: 47 passed (resource service, observability registry,
+  resource/observability API).
+- Owned suites: 247 passed.
+- Ruff check and format: clean.
+- Pyright owned implementation: 0 errors, 0 warnings.
+- Import smoke: pass.
+- `git diff --check`: pass.
+- Clean proof after correction commit: `git status --porcelain` empty.
+- Correction commit: `4f04fc1814556dea984c44c0a9fefdb98bca236c`
+- Prior implementation commit preserved: `0c31e3c4dc78bbb832a0ae0216a66fbe7b2a6823`
