@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 from zana_core.domain.enums import ModelIdentityStrength, RuntimeKind, RuntimeSource, RuntimeStatus
@@ -21,6 +21,7 @@ from zana_core.runtimes.inference import (
     BaseRuntimeInferenceAdapter,
     EngineResult,
     InferenceLimits,
+    ToolAliasError,
     ToolCallAccumulator,
     ToolCallArgumentsError,
     ToolCallLimitError,
@@ -243,6 +244,7 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         tool_definitions: Sequence[ToolDefinition],
         tool_requests: Sequence[ToolRequest],
         tool_results: Sequence[ToolResult],
+        canonical_to_alias: Mapping[str, str],
     ) -> tuple[str, dict[str, str], bytes]:
         url = self.chat_url()
         headers = {
@@ -258,6 +260,7 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
                 message=message,
                 tool_requests=tool_requests,
                 tool_results=tool_results,
+                canonical_to_alias=canonical_to_alias,
                 limits=self.limits,
             ),
             "stream": True,
@@ -267,7 +270,10 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
             "stop": list(settings.stop),
         }
         if tool_definitions:
-            body["tools"] = [native_tool_schema(definition) for definition in tool_definitions]
+            body["tools"] = [
+                native_tool_schema(definition, canonical_to_alias[definition.id])
+                for definition in tool_definitions
+            ]
         return url, headers, UrllibTransport.json_body(body)
 
     def chat_url(self) -> str:
@@ -283,14 +289,20 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
         *,
         settings: GenerationSettings,
         binding: SessionBinding,
+        alias_to_canonical: Mapping[str, str] | None,
     ) -> EngineResult | None:
         if not line.startswith("data:"):
             return None
         payload_text = line[len("data:") :].lstrip()
         if payload_text == "[DONE]":
             try:
-                tool_requests = self._tool_accumulator.finish()
-            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                tool_requests = self._tool_accumulator.finish(alias_to_canonical=alias_to_canonical)
+            except (
+                ToolCallLimitError,
+                ToolCallParseError,
+                ToolCallArgumentsError,
+                ToolAliasError,
+            ) as error:
                 return _tool_call_failure(error)
             return EngineResult(status="completed", content="", tool_requests=tool_requests)
         if not payload_text:
@@ -330,8 +342,13 @@ class OpenAICompatInferenceAdapter(BaseRuntimeInferenceAdapter):
                     error_message="Output reached the model generation limit.",
                 )
             try:
-                tool_requests = self._tool_accumulator.finish()
-            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+                tool_requests = self._tool_accumulator.finish(alias_to_canonical=alias_to_canonical)
+            except (
+                ToolCallLimitError,
+                ToolCallParseError,
+                ToolCallArgumentsError,
+                ToolAliasError,
+            ) as error:
                 return _tool_call_failure(error)
             return EngineResult(
                 status="completed",

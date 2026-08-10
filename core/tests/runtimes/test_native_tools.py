@@ -13,6 +13,8 @@ from collections.abc import Iterable, Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Any
 
+import pytest
+
 from zana_core.instances import GenerationSettings, SessionBinding, ToolRequest, ToolResult
 from zana_core.runtimes.inference import InferenceLimits
 from zana_core.runtimes.ollama import OllamaInferenceAdapter
@@ -37,10 +39,11 @@ CALCULATOR_DEFINITION = ToolDefinition(
     description="Evaluate a bounded arithmetic expression.",
     input_schema=CALCULATOR_SCHEMA,
 )
+PROVIDER_CALCULATOR_NAME = "zana_0"
 NATIVE_CALCULATOR_SCHEMA = {
     "type": "function",
     "function": {
-        "name": "zana.calculator",
+        "name": PROVIDER_CALCULATOR_NAME,
         "description": "Evaluate a bounded arithmetic expression.",
         "parameters": CALCULATOR_SCHEMA,
     },
@@ -167,10 +170,11 @@ class TestNativeToolSchemas:
             tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "completed"
-        body = json.loads(transport.calls[0][3] or b"{}")
-        assert body["tools"] == [NATIVE_CALCULATOR_SCHEMA]
-        assert "version" not in body["tools"][0]
-        assert body["messages"] == [
+        request = json.loads(transport.calls[0][3] or b"{}")
+        assert request["tools"] == [NATIVE_CALCULATOR_SCHEMA]
+        assert "version" not in request["tools"][0]
+        assert "zana.calculator" not in (transport.calls[0][3] or b"").decode("utf-8")
+        assert request["messages"] == [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "calc"},
         ]
@@ -198,6 +202,7 @@ class TestNativeToolSchemas:
         request = json.loads(transport.calls[0][3] or b"{}")
         assert request["tools"] == [NATIVE_CALCULATOR_SCHEMA]
         assert "version" not in request["tools"][0]
+        assert "zana.calculator" not in (transport.calls[0][3] or b"").decode("utf-8")
 
     def test_duplicate_tool_definitions_fail_closed_before_open(self) -> None:
         transport = FakeStreamTransport()
@@ -311,6 +316,26 @@ class TestNativeToolSchemas:
         assert result.error_code == "TOOL_DEFINITIONS_INVALID"
         assert transport.calls == []
 
+    def test_nan_in_tool_schema_fails_closed(self) -> None:
+        definition = ToolDefinition(
+            id="zana.calculator",
+            version="1.0.0",
+            description="nan schema",
+            input_schema={"type": "object", "example": float("nan")},
+        )
+        transport = FakeStreamTransport()
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[definition],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_DEFINITIONS_INVALID"
+        assert transport.calls == []
+
     def test_multibyte_schema_character_boundary_fails_closed(self) -> None:
         schema = {
             "type": "object",
@@ -380,7 +405,7 @@ class TestToolResultContinuation:
                 "tool_calls": [
                     {
                         "function": {
-                            "name": "zana.calculator",
+                            "name": PROVIDER_CALCULATOR_NAME,
                             "arguments": {"expression": "1+1"},
                         }
                     }
@@ -388,7 +413,7 @@ class TestToolResultContinuation:
             },
             {
                 "role": "tool",
-                "name": "zana.calculator",
+                "name": PROVIDER_CALCULATOR_NAME,
                 "content": (
                     '{"tool_id":"zana.calculator","ok":true,"output":"2",'
                     '"error":null,"input_digest":"in-1","output_digest":"out-1"}'
@@ -399,18 +424,35 @@ class TestToolResultContinuation:
             b'{"model":"qwen-example:tag","messages":[{"role":"system","content":"sys"},'
             b'{"role":"user","content":"continue"},'
             b'{"role":"assistant","content":"","tool_calls":'
-            b'[{"function":{"name":"zana.calculator",'
+            b'[{"function":{"name":"zana_0",'
             b'"arguments":{"expression":"1+1"}}}]},'
-            b'{"role":"tool","name":"zana.calculator","content":'
+            b'{"role":"tool","name":"zana_0","content":'
             b'"{\\"tool_id\\":\\"zana.calculator\\",\\"ok\\":true,\\"output\\":\\"2\\",'
             b'\\"error\\":null,\\"input_digest\\":\\"in-1\\",'
             b'\\"output_digest\\":\\"out-1\\"}"}],"stream":true,'
             b'"options":{"temperature":0.2,"num_predict":64,"top_p":1.0,"stop":[]},'
-            b'"tools":[{"type":"function","function":{"name":"zana.calculator",'
+            b'"tools":[{"type":"function","function":{"name":"zana_0",'
             b'"description":"Evaluate a bounded arithmetic expression.",'
             b'"parameters":{"type":"object","properties":{"expression":{"type":"string"}},'
             b'"required":["expression"]}}}]}'
         )
+
+    def test_ollama_non_json_continuation_result_fails_closed(self) -> None:
+        result = self._result().model_copy(update={"output": {"bad": object()}})
+        transport = FakeStreamTransport()
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        response = adapter.generate(
+            context="sys",
+            message="continue",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+            tool_requests=[self._request()],
+            tool_results=[result],
+        )
+        assert response.status == "failed"
+        assert response.error_code == "TOOL_CONTINUATION_INVALID"
+        assert transport.calls == []
 
     def test_openai_continuation_uses_canonical_roles(self) -> None:
         body = (
@@ -446,7 +488,7 @@ class TestToolResultContinuation:
                         "id": "zana-0",
                         "type": "function",
                         "function": {
-                            "name": "zana.calculator",
+                            "name": PROVIDER_CALCULATOR_NAME,
                             "arguments": '{"expression":"1+1"}',
                         },
                     }
@@ -613,10 +655,456 @@ class TestToolResultContinuation:
         assert result.content == "ok"
         assert transport.closed is True
 
+    def test_ollama_alias_round_trip_returns_canonical_tool_id(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": {"expression": "1+1"},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "completed"
+        assert len(result.tool_requests) == 1
+        assert result.tool_requests[0].tool_id == "zana.calculator"
+        assert "zana_0" not in json.dumps(
+            [request.model_dump() for request in result.tool_requests]
+        )
+
+    def test_openai_alias_round_trip_returns_canonical_tool_id(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"zana_0",'
+            '"arguments":"{\\"expression\\":\\"1+1\\"}"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "completed"
+        assert len(result.tool_requests) == 1
+        assert result.tool_requests[0].tool_id == "zana.calculator"
+
+    def test_ollama_tool_call_without_declarations_fails_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "calculator",
+                            "arguments": {"expr": "1+1"},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ALIAS_INVALID"
+        assert result.tool_requests == ()
+
+    def test_openai_tool_call_without_declarations_fails_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","function":{"name":"calculator",'
+            '"arguments":"{\\"expr\\":\\"1+1\\"}"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ALIAS_INVALID"
+        assert result.tool_requests == ()
+
+    def test_ollama_nan_arguments_fail_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": {"value": float("nan")},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_ollama_infinity_json_arguments_fail_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": '{"value": Infinity}',
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_openai_infinity_json_arguments_fail_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","function":{"name":"zana_0",'
+            '"arguments":"{\\"value\\": Infinity}"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_openai_streamed_nan_arguments_fail_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"zana_0"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"arguments":"{\\"value\\":NaN}"}}]},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_openai_streamed_infinity_arguments_fail_closed(self) -> None:
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"zana_0"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"function":{"arguments":"{\\"value\\":Infinity}"}}]},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(endpoint=OPENAI_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_openai_streamed_multibyte_arguments_character_boundary_fails_closed(
+        self,
+    ) -> None:
+        value = "\u00e9" * 6
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"zana_0"}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            f'{{"index":0,"function":{{"arguments":"{{\\"expression\\":\\"{value}\\"}}"}}}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=transport,
+            limits=InferenceLimits(max_tool_arguments_chars=8, max_tool_arguments_bytes=200),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
+        assert result.tool_requests == ()
+
+    def test_ollama_multibyte_arguments_character_boundary_fails_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": {"expression": "\u00e9" * 6},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=transport,
+            limits=InferenceLimits(max_tool_arguments_chars=8, max_tool_arguments_bytes=200),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
+        assert result.tool_requests == ()
+
+    def test_openai_multibyte_arguments_character_boundary_fails_closed(self) -> None:
+        value = "\u00e9" * 6
+        body = (
+            'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
+            f'{{"index":0,"id":"call_1","function":{{"name":"zana_0",'
+            f'"arguments":"{{\\"expression\\":\\"{value}\\"}}"}}}}'
+            ']},"index":0}]}\n\n'
+            'data: {"model":"qwen-example:tag",'
+            '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OpenAICompatInferenceAdapter(
+            endpoint=OPENAI_END,
+            transport=transport,
+            limits=InferenceLimits(max_tool_arguments_chars=8, max_tool_arguments_bytes=200),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(
+                model_key=OPENAI_MODEL_KEY,
+                runtime_id="openai-compatible",
+                runtime_endpoint=OPENAI_END,
+            ),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
+        assert result.tool_requests == ()
+
+    def test_unknown_provider_alias_fails_closed(self) -> None:
+        event = {
+            "model": NATIVE_MODEL_ID,
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "not-an-alias",
+                            "arguments": {"expression": "1+1"},
+                        }
+                    }
+                ],
+            },
+            "done": True,
+        }
+        transport = FakeStreamTransport(body=json.dumps(event) + "\n")
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ALIAS_INVALID"
+        assert result.tool_requests == ()
+
+    def test_provider_alias_collision_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from zana_core.runtimes import inference as inference_module
+
+        second = CALCULATOR_DEFINITION.model_copy(update={"id": "zana.second"})
+        monkeypatch.setattr(
+            inference_module,
+            "provider_tool_name",
+            lambda definition, index: "zana_0",
+        )
+        transport = FakeStreamTransport()
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION, second],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_ALIAS_INVALID"
+        assert transport.calls == []
+
+    def test_multibyte_request_arguments_character_boundary_fails_closed(self) -> None:
+        request = self._request().model_copy(update={"arguments": {"expression": "\u00e9" * 6}})
+        transport = FakeStreamTransport()
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=transport,
+            limits=InferenceLimits(max_tool_arguments_chars=8, max_tool_arguments_bytes=200),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="continue",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+            tool_requests=[request],
+            tool_results=[self._result()],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CONTINUATION_INVALID"
+        assert transport.calls == []
+
+    def test_nan_request_arguments_fail_closed(self) -> None:
+        request = self._request().model_copy(update={"arguments": {"value": float("nan")}})
+        transport = FakeStreamTransport()
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="continue",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+            tool_requests=[request],
+            tool_results=[self._result()],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CONTINUATION_INVALID"
+        assert transport.calls == []
+
 
 def test_native_tool_schema_has_no_version_or_code_field() -> None:
     from zana_core.runtimes.inference import native_tool_schema
 
-    schema = native_tool_schema(CALCULATOR_DEFINITION)
+    schema = native_tool_schema(CALCULATOR_DEFINITION, PROVIDER_CALCULATOR_NAME)
     assert schema == NATIVE_CALCULATOR_SCHEMA
     assert "version" not in schema["function"]

@@ -27,6 +27,7 @@ from zana_core.runtimes.inference import (
 )
 from zana_core.runtimes.ollama import OllamaInferenceAdapter
 from zana_core.runtimes.openai_compat import OpenAICompatInferenceAdapter
+from zana_core.tools.models import ToolDefinition
 
 OLLAMA_END = "http://127.0.0.1:11434"
 OPENAI_END = "http://127.0.0.1:1234"
@@ -34,6 +35,17 @@ NATIVE_MODEL_ID = "qwen-example:tag"
 OLLAMA_MODEL_KEY = "ollama-local:qwen-example:tag"
 OPENAI_MODEL_KEY = "openai-compatible:qwen-example:tag"
 MODEL_DIGEST = "sha256:abc123"
+PROVIDER_CALCULATOR_NAME = "zana_0"
+CALCULATOR_DEFINITION = ToolDefinition(
+    id="zana.calculator",
+    version="1.0.0",
+    description="Evaluate a bounded arithmetic expression.",
+    input_schema={
+        "type": "object",
+        "properties": {"expression": {"type": "string"}},
+        "required": ["expression"],
+    },
+)
 
 
 def make_binding(
@@ -317,7 +329,14 @@ class TestOllamaInference:
             "message": {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [{"function": {"name": "calculator", "arguments": {"expr": "1+1"}}}],
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": {"expr": "1+1"},
+                        }
+                    }
+                ],
             },
             "done": True,
         }
@@ -330,10 +349,11 @@ class TestOllamaInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "completed"
         assert len(result.tool_requests) == 1
-        assert result.tool_requests[0].tool_id == "calculator"
+        assert result.tool_requests[0].tool_id == "zana.calculator"
         assert result.tool_requests[0].arguments == {"expr": "1+1"}
 
     def test_request_uses_runtime_native_model_id(self) -> None:
@@ -437,7 +457,14 @@ class TestOllamaInference:
             "message": {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [{"function": {"name": "calculator", "arguments": "not-json"}}],
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": "not-json",
+                        }
+                    }
+                ],
             },
             "done": True,
         }
@@ -450,6 +477,7 @@ class TestOllamaInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "failed"
         assert result.error_code == "TOOL_CALLS_MALFORMED"
@@ -462,7 +490,12 @@ class TestOllamaInference:
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [
-                    {"function": {"name": "calculator", "arguments": {"x": "a" * 20000}}}
+                    {
+                        "function": {
+                            "name": PROVIDER_CALCULATOR_NAME,
+                            "arguments": {"x": "a" * 20000},
+                        }
+                    }
                 ],
             },
             "done": True,
@@ -477,6 +510,7 @@ class TestOllamaInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "failed"
         assert result.error_code == "TOOL_ARGUMENTS_LIMIT"
@@ -647,7 +681,7 @@ class TestOpenAICompatInference:
     def test_tool_calls_are_parsed(self) -> None:
         body = (
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
-            '{"index":0,"id":"call_1","function":{"name":"calculator",'
+            '{"index":0,"id":"call_1","function":{"name":"zana_0",'
             '"arguments":"{\\"expr\\":\\"1+1\\"}"}}'
             ']},"index":0}]}\n\n'
             'data: {"model":"qwen-example:tag",'
@@ -662,15 +696,17 @@ class TestOpenAICompatInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "completed"
         assert len(result.tool_requests) == 1
+        assert result.tool_requests[0].tool_id == "zana.calculator"
         assert result.tool_requests[0].arguments == {"expr": "1+1"}
 
     def test_fragmented_tool_calls_accumulate(self) -> None:
         body = (
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
-            '{"index":0,"id":"call_1","type":"function","function":{"name":"calculator"}}'
+            '{"index":0,"id":"call_1","type":"function","function":{"name":"zana_0"}}'
             ']},"index":0}]}\n\n'
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
             '{"index":0,"function":{"arguments":"{\\"expr\\":"}}]},"index":0}]}\n\n'
@@ -688,16 +724,17 @@ class TestOpenAICompatInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "completed"
         assert len(result.tool_requests) == 1
-        assert result.tool_requests[0].tool_id == "calculator"
+        assert result.tool_requests[0].tool_id == "zana.calculator"
         assert result.tool_requests[0].arguments == {"expr": "1+1"}
 
     def test_malformed_tool_fragment_fails_closed(self) -> None:
         body = (
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
-            '{"index":0,"id":"call_1","function":{"name":"calculator","arguments":"not"}}'
+            '{"index":0,"id":"call_1","function":{"name":"zana_0","arguments":"not"}}'
             ']},"index":0}]}\n\n'
             'data: {"model":"qwen-example:tag",'
             '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
@@ -711,6 +748,7 @@ class TestOpenAICompatInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "failed"
         assert result.error_code == "TOOL_CALLS_MALFORMED"
@@ -720,7 +758,7 @@ class TestOpenAICompatInference:
         huge = "a" * 20000
         body = (
             'data: {"model":"qwen-example:tag","choices":[{"delta":{"tool_calls":['
-            f'{{"index":0,"id":"call_1","function":{{"name":"calculator","arguments":"{huge}"}}}}'
+            f'{{"index":0,"id":"call_1","function":{{"name":"zana_0","arguments":"{huge}"}}}}'
             ']},"index":0}]}\n\n'
             'data: {"model":"qwen-example:tag",'
             '"choices":[{"delta":{},"finish_reason":"tool_calls","index":0}]}\n\n'
@@ -735,6 +773,7 @@ class TestOpenAICompatInference:
             message="calc",
             settings=make_settings(),
             binding=make_binding(runtime_id="openai-compatible", runtime_endpoint=OPENAI_END),
+            tool_definitions=[CALCULATOR_DEFINITION],
         )
         assert result.status == "failed"
         assert result.error_code == "TOOL_ARGUMENTS_LIMIT"

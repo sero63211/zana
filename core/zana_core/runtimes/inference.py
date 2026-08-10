@@ -91,6 +91,8 @@ MAX_TOOL_CALL_ID_CHARS = 256
 MAX_TOOL_CALL_ID_BYTES = 1024
 MAX_TOOL_NAME_CHARS = 256
 MAX_TOOL_NAME_BYTES = 1024
+MAX_PROVIDER_TOOL_NAME_CHARS = 64
+MAX_PROVIDER_TOOL_NAME_BYTES = 64
 MAX_TOOL_DEFINITIONS = 16
 MAX_TOOL_DEFINITION_CHARS = 32_000
 MAX_TOOL_DEFINITION_BYTES = 32_000
@@ -224,6 +226,12 @@ class ToolResultLimitError(InferenceParametersError):
     """A tool result exceeded the bounded size or count limits."""
 
     code = "TOOL_RESULT_LIMIT"
+
+
+class ToolAliasError(InferenceParametersError):
+    """Provider tool aliases were invalid, collided, or unknown."""
+
+    code = "TOOL_ALIAS_INVALID"
 
 
 class InferenceIdentityError(RuntimeProbeError):
@@ -488,11 +496,16 @@ class BaseRuntimeInferenceAdapter(ABC):
                 settings=settings,
                 limits=self.limits,
             )
-            definitions, requests, results = validate_tool_inputs(
+            definitions, requests, results, canonical_to_alias = validate_tool_inputs(
                 tool_definitions=tool_definitions,
                 tool_requests=tool_requests,
                 tool_results=tool_results,
                 limits=self.limits,
+            )
+            alias_to_canonical = (
+                {alias: canonical for canonical, alias in canonical_to_alias.items()}
+                if canonical_to_alias
+                else None
             )
         except InferenceParametersError as exc:
             return self._failed_result(
@@ -519,6 +532,7 @@ class BaseRuntimeInferenceAdapter(ABC):
                 tool_definitions=definitions,
                 tool_requests=requests,
                 tool_results=results,
+                canonical_to_alias=canonical_to_alias,
             )
             if len(body) > self.limits.max_request_body_bytes:
                 return self._failed_result(
@@ -541,6 +555,7 @@ class BaseRuntimeInferenceAdapter(ABC):
                 settings=settings,
                 binding=binding,
                 cancellation=cancellation,
+                alias_to_canonical=alias_to_canonical,
             )
         except RuntimeProbeTimeoutError:
             result = self._timeout_result()
@@ -592,6 +607,7 @@ class BaseRuntimeInferenceAdapter(ABC):
         settings: GenerationSettings,
         binding: SessionBinding,
         cancellation: CancellationToken | None,
+        alias_to_canonical: Mapping[str, str] | None,
     ) -> InferenceResult:
         buffer = LineBuffer(self.limits)
         accumulator = _Accumulator(self.limits)
@@ -613,6 +629,7 @@ class BaseRuntimeInferenceAdapter(ABC):
                     line,
                     settings=settings,
                     binding=binding,
+                    alias_to_canonical=alias_to_canonical,
                 )
                 if result is not None:
                     if result.status in ("completed", "failed", "partial"):
@@ -641,6 +658,7 @@ class BaseRuntimeInferenceAdapter(ABC):
                     line,
                     settings=settings,
                     binding=binding,
+                    alias_to_canonical=alias_to_canonical,
                 )
                 if result is not None:
                     if result.status in ("completed", "failed", "partial"):
@@ -718,6 +736,7 @@ class BaseRuntimeInferenceAdapter(ABC):
         tool_definitions: Sequence[ToolDefinition],
         tool_requests: Sequence[ToolRequest],
         tool_results: Sequence[ToolResult],
+        canonical_to_alias: Mapping[str, str],
     ) -> tuple[str, Mapping[str, str], bytes]:
         """Return URL, headers, and a bounded request body for one provider."""
 
@@ -728,6 +747,7 @@ class BaseRuntimeInferenceAdapter(ABC):
         *,
         settings: GenerationSettings,
         binding: SessionBinding,
+        alias_to_canonical: Mapping[str, str] | None,
     ) -> EngineResult | None:
         """Parse one framed event into a delta or terminal signal."""
 
@@ -782,34 +802,72 @@ def verify_identity(
         raise InferenceIdentityError("runtime reported a different model identity")
 
 
-def native_tool_schema(definition: ToolDefinition) -> dict[str, Any]:
+def _serialize_json(payload: Any) -> str:
+    try:
+        return json.dumps(
+            payload,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise ToolDefinitionsError(
+            "Tool data must be JSON-serializable plain data without non-standard floats."
+        ) from error
+
+
+def provider_tool_name(definition: ToolDefinition, index: int) -> str:
+    """Deterministic provider-safe alias for one supplied tool definition.
+
+    The canonical trusted id (for example ``zana.calculator``) may contain
+    characters rejected by OpenAI's FunctionToolParam name contract. Each
+    definition is aliased to a bounded ``[A-Za-z0-9_-]`` name and mapped back
+    to the exact canonical id after parsing.
+    """
+
+    alias = f"zana_{index}"
+    if len(alias) > MAX_PROVIDER_TOOL_NAME_CHARS:
+        raise ToolAliasError("A provider tool alias exceeded the bounded name limit.")
+    if len(alias.encode("utf-8")) > MAX_PROVIDER_TOOL_NAME_BYTES:
+        raise ToolAliasError("A provider tool alias exceeded the bounded byte limit.")
+    return alias
+
+
+def build_provider_tool_map(
+    definitions: Sequence[ToolDefinition],
+) -> dict[str, str]:
+    """Map canonical tool ids to request-local provider-safe aliases."""
+    canonical_to_alias: dict[str, str] = {}
+    alias_to_canonical: dict[str, str] = {}
+    for index, definition in enumerate(definitions):
+        alias = provider_tool_name(definition, index)
+        if alias in alias_to_canonical:
+            raise ToolAliasError("Provider tool aliases collided.")
+        canonical_to_alias[definition.id] = alias
+        alias_to_canonical[alias] = definition.id
+    return canonical_to_alias
+
+
+def native_tool_schema(definition: ToolDefinition, alias: str) -> dict[str, Any]:
     """Exact provider function schema from a trusted tool definition.
 
-    Only the canonical name, description, and JSON parameters are serialized;
-    version and code-bearing fields never cross the runtime boundary.
+    Only the bounded provider-safe alias, description, and JSON parameters
+    are serialized; version, canonical id, and code-bearing fields never
+    cross the runtime boundary.
     """
 
     return {
         "type": "function",
         "function": {
-            "name": definition.id,
+            "name": alias,
             "description": definition.description,
             "parameters": definition.input_schema,
         },
     }
 
 
-def _definition_json(definition: ToolDefinition) -> str:
-    try:
-        return json.dumps(
-            native_tool_schema(definition),
-            separators=(",", ":"),
-            ensure_ascii=False,
-        )
-    except (TypeError, ValueError) as error:
-        raise ToolDefinitionsError(
-            "A tool definition must contain JSON-serializable plain data."
-        ) from error
+def _definition_json(definition: ToolDefinition, alias: str) -> str:
+    return _serialize_json(native_tool_schema(definition, alias))
 
 
 def _validate_bounded_name(
@@ -831,6 +889,7 @@ def _validate_bounded_name(
 
 def _validate_definition_fields(
     definition: ToolDefinition,
+    alias: str,
     limits: InferenceLimits,
 ) -> None:
     _validate_bounded_name(
@@ -856,7 +915,7 @@ def _validate_definition_fields(
         raise ToolDefinitionsError(
             "A tool definition input schema must declare JSON object parameters."
         )
-    serialized = _definition_json(definition)
+    serialized = _definition_json(definition, alias)
     encoded = serialized.encode("utf-8")
     if len(encoded) > limits.max_tool_definition_bytes:
         raise ToolDefinitionsError("A tool definition schema exceeded the bounded byte limit.")
@@ -885,29 +944,28 @@ def _validate_tool_request(
     if request.tool_id not in definition_ids:
         raise ToolContinuationError("A prior tool request references an undeclared tool.")
     try:
-        encoded = json.dumps(
-            request.arguments,
-            separators=(",", ":"),
-            ensure_ascii=False,
-        ).encode("utf-8")
-    except (TypeError, ValueError) as error:
+        serialized = _serialize_json(request.arguments)
+    except ToolDefinitionsError as error:
         raise ToolContinuationError(
-            "Prior tool request arguments must be JSON-serializable plain data."
+            "Prior tool request arguments must be JSON-serializable plain data "
+            "without non-standard floats."
         ) from error
+    encoded = serialized.encode("utf-8")
     if len(encoded) > limits.max_tool_arguments_bytes:
         raise ToolContinuationError("Prior tool request arguments exceeded the bounded byte limit.")
-    if len(encoded) > limits.max_tool_arguments_chars:
+    if len(serialized) > limits.max_tool_arguments_chars:
         raise ToolContinuationError(
             "Prior tool request arguments exceeded the bounded character limit."
         )
 
 
 def _render_tool_result(result: object) -> str:
-    return json.dumps(
-        result.model_dump(mode="json"),  # type: ignore[attr-defined]
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+    try:
+        return _serialize_json(result.model_dump(mode="json"))  # type: ignore[attr-defined]
+    except (ToolDefinitionsError, TypeError, ValueError) as error:
+        raise ToolContinuationError(
+            "A tool result must be JSON-serializable plain data without non-standard floats."
+        ) from error
 
 
 def _validate_tool_result(result: object, limits: InferenceLimits) -> None:
@@ -939,6 +997,7 @@ def validate_tool_inputs(
     tuple[ToolDefinition, ...],
     tuple[ToolRequest, ...],
     tuple[ToolResult, ...],
+    dict[str, str],
 ]:
     """Validate one bounded native tool request/continuation, failing closed."""
     from zana_core.tools.models import ToolDefinition
@@ -946,15 +1005,17 @@ def validate_tool_inputs(
     if len(tool_definitions) > limits.max_tool_definitions:
         raise ToolDefinitionsError("Tool definitions exceed the bounded count.")
     definition_ids: set[str] = set()
-    for definition in tool_definitions:
+    for index, definition in enumerate(tool_definitions):
         if not isinstance(definition, ToolDefinition):
             raise ToolDefinitionsError(
                 "Tool definitions must be exact trusted ToolDefinition records."
             )
-        _validate_definition_fields(definition, limits)
+        alias = provider_tool_name(definition, index)
+        _validate_definition_fields(definition, alias, limits)
         if definition.id in definition_ids:
             raise ToolDefinitionsError("Duplicate tool definitions are rejected.")
         definition_ids.add(definition.id)
+    canonical_to_alias = build_provider_tool_map(tool_definitions)
 
     if len(tool_requests) > limits.max_tool_requests:
         raise ToolContinuationError("Prior tool requests exceed the bounded count.")
@@ -976,11 +1037,7 @@ def validate_tool_inputs(
         _validate_tool_result(result, limits)
         if request.tool_id != result.tool_id:
             raise ToolContinuationError("Tool results must match the prior tool requests in order.")
-    return (
-        tuple(tool_definitions),
-        tuple(tool_requests),
-        tuple(tool_results),
-    )
+    return tuple(tool_definitions), tuple(tool_requests), tuple(tool_results), canonical_to_alias
 
 
 def _continuation_call_ids(count: int, limits: InferenceLimits) -> tuple[str, ...]:
@@ -1001,6 +1058,7 @@ def _build_openai_messages(
     message: str,
     tool_requests: Sequence[ToolRequest],
     tool_results: Sequence[ToolResult],
+    canonical_to_alias: Mapping[str, str],
     limits: InferenceLimits,
 ) -> list[dict[str, Any]]:
     """Build canonical OpenAI assistant/tool continuation messages."""
@@ -1017,11 +1075,12 @@ def _build_openai_messages(
                         "id": call_ids[index],
                         "type": "function",
                         "function": {
-                            "name": request.tool_id,
+                            "name": canonical_to_alias[request.tool_id],
                             "arguments": json.dumps(
                                 request.arguments,
                                 separators=(",", ":"),
                                 ensure_ascii=False,
+                                allow_nan=False,
                             ),
                         },
                     }
@@ -1046,6 +1105,7 @@ def _build_ollama_messages(
     message: str,
     tool_requests: Sequence[ToolRequest],
     tool_results: Sequence[ToolResult],
+    canonical_to_alias: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Build canonical Ollama assistant/tool continuation messages."""
     messages: list[dict[str, Any]] = [{"role": "system", "content": context}]
@@ -1058,7 +1118,7 @@ def _build_ollama_messages(
                 "tool_calls": [
                     {
                         "function": {
-                            "name": request.tool_id,
+                            "name": canonical_to_alias[request.tool_id],
                             "arguments": request.arguments,
                         }
                     }
@@ -1069,7 +1129,7 @@ def _build_ollama_messages(
         messages.extend(
             {
                 "role": "tool",
-                "name": result.tool_id,
+                "name": canonical_to_alias[result.tool_id],
                 "content": _render_tool_result(result),
             }
             for result in tool_results
@@ -1107,11 +1167,13 @@ class ToolCallIdError(ToolCallParseError):
     code = "TOOL_CALL_ID_LIMIT"
 
 
-def _tool_call_failure(error: ToolCallLimitError | ToolCallParseError | ToolCallArgumentsError):
+def _tool_call_failure(
+    error: (ToolCallLimitError | ToolCallParseError | ToolCallArgumentsError | ToolAliasError),
+):
     return EngineResult(
         status="failed",
         content="",
-        error_code=error.code,
+        error_code=getattr(error, "code", "TOOL_CALLS_MALFORMED"),
         error_message=(
             "Tool calls were not accepted because they were malformed or exceeded bounds."
         ),
@@ -1144,7 +1206,7 @@ def _validate_arguments_object(arguments: Any, limits: InferenceLimits) -> dict[
         parsed = arguments
     elif isinstance(arguments, str) and arguments.strip():
         try:
-            decoded = json.loads(arguments)
+            decoded = json.loads(arguments, parse_constant=_reject_non_finite)
         except ValueError as error:
             raise ToolCallParseError("tool arguments were not valid JSON") from error
         if not isinstance(decoded, dict):
@@ -1152,18 +1214,48 @@ def _validate_arguments_object(arguments: Any, limits: InferenceLimits) -> dict[
         parsed = decoded
     else:
         raise ToolCallParseError("tool arguments were empty or incomplete")
-    encoded = json.dumps(parsed, separators=(",", ":")).encode("utf-8")
+    _reject_non_finite_values(parsed)
+    try:
+        serialized = json.dumps(
+            parsed,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as error:
+        raise ToolCallParseError("tool arguments were not JSON-serializable plain data") from error
+    encoded = serialized.encode("utf-8")
     if len(encoded) > limits.max_tool_arguments_bytes:
         raise ToolCallArgumentsError("tool arguments exceeded the byte limit")
-    if len(encoded) > limits.max_tool_arguments_chars:
+    if len(serialized) > limits.max_tool_arguments_chars:
         raise ToolCallArgumentsError("tool arguments exceeded the character limit")
     return parsed
+
+
+def _reject_non_finite(value: str) -> None:
+    raise ToolCallParseError("tool arguments contained a non-finite number")
+
+
+def _reject_non_finite_values(payload: Any) -> None:
+    if isinstance(payload, float):
+        if not math.isfinite(payload):
+            raise ToolCallParseError("tool arguments contained a non-finite number")
+        return
+    if isinstance(payload, dict):
+        for value in payload.values():
+            _reject_non_finite_values(value)
+        return
+    if isinstance(payload, list):
+        for value in payload:
+            _reject_non_finite_values(value)
+        return
 
 
 def parse_complete_tool_calls(
     tool_calls: Any,
     *,
     limits: InferenceLimits,
+    alias_to_canonical: Mapping[str, str] | None = None,
 ) -> tuple[Any, ...]:
     """Convert a complete Ollama-style tool-call list, failing closed on bounds."""
     if tool_calls is None:
@@ -1180,6 +1272,9 @@ def parse_complete_tool_calls(
         if not isinstance(function, dict):
             raise ToolCallParseError("a tool call had no function object")
         name = _validate_tool_name(function.get("name"), limits)
+        if alias_to_canonical is None or name not in alias_to_canonical:
+            raise ToolAliasError("runtime requested an undeclared provider tool alias")
+        name = alias_to_canonical[name]
         parsed = _validate_arguments_object(function.get("arguments"), limits)
         requests.append(_tool_request(name, parsed))
     return tuple(requests)
@@ -1259,7 +1354,11 @@ class ToolCallAccumulator:
                     raise ToolCallParseError("tool arguments fragments must be strings")
             self._fragments[index_value] = fragment
 
-    def finish(self) -> tuple[Any, ...]:
+    def finish(
+        self,
+        *,
+        alias_to_canonical: Mapping[str, str] | None = None,
+    ) -> tuple[Any, ...]:
         requests: list[Any] = []
         for index in sorted(self._fragments):
             fragment = self._fragments[index]
@@ -1267,6 +1366,10 @@ class ToolCallAccumulator:
                 raise ToolCallParseError("a tool call never received a name")
             if not fragment.arguments:
                 raise ToolCallParseError("a tool call arguments fragment was incomplete")
+            name = fragment.name
+            if alias_to_canonical is None or name not in alias_to_canonical:
+                raise ToolAliasError("runtime requested an undeclared provider tool alias")
+            name = alias_to_canonical[name]
             parsed = _validate_arguments_object(fragment.arguments, self._limits)
-            requests.append(_tool_request(fragment.name, parsed))
+            requests.append(_tool_request(name, parsed))
         return tuple(requests)

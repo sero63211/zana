@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
@@ -26,6 +26,7 @@ from zana_core.runtimes.inference import (
     BaseRuntimeInferenceAdapter,
     EngineResult,
     InferenceLimits,
+    ToolAliasError,
     ToolCallArgumentsError,
     ToolCallLimitError,
     ToolCallParseError,
@@ -383,6 +384,7 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
         tool_definitions: Sequence[ToolDefinition],
         tool_requests: Sequence[ToolRequest],
         tool_results: Sequence[ToolResult],
+        canonical_to_alias: Mapping[str, str],
     ) -> tuple[str, dict[str, str], bytes]:
         url = f"{self.endpoint}/api/chat"
         headers = {
@@ -398,6 +400,7 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
                 message=message,
                 tool_requests=tool_requests,
                 tool_results=tool_results,
+                canonical_to_alias=canonical_to_alias,
             ),
             "stream": True,
             "options": {
@@ -408,7 +411,10 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
             },
         }
         if tool_definitions:
-            body["tools"] = [native_tool_schema(definition) for definition in tool_definitions]
+            body["tools"] = [
+                native_tool_schema(definition, canonical_to_alias[definition.id])
+                for definition in tool_definitions
+            ]
         return url, headers, UrllibTransport.json_body(body)
 
     def parse_event(
@@ -417,6 +423,7 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
         *,
         settings: GenerationSettings,
         binding: SessionBinding,
+        alias_to_canonical: Mapping[str, str] | None,
     ) -> EngineResult | None:
         payload = parse_json_line(line, "Ollama chat stream")
         verify_identity(payload_model=payload.get("model"), binding=binding)
@@ -436,8 +443,14 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
                 tool_calls = parse_complete_tool_calls(
                     message_dict.get("tool_calls"),
                     limits=self.limits,
+                    alias_to_canonical=alias_to_canonical,
                 )
-            except (ToolCallLimitError, ToolCallParseError, ToolCallArgumentsError) as error:
+            except (
+                ToolCallLimitError,
+                ToolCallParseError,
+                ToolCallArgumentsError,
+                ToolAliasError,
+            ) as error:
                 return _tool_call_failure(error)
             final_content = message_dict.get("content")
             return EngineResult(
