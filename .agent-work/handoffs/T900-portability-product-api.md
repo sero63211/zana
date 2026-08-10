@@ -113,3 +113,91 @@ the new router reuses `POST /api/v1/images/{digest}/verify`,
 Not pushed. Explicit push blocker: this task was instructed not to push;
 remote acceptance requires lead integration under ZANA remote policy. No
 remote SHA is claimed.
+
+## Lead review correction (2026-08-10)
+
+Verdict: PASS after one focused correction commit.
+
+### Correction commit
+
+- `2ce852d7adcf17d02ad257fdfd4fb14ce5243da2`
+  (`fix: propagate exact base availability and harden portability API`)
+
+### Changed paths in the correction
+
+- `core/zana_core/portability/boundary.py` — new injected fail-closed
+  `OperationBoundary` with typed `OperationCancelledError` (`CANCELLED`).
+- `core/zana_core/portability/service.py` — explicit `base_model_available`
+  carried from the persisted exact digest set; manifest-authoritative
+  reconstruction rejecting duplicate/missing/extra roles, role/media/size/
+  digest/path mismatches; atomic sidecar export report; phase-boundary
+  progress/cancel checks; exact registered role count.
+- `core/zana_core/api/portability.py` and `api/portability_schemas.py` —
+  default codec is now `tar.zst`; responses carry
+  `base_model_available`, `report_path`, `report_digest`, and exact
+  `artifact_count`; request docs state the managed-root staging constraint.
+- `core/tests/portability/test_product_service.py` and
+  `core/tests/api/test_portability_api.py` — focused regression coverage for
+  all six review findings.
+
+### Checks after correction
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Focused product/API tests | `pytest -q core/tests/portability core/tests/api/test_portability_api.py` | 133 passed |
+| Touched-surface suite | `pytest -q core/tests/portability core/tests/api/test_portability_api.py core/tests/images` | 247 passed |
+| Ruff check | owned paths | clean |
+| Ruff format | owned paths | clean |
+| Pyright | owned source paths | 0 errors, 0 warnings |
+| Import smoke and diff | `import` smoke, `git diff --check` | pass |
+
+### Revised security and behavior delta
+
+- `base_model_available` is derived from the persisted `models.digest` set
+  before import and carried explicitly through `ProductImport`; the API never
+  guesses it from `runnable`. A non-base non-runnable result keeps the exact
+  availability flag.
+- Reconstruction is manifest-authoritative: the registered manifest/index/
+  config/layer rows must match descriptors exactly (role, media type, size,
+  digest, canonical store path); duplicates, missing/extra roles, and blob
+  corruption fail closed as `REGISTRY_MISMATCH`/corrupted states.
+- Export defaults to `tar.zst`; when the real zstd codec is absent the API
+  returns `CODEC_UNAVAILABLE` with an `install_zstd` action and never labels
+  bytes falsely. Explicit `tar` remains a caller choice for fixtures.
+- Every export writes a bounded, atomic, secret-free
+  `<archive>.report.json` sidecar; `report_digest` and data-root-relative
+  `report_path` are returned.
+- Verify/export/import accept an injected `OperationBoundary` reporting only
+  real phase stages and raising typed `CANCELLED` at phase transitions. The
+  canonical pack/unpack loops are not interruptible yet; that requires the
+  exact serial integration delta below.
+- `artifact_count` is the exact registered role graph size, never
+  arithmetic over blob lists.
+
+### Current managed staging constraint
+
+Core only accepts data-root-confined paths: exports under
+`data_root/portability/exports` and imports under
+`data_root/portability/imports`. A later Tauri/CLI picker-copy integration is
+required before arbitrary user-selected external host paths can be passed;
+the API schemas and this handoff document that explicitly.
+
+### Exact minimal serial integration delta for cancellation
+
+Full jobs/SSE cancellation is not wired by this slice. The later integration
+owner should register an `OperationBoundary` per image job, call it at the
+same phase transitions, and map `OperationCancelledError` to the persisted
+job status; no shared jobs/main/DB change is needed to consume the boundary.
+
+### Revised residual risks
+
+- The canonical `tar`/`gzip` pack/unpack loops accept only a deadline; real
+  mid-loop cancellation requires a future canonical codec boundary.
+- zstd availability remains honest and environment-dependent.
+- The 4 unrelated `TestExplicitDatabaseCommit` failures reproduce on clean
+  canonical HEAD `23b9034` and remain outside this ownership.
+
+### Clean proof after correction
+
+- `git status --porcelain` was empty immediately after correction commit
+  `2ce852d` and is re-proven after this handoff receipt commit.
