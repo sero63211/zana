@@ -1193,9 +1193,9 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
-        branch: pending-first-class-worktree
-        thread: pending
-        worktree: pending
+        branch: agent/t900-desktop-product-flows
+        thread: 019feac2-2d73-78d2-b40e-de8625e99ad4
+        worktree: /Users/sero/.codex/worktrees/eb61/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "apps/desktop/src/** and focused desktop source tests; .agent-work/handoffs/T900-desktop-product-flows.md. Excludes apps/desktop/src-tauri/**, dependency manifests/lockfiles, generated bundles, and Core files."
         dependencies: "Integrated desktop shell/models client at a1c87f4; controlling desktop/API specs; build/instance/portability endpoints may be consumed only through their frozen documented contracts until lead integration."
@@ -1207,9 +1207,9 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
-        branch: pending-first-class-worktree
-        thread: pending
-        worktree: pending
+        branch: agent/t900-runtime-native-tools
+        thread: 019feac3-43a7-7bb0-95e7-8ff70256c72e
+        worktree: /Users/sero/.codex/worktrees/4a35/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/runtimes/inference.py, core/zana_core/runtimes/ollama.py, core/zana_core/runtimes/openai_compat.py, exact focused runtime inference tests, .agent-work/handoffs/T900-runtime-native-tools.md"
         dependencies: "Integrated bounded inference at 6d43efe and trusted calculator/tool contracts; current build task has reported the missing native tool-schema request interface."
@@ -1221,9 +1221,9 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
-        branch: pending-first-class-worktree
-        thread: pending
-        worktree: pending
+        branch: agent/t900-instance-chat-memory-api
+        thread: 019feac3-b7cc-7d11-bf78-baa239c76566
+        worktree: /Users/sero/.codex/worktrees/dd50/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/instances/**, core/zana_core/memory/**, new core/zana_core/api/instances.py, new core/zana_core/api/chat.py, new instance-local API schema/service files, focused instance/chat/memory tests, .agent-work/handoffs/T900-instance-chat-memory-api.md. Excludes main.py, shared api/schemas.py, db/models.py, db/repositories.py, db/unit_of_work.py and migrations."
         dependencies: "Integrated immutable Image/Instance/Conversation/Message/Memory tables and instance/runtime/retrieval/tool foundations; build/image registration remains owned by the active build task."
@@ -1235,9 +1235,9 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
-        branch: pending-first-class-worktree
-        thread: pending
-        worktree: pending
+        branch: agent/t900-portability-product-api
+        thread: 019feac4-2564-7b73-8a90-7f7b58f24005
+        worktree: /Users/sero/.codex/worktrees/8037/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         owns: "core/zana_core/portability/**, new core/zana_core/api/portability.py, new portability-local API schema/service files, focused portability/API tests, .agent-work/handoffs/T900-portability-product-api.md. Excludes core/zana_core/images/**, main.py, shared api/schemas.py, DB shared files, manifests and locks."
         dependencies: "Integrated OCI/archive/import/security primitives and persisted Image/Artifact registry; active build task owns image packing/finalization."
