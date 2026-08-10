@@ -308,6 +308,34 @@ def test_rejected_secret_reference_never_persisted_or_exposed(database) -> None:
         assert uow.jobs.list() == []
 
 
+@pytest.mark.parametrize(
+    "reference",
+    [" llama3.2:1b", "llama3.2:1b ", "\tllama3.2:1b", "llama3.2:1b\n", "\rllama3.2:1b"],
+)
+def test_whitespace_reference_rejected_without_job_or_detail(
+    database,
+    reference: str,
+) -> None:
+    supervisor = NoopSupervisor()
+    client = _client(database, supervisor=supervisor)
+    runtime_id = _seed_ollama(client, database)
+    response = client.post(
+        "/api/v1/models/pull",
+        json=_pull_payload(runtime_id, model_reference=reference),
+        headers=_headers(),
+    )
+    assert response.status_code == 422
+    assert "llama3.2:1b" not in response.text
+    assert "\t" not in response.text
+    assert "\n" not in response.text
+    assert "\r" not in response.text
+    assert supervisor.dispatched == []
+    with UnitOfWork(database.session_factory) as uow:
+        assert uow.jobs.list() == []
+    events = client.get("/api/v1/jobs/1/events", headers=_headers())
+    assert events.status_code == 404
+
+
 def test_queued_job_events_never_expose_endpoint_or_secret(database) -> None:
     client = _client(database)
     runtime_id = _seed_ollama(client, database)

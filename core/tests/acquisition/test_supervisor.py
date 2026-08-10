@@ -255,3 +255,25 @@ def test_runner_exception_cannot_strand_future_dispatch(session_factory) -> None
     supervisor.dispatch(2)
     assert runner.done.wait(timeout=3)
     supervisor.shutdown()
+
+
+def test_shutdown_aggregates_interruption_persistence_failure(session_factory) -> None:
+    runner = BlockingRunner()
+    transport = FakeTransport()
+    supervisor = _supervisor(session_factory, runner=runner, transport=transport)
+    supervisor.dispatch(1)
+    assert runner.started.wait(timeout=3)
+
+    original = supervisor._mark_pending_interrupted
+
+    def failing_mark() -> None:
+        raise RuntimeError("interruption boom with secret")
+
+    supervisor._mark_pending_interrupted = failing_mark  # type: ignore[method-assign]
+    with pytest.raises(AcquisitionShutdownError) as raised:
+        supervisor.shutdown()
+    runner.release.set()
+    assert "interrupted-job persistence failed" in str(raised.value)
+    assert "boom" not in str(raised.value)
+    assert "secret" not in str(raised.value)
+    original()

@@ -221,6 +221,7 @@ class UrllibNativeStreamTransport:
         _validate_pull_url(url)
         _validate_request(method, headers, body, timeout)
         request_headers: dict[str, str] = {
+            "Content-Type": _EXPECTED_CONTENT_TYPE,
             "User-Agent": USER_AGENT,
             "Accept": "application/x-ndjson, application/json",
         }
@@ -238,25 +239,23 @@ class UrllibNativeStreamTransport:
             opening = self._generation
             self._open_generation = opening
         effective_timeout = min(float(timeout), MAX_IO_TIMEOUT_SECONDS)
+        response = None
         try:
             response = urllib.request.urlopen(request, timeout=effective_timeout)
-        except urllib.error.HTTPError as error:
+        except Exception as error:  # noqa: BLE001 - every open failure is sanitized
             self._clear_opening(opening)
-            try:
-                error.read(1_048_576 + 1)
-            finally:
-                error.close()
-            raise NativeTransportHTTPError("Native runtime returned an HTTP error.") from None
-        except TimeoutError:
-            self._clear_opening(opening)
-            raise NativeTransportTimeoutError(
-                "Native runtime did not answer within the bounded timeout."
-            ) from None
-        except urllib.error.URLError:
-            self._clear_opening(opening)
-            raise NativeTransportTimeoutError("Native runtime could not be reached.") from None
-        except OSError:
-            self._clear_opening(opening)
+            if isinstance(error, TimeoutError):
+                raise NativeTransportTimeoutError(
+                    "Native runtime did not answer within the bounded timeout."
+                ) from None
+            if isinstance(error, urllib.error.HTTPError):
+                try:
+                    error.close()
+                except Exception:  # noqa: BLE001 - cleanup is reported, never silent
+                    raise NativeTransportCleanupError(
+                        "Native pull HTTP error cleanup failed."
+                    ) from None
+                raise NativeTransportHTTPError("Native runtime returned an HTTP error.") from None
             raise NativeTransportError("Native runtime transport failed.") from None
         stream: _BoundedNativeStream | None = None
         with self._lock:

@@ -56,7 +56,8 @@ def sanitize_model_reference(value: str) -> str:
     """
     if type(value) is not str:
         raise ValueError("model_reference must be a string")
-    value = value.strip()
+    if value != value.strip():
+        raise ValueError("model_reference must not contain surrounding whitespace")
     if not value:
         raise ValueError("model_reference must be a bounded non-empty reference")
     if len(value) > MAX_MODEL_REFERENCE_BYTES:

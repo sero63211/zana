@@ -62,3 +62,18 @@ def test_unsafe_references_rejected_without_leaking(reference: str) -> None:
             endpoint="http://127.0.0.1:11434",
             model_reference=reference,
         )
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [" llama3.2:1b", "llama3.2:1b ", "\tllama3.2:1b", "llama3.2:1b\n", "\rllama3.2:1b"],
+)
+def test_surrounding_whitespace_is_rejected_not_normalized(reference: str) -> None:
+    with pytest.raises(ValueError, match="surrounding whitespace"):
+        sanitize_model_reference(reference)
+    with pytest.raises(ValidationError):
+        NativeAcquisitionRequest(
+            kind=AcquisitionKind.OLLAMA_PULL,
+            endpoint="http://127.0.0.1:11434",
+            model_reference=reference,
+        )

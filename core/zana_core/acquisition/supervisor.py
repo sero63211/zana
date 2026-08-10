@@ -174,15 +174,22 @@ class AcquisitionSupervisor:
                 with self._condition:
                     if self._worker is worker:
                         self._worker = None
-        self._mark_pending_interrupted()
-        if alive and cleanup_failed:
+        interruption_failed = False
+        try:
+            self._mark_pending_interrupted()
+        except Exception:  # noqa: BLE001 - interruption persistence is sanitized
+            interruption_failed = True
+        if alive or cleanup_failed or interruption_failed:
+            details = []
+            if alive:
+                details.append("worker did not stop cleanly")
+            if cleanup_failed:
+                details.append("transport cleanup failed")
+            if interruption_failed:
+                details.append("interrupted-job persistence failed")
             raise AcquisitionShutdownError(
-                "Acquisition worker did not stop cleanly; native transport cleanup also failed."
+                "Acquisition shutdown could not complete: " + "; ".join(details) + "."
             )
-        if alive:
-            raise AcquisitionShutdownError("Acquisition worker did not stop cleanly.")
-        if cleanup_failed:
-            raise AcquisitionShutdownError("Native transport cleanup failed.")
 
     def _run_forever(self) -> None:
         worker_generation = self._generation

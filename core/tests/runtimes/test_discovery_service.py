@@ -153,6 +153,37 @@ def test_refresh_sync_failure_records_failed_job_without_partial_rows(
         assert uow.models.list() == []
 
 
+def test_refresh_target_failure_records_failed_job_without_probe(session_factory) -> None:
+    observations: list[bool] = []
+
+    class FailingTargetsService(RuntimeDiscoveryService):
+        def targets(self, uow):  # noqa: ANN001
+            raise RuntimeError("target secret boom")
+
+    class NoProbeRegistry(RuntimeProbeRegistry):
+        def probe(self, targets: Any) -> list[RuntimeDescriptor]:  # noqa: ANN401
+            observations.append(True)
+            return [_descriptor()]
+
+    service = FailingTargetsService(NoProbeRegistry())
+    job = service.refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "FAILED"
+    assert job.error_json["code"] == "RUNTIME_REFRESH_FAILED"
+    assert observations == []
+
+
+def test_refresh_success_transition_failure_records_failed_job(session_factory) -> None:
+    class FailingTransitionService(RuntimeDiscoveryService):
+        def sync(self, uow, descriptors):  # noqa: ANN001, ARG001
+            raise RuntimeError("transition secret boom")
+
+    job = FailingTransitionService(RecordingRegistry()).refresh(session_factory)
+    assert job is not None
+    assert job.status.value == "FAILED"
+    assert job.error_json["code"] == "RUNTIME_REFRESH_FAILED"
+
+
 def test_confirm_rejects_runtime_identity_change_before_probe(session_factory) -> None:
     registry = RecordingRegistry()
     service = RuntimeDiscoveryService(registry)

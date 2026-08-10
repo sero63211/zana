@@ -11,6 +11,7 @@ import pytest
 from zana_core.acquisition import transport as transport_module
 from zana_core.acquisition.transport import (
     NativeTransportCleanupError,
+    NativeTransportError,
     NativeTransportHTTPError,
     NativeTransportProtocolError,
     NativeTransportTimeoutError,
@@ -71,6 +72,28 @@ def test_transport_posts_bounded_pull_and_closes(monkeypatch) -> None:
     assert payload == b'{"status":"success"}\n'
     assert response.closed is True
     transport.close()
+
+
+def test_transport_actual_request_has_exact_headers_and_body(monkeypatch) -> None:
+    captured: list[object] = []
+    captured_timeout: list[float] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        captured.append(request)
+        captured_timeout.append(timeout)
+        return FakeResponse([b"ok"])
+
+    monkeypatch.setattr(transport_module.urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibNativeStreamTransport()
+    stream = transport.open_stream(**{**_request(), "timeout": 30.0})
+    stream.close()
+    request = captured[0]
+    assert request.method == "POST"
+    assert request.data == b'{"model":"qwen2:1.5b","stream":true}'
+    assert request.get_header("Content-type") == "application/json"
+    assert request.get_header("Accept") == "application/x-ndjson, application/json"
+    assert request.get_header("User-agent") == "zana-core/0.1.0"
+    assert captured_timeout == [4.0]
 
 
 def test_transport_rejects_unsafe_urls_before_network(monkeypatch) -> None:
@@ -241,6 +264,67 @@ def test_transport_cleanup_failure_is_not_silent(monkeypatch) -> None:
         stream.close()
     assert "close boom" not in str(raised.value)
     assert "secret" not in str(raised.value)
+
+
+def test_transport_unexpected_error_is_sanitized_and_open_recovers(
+    monkeypatch,
+) -> None:
+    calls = {"count": 0}
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise RuntimeError("boom with bearer super-secret /private/path")
+        return FakeResponse([b"ok"])
+
+    monkeypatch.setattr(transport_module.urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibNativeStreamTransport()
+    with pytest.raises(NativeTransportError) as raised:
+        transport.open_stream(**_request())
+    assert "boom" not in str(raised.value)
+    assert "super-secret" not in str(raised.value)
+    assert "/private/path" not in str(raised.value)
+    stream = transport.open_stream(**_request())
+    stream.close()
+    assert calls["count"] == 2
+
+
+def test_transport_http_error_close_failure_is_sanitized_and_does_not_wedge(
+    monkeypatch,
+) -> None:
+    close_count = {"count": 0}
+    calls = {"count": 0}
+
+    class ClosingHTTPError(urllib.error.HTTPError):
+        def __init__(self) -> None:
+            super().__init__(
+                "http://127.0.0.1:11434/api/pull",
+                500,
+                "Error",
+                {},
+                io.BytesIO(b""),
+            )
+
+        def close(self) -> None:
+            close_count["count"] += 1
+            raise RuntimeError("close boom secret")
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ARG001
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise ClosingHTTPError()
+        return FakeResponse([b"ok"])
+
+    monkeypatch.setattr(transport_module.urllib.request, "urlopen", fake_urlopen)
+    transport = UrllibNativeStreamTransport()
+    with pytest.raises(NativeTransportCleanupError) as raised:
+        transport.open_stream(**_request())
+    assert "http error secret" not in str(raised.value)
+    assert "close boom secret" not in str(raised.value)
+    stream = transport.open_stream(**_request())
+    stream.close()
+    assert close_count["count"] == 1
+    assert calls["count"] == 2
 
 
 def test_transport_allows_only_one_open_stream(monkeypatch) -> None:

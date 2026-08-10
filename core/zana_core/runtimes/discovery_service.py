@@ -143,8 +143,12 @@ class RuntimeDiscoveryService:
                 message="Refreshing runtime and model discovery.",
             )
             service.transition_job(job.id, JobStatus.RUNNING, phase="discovery")
-            targets = self.targets(uow)
             job_id = job.id
+        try:
+            with UnitOfWork(session_factory) as uow:
+                targets = self.targets(uow)
+        except Exception:  # noqa: BLE001 - target failure records sanitized FAILED
+            return self._refresh_failed(session_factory, job_id)
         try:
             descriptors = self.registry.probe(targets)
         except Exception:  # noqa: BLE001 - failures are sanitized below
@@ -163,14 +167,17 @@ class RuntimeDiscoveryService:
             except Exception:  # noqa: BLE001 - savepoint rolls back partial sync
                 sync_failed = True
             else:
-                job = service.transition_job(
-                    job.id,
-                    JobStatus.SUCCEEDED,
-                    phase="complete",
-                    message=(
-                        f"Runtime discovery complete; {len(descriptors)} candidate(s) probed."
-                    ),
-                )
+                try:
+                    job = service.transition_job(
+                        job.id,
+                        JobStatus.SUCCEEDED,
+                        phase="complete",
+                        message=(
+                            f"Runtime discovery complete; {len(descriptors)} candidate(s) probed."
+                        ),
+                    )
+                except Exception:  # noqa: BLE001 - transition failure records FAILED
+                    sync_failed = True
         if sync_failed:
             return self._refresh_failed(session_factory, job_id)
         return job
