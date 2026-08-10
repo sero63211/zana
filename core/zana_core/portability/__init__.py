@@ -7,6 +7,7 @@ and registration planning are delegated to the canonical ``zana_core.images``
 stack so there is exactly one implementation of each integrity boundary.
 """
 
+from zana_core.portability.boundary import OperationBoundary, OperationCancelledError
 from zana_core.portability.export import ExportResult, ExportService
 from zana_core.portability.guards import ConcurrentOperationError, OperationGuard
 from zana_core.portability.import_ import ImportResult, ImportService
@@ -43,6 +44,8 @@ __all__ = [
     "ImportService",
     "LimitExceededError",
     "OperationGuard",
+    "OperationBoundary",
+    "OperationCancelledError",
     "OperationStage",
     "PathPolicyError",
     "PortabilityError",

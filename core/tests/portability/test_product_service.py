@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+from sqlalchemy import delete
 
 from tests.portability.helpers import (
     archive_file,
@@ -30,9 +31,14 @@ from zana_core.domain.enums import (
 from zana_core.images.archive import TarCodec
 from zana_core.images.models import RunnableState
 from zana_core.images.oci import (
+    MEDIA_TYPE_OCI_INDEX,
+    MEDIA_TYPE_OCI_LAYOUT,
+    MEDIA_TYPE_OCI_MANIFEST,
     MEDIA_TYPE_ZANA_BEHAVIOR,
+    MEDIA_TYPE_ZANA_CONFIG,
     assemble_oci_layout,
 )
+from zana_core.portability.boundary import OperationBoundary, OperationCancelledError
 from zana_core.portability.models import CodecKind, PortabilityError
 from zana_core.portability.service import PortabilityProductService
 
@@ -102,6 +108,15 @@ def register_artifact_graph(
     config_path = layout / "blobs" / "sha256" / result.config_digest.removeprefix("sha256:")
     store.put_file(config_path)
     store.put_file(behavior)
+    manifest_path = layout / "manifest.json"
+    index_path = layout / "index.json"
+    oci_layout_path = layout / "oci-layout"
+    manifest_digest = digest_bytes(manifest_path.read_bytes())
+    index_digest = digest_bytes(index_path.read_bytes())
+    oci_layout_digest = digest_bytes(oci_layout_path.read_bytes())
+    store.put_file(manifest_path)
+    store.put_file(index_path)
+    store.put_file(oci_layout_path)
     with UnitOfWork(session_factory) as uow:
         uow.images.add(
             Image(
@@ -129,6 +144,27 @@ def register_artifact_graph(
                 role="behavior",
             )
         )
+        for role, digest, media_type, path in (
+            ("manifest", manifest_digest, MEDIA_TYPE_OCI_MANIFEST, manifest_path),
+            ("index", index_digest, MEDIA_TYPE_OCI_INDEX, index_path),
+            ("oci-layout", oci_layout_digest, MEDIA_TYPE_OCI_LAYOUT, oci_layout_path),
+            ("config", result.config_digest, MEDIA_TYPE_ZANA_CONFIG, config_path),
+        ):
+            uow.artifacts.add(
+                Artifact(
+                    digest=digest,
+                    media_type=media_type,
+                    local_path=str(store.blob_path(digest)),
+                    size_bytes=path.stat().st_size,
+                )
+            )
+            uow.image_artifacts.add(
+                ImageArtifact(
+                    image_digest=result.image_digest,
+                    artifact_digest=digest,
+                    role=role,
+                )
+            )
     return result.image_digest, config
 
 
@@ -204,7 +240,7 @@ def test_verify_missing_material_and_corruption_are_actionable(
         )
 
     missing = service.verify(missing_digest)
-    assert missing.status == "material-missing"
+    assert missing.status == "registry-mismatch"
 
     corrupted_digest, _config_digest, target = register_layout(
         session_factory,
@@ -238,6 +274,14 @@ def test_export_round_trip_preserves_digest(environment, tmp_path: Path) -> None
     assert result.result.archive_digest == expected
     assert destination.exists()
     assert result.relative_path == "portability/exports/policy-assistant.tar"
+    assert result.report_relative_path == "portability/exports/policy-assistant.tar.report.json"
+    report = Path(destination.parent, f"{destination.name}.report.json")
+    assert report.is_file()
+    report_payload = json.loads(report.read_text(encoding="utf-8"))
+    assert report_payload["archive_digest"] == result.result.archive_digest
+    assert report_payload["image_digest"] == image_digest
+    assert "token" not in json.dumps(report_payload)
+    assert result.report_digest == digest_bytes(report.read_bytes())
     assert not list((data_root / "portability" / "tmp").iterdir())
 
 
@@ -298,6 +342,8 @@ def test_import_round_trip_registers_graph_and_is_idempotent(
     assert first.result.registration.image_digest == image_digest
     assert first.result.registration.runnable is RunnableState.RUNNABLE
     assert first.result.registration.base_model_digest == base_digest
+    assert first.base_model_available is True
+    assert first.artifact_count >= 4
     assert first.result.layout_root is not None
     retained = Path(first.result.layout_root)
     assert retained.is_dir()
@@ -313,6 +359,7 @@ def test_import_round_trip_registers_graph_and_is_idempotent(
     )
     assert second.idempotent is True
     assert second.created is False
+    assert second.base_model_available is True
     with UnitOfWork(session_factory) as uow:
         assert len(uow.images.list()) == 1
         assert len(uow.image_artifacts.list_for_image(image_digest)) >= 4
@@ -326,6 +373,7 @@ def test_import_round_trip_registers_graph_and_is_idempotent(
         user_approved=True,
     )
     assert exported.result.archive_digest == digest_bytes(archive.read_bytes())
+    assert exported.report_digest.startswith("sha256:")
 
 
 def test_import_rejects_corrupt_traversal_and_secret_archives(
@@ -486,3 +534,216 @@ def test_reconstructed_artifact_graph_exports_exact_archive(
         (service.exports_root / "reconstructed.tar").read_bytes()
     )
     assert not list((data_root / "portability" / "tmp").iterdir())
+
+
+def test_reconstruction_rejects_duplicate_role(environment, tmp_path: Path) -> None:
+    from zana_core.portability.service import _unique_registry_rows
+
+    row = ("behavior", "sha256:" + "a" * 64, "application/x", 1, "/tmp/blob")
+    with pytest.raises(PortabilityError) as exc:
+        _unique_registry_rows((row, row))
+    assert exc.value.code == "REGISTRY_MISMATCH"
+
+
+def test_reconstruction_rejects_role_media_size_path_and_extra_roles(
+    environment,
+    tmp_path: Path,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    store = ArtifactStore(data_root / "artifacts")
+    image_digest, _config = register_artifact_graph(
+        session_factory,
+        store,
+        tmp_path,
+    )
+    cases = [
+        ("media", lambda artifact: setattr(artifact, "media_type", "application/wrong")),
+        ("size", lambda artifact: setattr(artifact, "size_bytes", artifact.size_bytes + 1)),
+        ("path", lambda artifact: setattr(artifact, "local_path", "/tmp/foreign")),
+    ]
+    for label, mutate in cases:
+        with UnitOfWork(session_factory) as uow:
+            behavior = next(
+                row
+                for row in uow.image_artifacts.list_for_image(image_digest)
+                if row.role == "behavior"
+            )
+            artifact = uow.artifacts.get(behavior.artifact_digest)
+            assert artifact is not None
+            mutate(artifact)
+        verified = service.verify(image_digest)
+        assert verified.status == "registry-mismatch", label
+        with UnitOfWork(session_factory) as uow:
+            behavior = next(
+                row
+                for row in uow.image_artifacts.list_for_image(image_digest)
+                if row.role == "behavior"
+            )
+            artifact = uow.artifacts.get(behavior.artifact_digest)
+            assert artifact is not None
+            artifact.media_type = MEDIA_TYPE_ZANA_BEHAVIOR
+            artifact.size_bytes = store.size(behavior.artifact_digest)
+            artifact.local_path = str(store.blob_path(behavior.artifact_digest))
+
+    with UnitOfWork(session_factory) as uow:
+        behavior = next(
+            row
+            for row in uow.image_artifacts.list_for_image(image_digest)
+            if row.role == "behavior"
+        )
+        behavior_digest = behavior.artifact_digest
+        uow.session.execute(
+            delete(ImageArtifact).where(
+                ImageArtifact.image_digest == image_digest,
+                ImageArtifact.role == "behavior",
+            )
+        )
+    missing = service.verify(image_digest)
+    assert missing.status == "registry-mismatch"
+
+    with UnitOfWork(session_factory) as uow:
+        uow.image_artifacts.add(
+            ImageArtifact(
+                image_digest=image_digest,
+                artifact_digest=behavior_digest,
+                role="behavior",
+            )
+        )
+        extra_digest = store.put_bytes(b"unexpected-extra")
+        uow.artifacts.add(
+            Artifact(
+                digest=extra_digest,
+                media_type="application/extra",
+                local_path=str(store.blob_path(extra_digest)),
+                size_bytes=1,
+            )
+        )
+        uow.image_artifacts.add(
+            ImageArtifact(
+                image_digest=image_digest,
+                artifact_digest=extra_digest,
+                role="unexpected",
+            )
+        )
+    extra = service.verify(image_digest)
+    assert extra.status == "registry-mismatch"
+
+
+def test_import_base_availability_is_explicit_not_guessed(
+    environment,
+    tmp_path: Path,
+) -> None:
+    _data_root, session_factory = environment
+    service = make_service(environment)
+    base_digest = digest_bytes(b"base weights")
+    layout, _image_digest = build_layout(
+        tmp_path / "lay",
+        config=default_config(base_model_digest=base_digest),
+        layer_bytes=b"knowledge",
+    )
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+    seed_model(session_factory, base_digest)
+    imported = service.import_archive(
+        local_path=str(source),
+        codec=CodecKind.TAR,
+        user_approved=True,
+    )
+    assert imported.base_model_available is True
+    assert imported.result.registration.runnable is RunnableState.RUNNABLE
+
+    from zana_core.portability.service import _base_model_available_from_digest
+
+    assert _base_model_available_from_digest(base_digest, {base_digest}) is True
+    assert _base_model_available_from_digest(None, {base_digest}) is False
+    assert _base_model_available_from_digest(base_digest, set()) is False
+
+
+def test_cancellation_and_progress_boundary_fail_closed(
+    environment,
+    tmp_path: Path,
+) -> None:
+    data_root, session_factory = environment
+    service = make_service(environment)
+    layout, image_digest = build_layout(tmp_path / "lay", layer_bytes=b"knowledge")
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+    export_digest, _config_digest, _layout = register_layout(
+        session_factory,
+        service._layouts_root,
+        tmp_path,
+        layer_bytes=b"knowledge",
+    )
+
+    stages: list[str] = []
+    cancelled = OperationBoundary(
+        cancel=lambda: True,
+        progress=lambda stage, _fraction: stages.append(stage),
+    )
+    with pytest.raises(OperationCancelledError) as exc:
+        service.import_archive(
+            local_path=str(source),
+            codec=CodecKind.TAR,
+            user_approved=True,
+            boundary=cancelled,
+        )
+    assert exc.value.code == "CANCELLED"
+    assert stages == []
+    workspaces = data_root / "portability" / "workspaces"
+    if workspaces.exists():
+        assert not list(workspaces.iterdir())
+
+    counts = {"checks": 0}
+
+    def cancel_after_two() -> bool:
+        counts["checks"] += 1
+        return counts["checks"] >= 3
+
+    progress: list[str] = []
+    boundary = OperationBoundary(
+        cancel=cancel_after_two,
+        progress=lambda stage, _fraction: progress.append(stage),
+    )
+    with pytest.raises(OperationCancelledError):
+        service.export(
+            export_digest,
+            output_path=str(service.exports_root / "cancel.tar"),
+            codec=CodecKind.TAR,
+            replace_token=None,
+            replace_allowed=False,
+            user_approved=True,
+            boundary=boundary,
+        )
+    assert "CANCELLED" in progress or "preflight" in progress
+    assert not (service.exports_root / "cancel.tar").exists()
+
+    verify_stages: list[str] = []
+    verify_boundary = OperationBoundary(
+        cancel=lambda: True,
+        progress=lambda stage, _fraction: verify_stages.append(stage),
+    )
+    with pytest.raises(OperationCancelledError):
+        service.verify(export_digest, boundary=verify_boundary)
+    assert verify_stages == []
+
+
+def test_progress_boundary_records_only_real_stages(environment, tmp_path: Path) -> None:
+    _data_root, session_factory = environment
+    service = make_service(environment)
+    layout, _image_digest = build_layout(tmp_path / "lay", layer_bytes=b"knowledge")
+    archive = archive_file(tmp_path / "image.tar", layout)
+    source = service.imports_root / "image.tar"
+    shutil.copy2(archive, source)
+    stages: list[str] = []
+    boundary = OperationBoundary(progress=lambda stage, _fraction: stages.append(stage))
+    imported = service.import_archive(
+        local_path=str(source),
+        codec=CodecKind.TAR,
+        user_approved=True,
+        boundary=boundary,
+    )
+    assert imported.created is True
+    assert stages == ["preflight", "unpack", "oci_validation", "complete"]

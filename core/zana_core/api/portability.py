@@ -24,7 +24,6 @@ from zana_core.api.portability_schemas import (
     PortabilityImportRead,
     PortabilityVerifyRead,
 )
-from zana_core.images.models import RunnableState
 from zana_core.portability.models import PortabilityError
 from zana_core.portability.service import PortabilityProductService
 
@@ -71,6 +70,7 @@ def _status_for(code: str) -> int:
         "CONCURRENT_OPERATION",
         "STALE_REPLACE_TOKEN",
         "REPLACE_PRECONDITION_FAILED",
+        "CANCELLED",
     ):
         return HTTP_409_CONFLICT
     if code in ("APPROVAL_REQUIRED", "DELETE_CONFIRMATION_REQUIRED"):
@@ -123,6 +123,8 @@ def export_image(
         digest=digest,
         archive_path=result.relative_path,
         archive_digest=export.archive_digest,
+        report_path=result.report_relative_path,
+        report_digest=result.report_digest,
         codec=export.codec,
         stages=[stage.value for stage in export.stages],
         durability_uncertain=export.durability_uncertain,
@@ -155,11 +157,11 @@ def import_image(
         runnable=registration.runnable,
         runnable_reason=registration.runnable_reason,
         base_model_digest=registration.base_model_digest,
-        base_model_available=registration.runnable is RunnableState.RUNNABLE,
+        base_model_available=result.base_model_available,
         archive_digest=imported.archive_digest,
         idempotent=result.idempotent,
         created=result.created,
-        artifact_count=len(registration.blobs) + 2,
+        artifact_count=result.artifact_count,
     )
 
 

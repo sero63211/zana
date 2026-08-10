@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -14,12 +16,16 @@ from fastapi.testclient import TestClient
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from tests.portability.helpers import archive_file, build_layout
+from zana_core.api import portability as portability_api
 from zana_core.api.deps import ServerConfig
 from zana_core.api.portability import router as portability_router
 from zana_core.db.database import Database
 from zana_core.db.models import Image
 from zana_core.db.unit_of_work import UnitOfWork
 from zana_core.domain.enums import VerificationStatus
+from zana_core.images import archive as images_archive
+from zana_core.images.models import RunnableState
+from zana_core.portability import models as portability_models
 
 
 @pytest.fixture
@@ -115,8 +121,11 @@ def test_verify_and_export_round_trip_without_host_paths(
     export_body = exported.json()
     assert export_body["digest"] == image_digest
     assert export_body["archive_path"] == "portability/exports/image.tar"
+    assert export_body["report_path"] == "portability/exports/image.tar.report.json"
+    assert export_body["report_digest"].startswith("sha256:")
     assert str(data_root) not in exported.text
     assert (data_root / "portability" / "exports" / "image.tar").exists()
+    assert (data_root / "portability" / "exports" / "image.tar.report.json").exists()
 
     denied = client.post(
         f"/api/v1/images/{image_digest}/export",
@@ -157,6 +166,8 @@ def test_import_idempotency_and_delete_flow(app_and_roots, tmp_path: Path) -> No
     assert created_body["created"] is True
     assert created_body["idempotent"] is False
     assert created_body["runnable"] == "not-runnable-weak-identity"
+    assert created_body["base_model_available"] is False
+    assert created_body["artifact_count"] >= 4
     assert str(data_root) not in created.text
 
     duplicate = client.post(
@@ -213,3 +224,65 @@ def test_corrupt_archive_import_returns_actionable_error(app_and_roots, tmp_path
     body = response.json()
     assert body["error"]["code"] == "OCI_VALIDATION_FAILED"
     assert "corrupt.tar" not in body["error"]["message"]
+
+
+def test_import_base_availability_is_not_guessed_from_runnable(
+    app_and_roots,
+    monkeypatch,
+) -> None:
+    app, _data_root, _session_factory = app_and_roots
+    client = client_for(app)
+    base_digest = "sha256:" + "c" * 64
+    fake_import = SimpleNamespace(
+        result=SimpleNamespace(
+            operation_id="op-1",
+            codec=portability_models.CodecKind.TAR,
+            registration=SimpleNamespace(
+                image_digest="sha256:" + "a" * 64,
+                config_digest="sha256:" + "b" * 64,
+                codec=portability_models.CodecKind.TAR,
+                runnable=RunnableState.NOT_RUNNABLE_UNKNOWN,
+                runnable_reason="another dependency is missing",
+                base_model_digest=base_digest,
+            ),
+            archive_digest="sha256:" + "d" * 64,
+        ),
+        idempotent=True,
+        created=False,
+        base_model_available=True,
+        artifact_count=7,
+    )
+    fake_service = SimpleNamespace(import_archive=lambda **kwargs: fake_import)
+    with patch.object(portability_api, "_service", return_value=fake_service):
+        response = client.post(
+            "/api/v1/images/import",
+            json={
+                "local_path": "/data/portability/imports/fake.tar",
+                "codec": "tar",
+                "user_approved": True,
+            },
+        )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["runnable"] == "not-runnable-unknown"
+    assert body["base_model_available"] is True
+    assert body["artifact_count"] == 7
+
+
+@pytest.mark.skipif(
+    images_archive.zstd_available(),
+    reason="honest zstd unavailable assertion requires no zstandard",
+)
+def test_default_zstd_export_is_honest_when_unavailable(app_and_roots) -> None:
+    app, data_root, _session_factory = app_and_roots
+    client = client_for(app)
+    digest = "sha256:" + "a" * 64
+    response = client.post(
+        f"/api/v1/images/{digest}/export",
+        json={
+            "output_path": str(data_root / "portability" / "exports" / "image.tar.zst"),
+            "user_approved": True,
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "CODEC_UNAVAILABLE"

@@ -11,12 +11,17 @@ from zana_core.images.models import RunnableState
 
 
 class ExportImageRequest(BaseModel):
-    """Explicit output path and codec selection for one image export."""
+    """Explicit output path and codec selection for one image export.
+
+    ``output_path`` must be an absolute path confined under the Core managed
+    ``data_root/portability/exports`` root. Arbitrary external host paths are
+    not accepted until a later Tauri/CLI picker-copy integration stages them.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
     output_path: Annotated[str, Field(strict=True, min_length=1, max_length=4096)]
-    codec: ArchiveFormat = ArchiveFormat.TAR
+    codec: ArchiveFormat = ArchiveFormat.TAR_ZSTD
     replace_token: Annotated[str | None, Field(strict=True, max_length=200)] = None
     replace_allowed: Annotated[bool, Field(strict=True)] = False
     user_approved: Annotated[bool, Field(strict=True)] = False
@@ -33,7 +38,12 @@ class ExportImageRequest(BaseModel):
 
 
 class ImportImageRequest(BaseModel):
-    """User-approved local archive import request."""
+    """User-approved local archive import request.
+
+    ``local_path`` must be an absolute path confined under the Core managed
+    ``data_root/portability/imports`` root. Arbitrary external host paths are
+    not accepted until a later Tauri/CLI picker-copy integration stages them.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -77,6 +87,8 @@ class PortabilityExportRead(BaseModel):
     digest: str
     archive_path: str
     archive_digest: str
+    report_path: str
+    report_digest: str
     codec: ArchiveFormat
     stages: list[str]
     durability_uncertain: bool
