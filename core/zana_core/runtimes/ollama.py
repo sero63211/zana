@@ -51,6 +51,23 @@ if TYPE_CHECKING:
 OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
 
 
+def _ollama_tool_signature(request: Any) -> tuple[str, str]:
+    from zana_core.instances import ToolRequest
+
+    if not isinstance(request, ToolRequest):
+        raise ToolCallParseError("a parsed Ollama tool call was not a ToolRequest")
+    return (
+        request.tool_id,
+        json.dumps(
+            request.arguments,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ),
+    )
+
+
 class OllamaAdapter:
     """Probes /api/tags and enriches each model via /api/show."""
 
@@ -373,6 +390,10 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
             timeout_seconds=timeout_seconds,
             bearer_token=bearer_token,
         )
+        self._seen_ollama_tool_signatures: set[tuple[str, str]] = set()
+
+    def begin_generation(self) -> None:
+        self._seen_ollama_tool_signatures = set()
 
     def build_request(
         self,
@@ -435,16 +456,22 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
                 error_code="RUNTIME_ERROR",
                 error_message="Ollama reported a runtime error.",
             )
-        done = payload.get("done")
-        if done is True:
-            message = payload.get("message")
-            message_dict: dict[str, Any] = message if isinstance(message, dict) else {}
+        done = payload.get("done") is True
+        message = payload.get("message")
+        message_dict: dict[str, Any] = message if isinstance(message, dict) else {}
+        tool_calls: tuple[Any, ...] = ()
+        if message_dict.get("tool_calls") is not None:
             try:
                 tool_calls = parse_complete_tool_calls(
                     message_dict.get("tool_calls"),
                     limits=self.limits,
                     alias_to_canonical=alias_to_canonical,
                 )
+                for request in tool_calls:
+                    signature = _ollama_tool_signature(request)
+                    if signature in self._seen_ollama_tool_signatures:
+                        raise ToolCallParseError("Ollama repeated a tool call across stream events")
+                    self._seen_ollama_tool_signatures.add(signature)
             except (
                 ToolCallLimitError,
                 ToolCallParseError,
@@ -452,18 +479,19 @@ class OllamaInferenceAdapter(BaseRuntimeInferenceAdapter):
                 ToolAliasError,
             ) as error:
                 return _tool_call_failure(error)
+        if done:
             final_content = message_dict.get("content")
             return EngineResult(
                 status="completed",
                 content=final_content if isinstance(final_content, str) else "",
                 tool_requests=tool_calls,
             )
-        message = payload.get("message")
-        if isinstance(message, dict):
-            content = message.get("content")
-            if isinstance(content, str) and content:
-                return EngineResult(status="streaming", content=content)
+        content = message_dict.get("content")
+        if isinstance(content, str) and content:
+            return EngineResult(status="streaming", content=content, tool_requests=tool_calls)
         response = payload.get("response")
         if isinstance(response, str) and response:
             return EngineResult(status="streaming", content=response)
+        if tool_calls:
+            return EngineResult(status="streaming", content="", tool_requests=tool_calls)
         return None

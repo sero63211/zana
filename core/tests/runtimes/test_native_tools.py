@@ -413,20 +413,21 @@ class TestToolResultContinuation:
             },
             {
                 "role": "tool",
-                "name": PROVIDER_CALCULATOR_NAME,
+                "tool_name": PROVIDER_CALCULATOR_NAME,
                 "content": (
                     '{"tool_id":"zana.calculator","ok":true,"output":"2",'
                     '"error":null,"input_digest":"in-1","output_digest":"out-1"}'
                 ),
             },
         ]
+        assert "name" not in request["messages"][3]
         assert transport.calls[0][3] == (
             b'{"model":"qwen-example:tag","messages":[{"role":"system","content":"sys"},'
             b'{"role":"user","content":"continue"},'
             b'{"role":"assistant","content":"","tool_calls":'
             b'[{"function":{"name":"zana_0",'
             b'"arguments":{"expression":"1+1"}}}]},'
-            b'{"role":"tool","name":"zana_0","content":'
+            b'{"role":"tool","tool_name":"zana_0","content":'
             b'"{\\"tool_id\\":\\"zana.calculator\\",\\"ok\\":true,\\"output\\":\\"2\\",'
             b'\\"error\\":null,\\"input_digest\\":\\"in-1\\",'
             b'\\"output_digest\\":\\"out-1\\"}"}],"stream":true,'
@@ -654,6 +655,176 @@ class TestToolResultContinuation:
         assert result.status == "completed"
         assert result.content == "ok"
         assert transport.closed is True
+
+
+class TestOllamaNonterminalToolCalls:
+    def _request(self) -> ToolRequest:
+        return ToolRequest(
+            tool_id="zana.calculator",
+            version=1,
+            arguments={"expression": "1+1"},
+        )
+
+    def _result(self) -> ToolResult:
+        return ToolResult(
+            tool_id="zana.calculator",
+            ok=True,
+            output="2",
+            input_digest="in-1",
+            output_digest="out-1",
+        )
+
+    def _tool_event(self, arguments: dict[str, Any], done: bool) -> str:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": PROVIDER_CALCULATOR_NAME,
+                        "arguments": arguments,
+                    }
+                }
+            ],
+        }
+        return json.dumps({"model": NATIVE_MODEL_ID, "message": message, "done": done}) + "\n"
+
+    def test_official_two_event_tool_call_survives(self) -> None:
+        body = self._tool_event({"expression": "1+1"}, done=False)
+        body += (
+            json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": ""}, "done": True}) + "\n"
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "completed"
+        assert len(result.tool_requests) == 1
+        assert result.tool_requests[0].tool_id == "zana.calculator"
+        assert result.tool_requests[0].arguments == {"expression": "1+1"}
+
+    def test_hostile_multi_event_overflow_fails_closed(self) -> None:
+        body = self._tool_event({"expression": "1+1"}, done=False)
+        body += self._tool_event({"expression": "2+2"}, done=False)
+        body += (
+            json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": ""}, "done": True}) + "\n"
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=transport,
+            limits=InferenceLimits(max_tool_requests=1),
+        )
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOO_MANY_TOOLS"
+        assert result.tool_requests == ()
+
+    def test_malformed_later_event_clears_partial_tool_requests(self) -> None:
+        body = self._tool_event({"expression": "1+1"}, done=False)
+        body += "not-json\n"
+        transport = FakeStreamTransport(body=body)
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "INFERENCE_UNPROCESSABLE"
+        assert result.tool_requests == ()
+
+    def test_failed_terminal_clears_partial_tool_requests(self) -> None:
+        body = self._tool_event({"expression": "1+1"}, done=False)
+        body += (
+            json.dumps({"model": NATIVE_MODEL_ID, "error": "cpu overloaded", "done": True}) + "\n"
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "RUNTIME_ERROR"
+        assert result.tool_requests == ()
+
+    def test_truncated_stream_clears_partial_tool_requests(self) -> None:
+        transport = FakeStreamTransport(body=self._tool_event({"expression": "1+1"}, done=False))
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "STREAM_TRUNCATED"
+        assert result.tool_requests == ()
+
+    def test_repeated_tool_call_across_events_fails_closed(self) -> None:
+        body = self._tool_event({"expression": "1+1"}, done=False)
+        body += self._tool_event({"expression": "1+1"}, done=False)
+        body += (
+            json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": ""}, "done": True}) + "\n"
+        )
+        transport = FakeStreamTransport(body=body)
+        adapter = OllamaInferenceAdapter(endpoint=OLLAMA_END, transport=transport)
+        result = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert result.status == "failed"
+        assert result.error_code == "TOOL_CALLS_MALFORMED"
+        assert result.tool_requests == ()
+
+    def test_no_cross_request_tool_signature_leak(self) -> None:
+        first_body = self._tool_event({"expression": "1+1"}, done=False)
+        first_body += (
+            json.dumps({"model": NATIVE_MODEL_ID, "message": {"content": ""}, "done": True}) + "\n"
+        )
+        adapter = OllamaInferenceAdapter(
+            endpoint=OLLAMA_END,
+            transport=FakeStreamTransport(body=first_body),
+        )
+        first = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert first.status == "completed"
+        assert len(first.tool_requests) == 1
+        second = adapter.generate(
+            context="sys",
+            message="calc",
+            settings=make_settings(),
+            binding=make_binding(),
+            tool_definitions=[CALCULATOR_DEFINITION],
+        )
+        assert second.status == "completed"
+        assert len(second.tool_requests) == 1
 
     def test_ollama_alias_round_trip_returns_canonical_tool_id(self) -> None:
         event = {

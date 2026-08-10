@@ -276,7 +276,7 @@ class _Accumulator:
             self.parts.append(content)
         for request in tool_requests:
             if len(self.tool_requests) >= self._limits.max_tool_requests:
-                break
+                raise ToolCallLimitError("tool calls exceeded the bounded count")
             self.tool_requests.append(request)
         return True
 
@@ -635,7 +635,14 @@ class BaseRuntimeInferenceAdapter(ABC):
                     if result.status in ("completed", "failed", "partial"):
                         terminal = result
                         break
-                    if not accumulator.add(result.content, result.tool_requests):
+                    try:
+                        accepted = accumulator.add(result.content, result.tool_requests)
+                    except ToolCallLimitError as error:
+                        return self._failed_result(
+                            "Tool calls exceeded the bounded count.",
+                            error.code,
+                        )
+                    if not accepted:
                         return self._failed_result(
                             "Inference output exceeded the bounded character cap.",
                             "OUTPUT_LIMIT_EXCEEDED",
@@ -664,12 +671,20 @@ class BaseRuntimeInferenceAdapter(ABC):
                     if result.status in ("completed", "failed", "partial"):
                         terminal = result
                         break
-                    if not accumulator.add(result.content, result.tool_requests):
+                    try:
+                        accepted = accumulator.add(result.content, result.tool_requests)
+                    except ToolCallLimitError as error:
+                        return self._failed_result(
+                            "Tool calls exceeded the bounded count.",
+                            error.code,
+                        )
+                    if not accepted:
                         return self._failed_result(
                             "Inference output exceeded the bounded character cap.",
                             "OUTPUT_LIMIT_EXCEEDED",
                         )
         if terminal is None:
+            accumulator.tool_requests.clear()
             return _inference_result(
                 status="failed",
                 content=None,
@@ -678,10 +693,14 @@ class BaseRuntimeInferenceAdapter(ABC):
                 error_code="STREAM_TRUNCATED",
                 error_message="The runtime stream ended before a terminal event.",
             )
-        if terminal.status in ("completed", "partial") and not accumulator.add(
-            terminal.content,
-            terminal.tool_requests,
-        ):
+        try:
+            accepted = accumulator.add(terminal.content, terminal.tool_requests)
+        except ToolCallLimitError as error:
+            return self._failed_result(
+                "Tool calls exceeded the bounded count.",
+                error.code,
+            )
+        if not accepted:
             return self._failed_result(
                 "Inference output exceeded the bounded character cap.",
                 "OUTPUT_LIMIT_EXCEEDED",
@@ -694,6 +713,7 @@ class BaseRuntimeInferenceAdapter(ABC):
                 raw_text=raw_text,
                 tool_requests=tuple(accumulator.tool_requests),
             )
+        accumulator.tool_requests.clear()
         if terminal.status == "partial":
             return _inference_result(
                 status="partial",
@@ -1129,7 +1149,7 @@ def _build_ollama_messages(
         messages.extend(
             {
                 "role": "tool",
-                "name": canonical_to_alias[result.tool_id],
+                "tool_name": canonical_to_alias[result.tool_id],
                 "content": _render_tool_result(result),
             }
             for result in tool_results
