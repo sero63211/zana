@@ -62,6 +62,9 @@ pub fn data_root_for_platform(
         }
         PlatformKind::Linux => {
             let base = xdg_data_home
+                .filter(|path| {
+                    !path.as_os_str().is_empty() && !path.to_string_lossy().trim().is_empty()
+                })
                 .map(Path::to_path_buf)
                 .or_else(|| home.map(|home| home.join(".local").join("share")))
                 .ok_or_else(CoreError::data_root)?;
@@ -237,6 +240,42 @@ mod tests {
                 .join(APP_NAME)
                 .join(APP_NAME)
         );
+    }
+
+    #[test]
+    fn linux_empty_xdg_data_home_falls_back_to_home() {
+        let root = data_root_for_platform(
+            PlatformKind::Linux,
+            Some(Path::new("/home/zana")),
+            Some(Path::new("")),
+            None,
+        )
+        .expect("resolves");
+        assert_eq!(root, PathBuf::from("/home/zana/.local/share/zana"));
+    }
+
+    #[test]
+    fn linux_whitespace_xdg_data_home_falls_back_to_home() {
+        let root = data_root_for_platform(
+            PlatformKind::Linux,
+            Some(Path::new("/home/zana")),
+            Some(Path::new("   ")),
+            None,
+        )
+        .expect("resolves");
+        assert_eq!(root, PathBuf::from("/home/zana/.local/share/zana"));
+    }
+
+    #[test]
+    fn linux_non_empty_absolute_xdg_data_home_is_used() {
+        let root = data_root_for_platform(
+            PlatformKind::Linux,
+            Some(Path::new("/home/zana")),
+            Some(Path::new("/mnt/data")),
+            None,
+        )
+        .expect("resolves");
+        assert_eq!(root, PathBuf::from("/mnt/data/zana"));
     }
 
     #[test]
