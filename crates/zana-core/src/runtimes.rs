@@ -1796,11 +1796,7 @@ impl LoopbackHttpTransport {
                         if clock.now() >= deadline {
                             return Err(TransportError::Timeout);
                         }
-                        let new_len = text.len().saturating_add(count);
-                        if new_len > MAX_RESPONSE_BYTES {
-                            return Err(TransportError::Oversized);
-                        }
-                        text.extend_from_slice(&chunk[..count]);
+                        text = append_bounded(text, &chunk[..count], MAX_RESPONSE_BYTES)?;
                     }
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
@@ -2116,24 +2112,35 @@ mod tests {
 
     struct OversizedTransport;
 
-    struct CountingUrlTransport {
-        inner: CountingTransport,
-        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    struct ScriptedOllamaTransport {
+        tags_calls: std::sync::atomic::AtomicU8,
+        show_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl HttpTransport for CountingUrlTransport {
+    impl HttpTransport for ScriptedOllamaTransport {
         fn request(
             &self,
             _method: &str,
             url: &str,
-            headers: &[(&str, &str)],
-            body: Option<&[u8]>,
-            timeout: Duration,
+            _headers: &[(&str, &str)],
+            _body: Option<&[u8]>,
+            _timeout: Duration,
         ) -> Result<HttpResponse, TransportError> {
             if url.contains("/api/show") {
-                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.show_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                return Err(TransportError::Timeout);
             }
-            self.inner.request(_method, url, headers, body, timeout)
+            if self.tags_calls.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+                self.tags_calls
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                return Ok(HttpResponse {
+                    status: 200,
+                    text: r#"{"models":[{"name":"zephyr:7b","size":123}]}"#.to_owned(),
+                    content_type: Some("application/json".to_owned()),
+                });
+            }
+            Err(TransportError::Timeout)
         }
     }
 
@@ -2671,6 +2678,92 @@ mod tests {
     }
 
     #[test]
+    fn metadata_controls_and_digest_counting_are_enforced() {
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_secs(1),
+            2,
+        )
+        .expect("registry builds");
+        let target = target(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            AdapterType::OpenAiCompatible,
+        );
+
+        let mut descriptor = build_runtime_descriptor(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            false,
+            true,
+            true,
+            RuntimeStatus::Online,
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Some("v\x01endor".to_owned()),
+        );
+        descriptor = registry.bound_descriptor(descriptor, &target);
+        assert_eq!(descriptor.status, RuntimeStatus::Error);
+        assert!(descriptor.identified_vendor.is_none());
+
+        let mut model = ModelDescriptor {
+            runtime_id: "t".to_owned(),
+            model_id: "m".to_owned(),
+            display_name: "m".to_owned(),
+            digest: Some("d".repeat(100)),
+            family: None,
+            parameter_count: None,
+            parameter_label: None,
+            format: None,
+            quantization: None,
+            size_bytes: None,
+            context_length: None,
+            capabilities: vec!["bad\x01cap".to_owned()],
+            trainability: None,
+            metadata_source: "runtime".to_owned(),
+            last_seen_at: now_iso(),
+            identity_strength: ModelIdentityStrength::RuntimeModelId,
+        };
+        assert!(registry.bound_models(vec![model.clone()], &target).is_err());
+        model.capabilities.clear();
+
+        // Digest is counted exactly once: a total budget that fits every field
+        // including one digest copy passes, and one byte lower fails.
+        let counted = model.runtime_id.len()
+            + model.last_seen_at.len()
+            + model.model_id.len()
+            + model.display_name.len()
+            + model.metadata_source.len()
+            + model.digest.as_deref().map(str::len).unwrap_or(0);
+        let mut tight = registry.limits.clone();
+        tight.max_models_total_bytes = counted;
+        let mut tight_registry = RuntimeProbeRegistry {
+            transport: Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            timeout: Duration::from_secs(1),
+            max_workers: 2,
+            executables: registry.executables.clone(),
+            limits: tight,
+        };
+        assert!(tight_registry
+            .bound_models(vec![model.clone()], &target)
+            .is_ok());
+        tight_registry.limits.max_models_total_bytes = counted - 1;
+        assert!(tight_registry.bound_models(vec![model], &target).is_err());
+    }
+
+    #[test]
     fn bounded_text_is_exact_for_every_budget() {
         for max in 0..=20 {
             let bounded = bounded_text(&"😀".repeat(100), max);
@@ -2735,27 +2828,52 @@ mod tests {
     #[test]
     fn ollama_show_is_skipped_after_deadline() {
         let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let transport = CountingTransport {
-            concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-            delay: Duration::ZERO,
-        };
-        let transport = CountingUrlTransport {
-            inner: transport,
-            calls: std::sync::Arc::clone(&calls),
+        let transport = ScriptedOllamaTransport {
+            tags_calls: std::sync::atomic::AtomicU8::new(0),
+            show_calls: std::sync::Arc::clone(&calls),
         };
         let adapter = OllamaAdapter::new(
             "http://127.0.0.1:11434",
             RuntimeSource::Auto,
             Arc::new(transport),
-            Instant::now(),
+            Instant::now() - Duration::from_millis(1),
             false,
             10,
         );
         let descriptor = adapter.probe();
+        let show_calls = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(show_calls, 0, "exactly zero /api/show calls");
         assert_eq!(descriptor.status, RuntimeStatus::Offline);
+    }
+
+    #[test]
+    fn ollama_tags_success_then_deadline_skips_show() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let transport = ScriptedOllamaTransport {
+            tags_calls: std::sync::atomic::AtomicU8::new(1),
+            show_calls: std::sync::Arc::clone(&calls),
+        };
+        let adapter = OllamaAdapter::new(
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            Arc::new(transport),
+            Instant::now() - Duration::from_millis(1),
+            false,
+            10,
+        );
+        let descriptor = adapter.probe();
         let show_calls = calls.load(std::sync::atomic::Ordering::SeqCst);
         assert_eq!(show_calls, 0, "no /api/show calls after deadline");
+        assert_eq!(descriptor.status, RuntimeStatus::Online);
+        assert_eq!(descriptor.models.len(), 1);
+        assert_eq!(
+            descriptor
+                .warnings
+                .iter()
+                .filter(|warning| warning.contains("deadline exhausted"))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -2889,6 +3007,26 @@ mod tests {
         let parts = read_response_with_clock(&mut reader, &clock, start + Duration::from_secs(5))
             .expect("headers parse");
         assert_eq!(parts.body_prefix, b"ab");
+    }
+
+    #[test]
+    fn bounded_body_append_exact_limit_and_extra_byte() {
+        let exact = vec![0u8; MAX_RESPONSE_BYTES];
+        let mut target = Vec::new();
+        for chunk in exact.chunks(8192) {
+            target = append_bounded(target, chunk, MAX_RESPONSE_BYTES).expect("exact limit ok");
+        }
+        assert_eq!(target.len(), MAX_RESPONSE_BYTES);
+
+        let extra = vec![0u8; MAX_RESPONSE_BYTES + 1];
+        let mut target = Vec::new();
+        for chunk in extra.chunks(8192) {
+            if append_bounded(target.clone(), chunk, MAX_RESPONSE_BYTES).is_err() {
+                return;
+            }
+            target.extend_from_slice(chunk);
+        }
+        panic!("one extra byte must fail");
     }
 }
 
@@ -3027,6 +3165,18 @@ fn find_double_crlf(buffer: &[u8]) -> Option<usize> {
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
         .map(|position| position + 4)
+}
+
+fn append_bounded(
+    mut target: Vec<u8>,
+    chunk: &[u8],
+    limit: usize,
+) -> Result<Vec<u8>, TransportError> {
+    if target.len().saturating_add(chunk.len()) > limit {
+        return Err(TransportError::Oversized);
+    }
+    target.extend_from_slice(chunk);
+    Ok(target)
 }
 
 /// Validate an explicit origin for acquisition: http(s), loopback only for
