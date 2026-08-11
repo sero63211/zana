@@ -1,7 +1,9 @@
 //! Bounded sequential System Doctor probes and deterministic reports.
 
 use std::path::PathBuf;
-use std::time::Instant;
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -87,6 +89,23 @@ impl Default for ProbeBudget {
     }
 }
 
+impl ProbeBudget {
+    pub fn validate(&self) -> Result<(), String> {
+        if !(1..=64).contains(&self.max_checks)
+            || !self.per_check_timeout_seconds.is_finite()
+            || !(0.05..=5.0).contains(&self.per_check_timeout_seconds)
+            || !self.total_budget_seconds.is_finite()
+            || !(0.05..=30.0).contains(&self.total_budget_seconds)
+            || !(256..=8192).contains(&self.max_output_chars)
+            || !(1..=64).contains(&self.max_path_count)
+            || !(1..=128).contains(&self.max_error_count)
+        {
+            return Err("probe budget values are out of range".to_owned());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Evidence {
     pub observed_source: String,
@@ -147,7 +166,7 @@ pub struct DiagnosticReport {
     pub details: Value,
 }
 
-pub trait DiagnosticProbe: Send {
+pub trait DiagnosticProbe: Send + Sync {
     fn check_id(&self) -> &'static str;
     fn name(&self) -> &'static str;
     fn run(&self, budget: &ProbeBudget) -> DiagnosticCheck;
@@ -215,6 +234,22 @@ impl DiagnosticProbe for MemoryDiskProbe {
         let mut issues = Vec::new();
         let mut status = CheckStatus::Pass;
         let mut severity = Severity::Info;
+        if available.is_none() || free.is_none() {
+            status = CheckStatus::Unavailable;
+            severity = Severity::Warn;
+            issues.push(DiagnosticIssue {
+                code: "HEADROOM_UNKNOWN".to_owned(),
+                severity: Severity::Warn,
+                message:
+                    "Memory or disk headroom could not be measured; heavy work cannot be proven safe."
+                        .to_owned(),
+                recovery_actions: vec![RecoveryAction {
+                    code: "CHECK_RESOURCE_SNAPSHOT".to_owned(),
+                    message: "Refresh the resource snapshot and retry the doctor.".to_owned(),
+                    optional: false,
+                }],
+            });
+        }
         if available.is_some_and(|value| value < self.min_available_memory_bytes) {
             issues.push(DiagnosticIssue {
                 code: "LOW_MEMORY".to_owned(),
@@ -227,8 +262,10 @@ impl DiagnosticProbe for MemoryDiskProbe {
                     optional: false,
                 }],
             });
-            status = CheckStatus::Warn;
-            severity = Severity::Warn;
+            if status != CheckStatus::Unavailable {
+                status = CheckStatus::Warn;
+                severity = Severity::Warn;
+            }
         }
         if free.is_some_and(|value| value < self.min_free_disk_bytes) {
             issues.push(DiagnosticIssue {
@@ -241,8 +278,10 @@ impl DiagnosticProbe for MemoryDiskProbe {
                     optional: false,
                 }],
             });
-            status = CheckStatus::Warn;
-            severity = Severity::Warn;
+            if status != CheckStatus::Unavailable {
+                status = CheckStatus::Warn;
+                severity = Severity::Warn;
+            }
         }
         DiagnosticCheck {
             check_id: self.check_id().to_owned(),
@@ -264,13 +303,23 @@ impl DiagnosticProbe for MemoryDiskProbe {
                 ],
             },
             issues,
-            feature_readiness: Vec::new(),
+            feature_readiness: vec![FeatureReadiness {
+                feature: "memory_disk_headroom".to_owned(),
+                ready: available.is_some() && free.is_some(),
+                blocks_core_start: false,
+                blocks_feature_only: true,
+                missing_reason: if available.is_none() || free.is_none() {
+                    "Memory or disk headroom is unavailable.".to_owned()
+                } else {
+                    String::new()
+                },
+            }],
         }
     }
 }
 
 pub struct SqliteReachabilityProbe {
-    pub checker: Box<dyn Fn() -> Result<(String, i64), String> + Send>,
+    pub checker: Box<dyn Fn() -> Result<(String, i64), String> + Send + Sync>,
 }
 
 impl DiagnosticProbe for SqliteReachabilityProbe {
@@ -470,7 +519,7 @@ impl StorageRootProbe {
 }
 
 pub struct RuntimeDiscoveryProbe {
-    pub state: Box<dyn Fn() -> (Vec<String>, Vec<String>) + Send>,
+    pub state: Box<dyn Fn() -> (Vec<String>, Vec<String>) + Send + Sync>,
 }
 
 impl DiagnosticProbe for RuntimeDiscoveryProbe {
@@ -542,65 +591,90 @@ impl DiagnosticProbe for RuntimeDiscoveryProbe {
     }
 }
 
-pub struct OptionalDependencyProbe {
-    pub packages: Vec<String>,
+pub struct OptionalFeatureProbe {
+    pub features: Vec<FeatureReadiness>,
 }
 
-impl Default for OptionalDependencyProbe {
-    fn default() -> Self {
-        Self {
-            packages: ["lancedb", "docling", "zstandard", "mlx_lm", "peft"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-        }
-    }
-}
-
-impl DiagnosticProbe for OptionalDependencyProbe {
+impl DiagnosticProbe for OptionalFeatureProbe {
     fn check_id(&self) -> &'static str {
-        "optional-dependencies"
+        "optional-features"
     }
 
     fn name(&self) -> &'static str {
-        "Optional dependency metadata"
+        "Optional Rust/runtime feature readiness"
     }
 
-    fn run(&self, _budget: &ProbeBudget) -> DiagnosticCheck {
-        let readiness: Vec<FeatureReadiness> = self
-            .packages
+    fn run(&self, budget: &ProbeBudget) -> DiagnosticCheck {
+        let feature_cap = budget.max_path_count.min(16);
+        let features: Vec<FeatureReadiness> = self
+            .features
             .iter()
-            .map(|package| FeatureReadiness {
-                feature: package.clone(),
-                ready: false,
-                blocks_core_start: false,
-                blocks_feature_only: true,
-                missing_reason: "optional Python package is not bundled in the Rust core"
-                    .to_owned(),
+            .take(feature_cap)
+            .map(|feature| FeatureReadiness {
+                feature: truncate_text(feature.feature.clone(), 128, budget.max_output_chars),
+                ready: feature.ready,
+                blocks_core_start: feature.blocks_core_start,
+                blocks_feature_only: feature.blocks_feature_only,
+                missing_reason: truncate_text(
+                    feature.missing_reason.clone(),
+                    256,
+                    budget.max_output_chars,
+                ),
             })
             .collect();
+        let ready_count = features.iter().filter(|feature| feature.ready).count();
+        let missing = features.iter().filter(|feature| !feature.ready).count();
+        let all_ready = missing == 0;
+        let issues = if all_ready {
+            Vec::new()
+        } else {
+            vec![DiagnosticIssue {
+                code: "OPTIONAL_FEATURES_LIMITED".to_owned(),
+                severity: Severity::Warn,
+                message: "Some optional features are not ready; those features are limited."
+                    .to_owned(),
+                recovery_actions: vec![RecoveryAction {
+                    code: "ENABLE_FEATURE".to_owned(),
+                    message: "Enable or configure the missing optional feature.".to_owned(),
+                    optional: true,
+                }],
+            }]
+        };
         DiagnosticCheck {
             check_id: self.check_id().to_owned(),
             name: self.name().to_owned(),
-            status: CheckStatus::Pass,
-            severity: Severity::Info,
+            status: if all_ready {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
+            severity: if all_ready {
+                Severity::Info
+            } else {
+                Severity::Warn
+            },
             duration_seconds: 0.0,
-            observed_source: "rust-core-metadata".to_owned(),
+            observed_source: "injected-feature-state".to_owned(),
             observed_at_iso: now_iso(),
             evidence: Evidence {
-                observed_source: "rust-core-metadata".to_owned(),
-                value: Some(Value::from(0u64)),
+                observed_source: "injected-feature-state".to_owned(),
+                value: Some(Value::from(ready_count as u64)),
                 basename: None,
                 digest_prefix: None,
-                boolean_presence: Some(true),
-                notes: self
-                    .packages
+                boolean_presence: Some(all_ready),
+                notes: features
                     .iter()
-                    .map(|package| format!("{package}:absent"))
+                    .map(|feature| {
+                        format!(
+                            "{}:{}",
+                            feature.feature,
+                            if feature.ready { "ready" } else { "limited" }
+                        )
+                    })
                     .collect(),
             },
-            issues: Vec::new(),
-            feature_readiness: readiness,
+            issues,
+            feature_readiness: features,
         }
     }
 }
@@ -667,19 +741,207 @@ pub struct DoctorService {
     pub budget: ProbeBudget,
 }
 
+const PROBE_WORKERS: usize = 2;
+const PROBE_QUEUE_DEPTH: usize = 4;
+
+enum ProbeJob {
+    Run(
+        Box<dyn DiagnosticProbe>,
+        ProbeBudget,
+        SyncSender<ProbeOutcome>,
+    ),
+}
+
+enum ProbeOutcome {
+    Check(Box<DiagnosticCheck>),
+    Panicked,
+}
+
+struct ProbeExecutor {
+    sender: SyncSender<ProbeJob>,
+    permits: Arc<Mutex<usize>>,
+}
+
+struct PermitGuard {
+    permits: Arc<Mutex<usize>>,
+    released: bool,
+}
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        if !self.released {
+            *lock(&self.permits) += 1;
+            self.released = true;
+        }
+    }
+}
+
+impl ProbeExecutor {
+    fn run(
+        &self,
+        probe: Box<dyn DiagnosticProbe>,
+        budget: ProbeBudget,
+        effective_timeout: Duration,
+    ) -> Result<ProbeOutcome, String> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let mut permits = lock(&self.permits);
+        if *permits == 0 {
+            return Err("probe worker pool is busy".to_owned());
+        }
+        *permits -= 1;
+        drop(permits);
+        let job = ProbeJob::Run(probe, budget, sender);
+        match self.sender.try_send(job) {
+            Ok(()) => {}
+            Err(_) => {
+                *lock(&self.permits) += 1;
+                return Err("probe worker pool is busy or shutting down".to_owned());
+            }
+        }
+        match receiver.recv_timeout(effective_timeout) {
+            Ok(outcome) => Ok(outcome),
+            // The worker still owns its permit; it releases exactly once after
+            // the probe finishes, even though this caller already timed out.
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Err("probe exceeded its per-check time budget".to_owned())
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                Err("probe worker disconnected".to_owned())
+            }
+        }
+    }
+
+    fn worker_loop(receiver: Arc<Mutex<Receiver<ProbeJob>>>, permits: Arc<Mutex<usize>>) {
+        loop {
+            let job = {
+                let guard = lock(&receiver);
+                match guard.recv() {
+                    Ok(job) => job,
+                    Err(_) => return,
+                }
+            };
+            match job {
+                ProbeJob::Run(probe, budget, sender) => {
+                    let guard = PermitGuard {
+                        permits: Arc::clone(&permits),
+                        released: false,
+                    };
+                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        probe.run(&budget)
+                    }));
+                    let _ = sender.send(match outcome {
+                        Ok(check) => ProbeOutcome::Check(Box::new(check)),
+                        Err(_) => ProbeOutcome::Panicked,
+                    });
+                    drop(guard);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn local_executor() -> Result<ProbeExecutor, String> {
+    let (sender, receiver) = mpsc::sync_channel(PROBE_QUEUE_DEPTH);
+    let permits = Arc::new(Mutex::new(PROBE_WORKERS));
+    let receiver = Arc::new(Mutex::new(receiver));
+    for _ in 0..PROBE_WORKERS {
+        let receiver = Arc::clone(&receiver);
+        let permits = Arc::clone(&permits);
+        std::thread::Builder::new()
+            .name("zana-doctor-probe-test".to_owned())
+            .spawn(move || {
+                ProbeExecutor::worker_loop(receiver, permits);
+            })
+            .map_err(|_| "doctor probe workers could not be started".to_owned())?;
+    }
+    Ok(ProbeExecutor { sender, permits })
+}
+
+fn executor() -> Result<&'static ProbeExecutor, &'static str> {
+    static EXECUTOR: OnceLock<Result<ProbeExecutor, String>> = OnceLock::new();
+    EXECUTOR
+        .get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel(PROBE_QUEUE_DEPTH);
+            let permits = Arc::new(Mutex::new(PROBE_WORKERS));
+            let receiver = Arc::new(Mutex::new(receiver));
+            for _ in 0..PROBE_WORKERS {
+                let receiver = Arc::clone(&receiver);
+                let permits = Arc::clone(&permits);
+                let result = std::thread::Builder::new()
+                    .name("zana-doctor-probe".to_owned())
+                    .spawn(move || {
+                        ProbeExecutor::worker_loop(receiver, permits);
+                    });
+                if result.is_err() {
+                    return Err("doctor probe workers could not be started".to_owned());
+                }
+            }
+            Ok(ProbeExecutor { sender, permits })
+        })
+        .as_ref()
+        .map_err(|_| "doctor probe workers are unavailable")
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match mutex.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
 impl DoctorService {
     pub fn run(&self, probes: Vec<Box<dyn DiagnosticProbe>>) -> Result<DiagnosticReport, String> {
+        self.budget.validate()?;
         if probes.len() > self.budget.max_checks {
             return Err("check count exceeds the probe budget".to_owned());
         }
         let started = Instant::now();
         let mut checks = Vec::new();
+        let executor = executor();
+        let mut worker_busy = false;
         for probe in probes {
-            if started.elapsed().as_secs_f64() >= self.budget.total_budget_seconds {
+            let remaining = self.budget.total_budget_seconds - started.elapsed().as_secs_f64();
+            if remaining <= 0.0 {
                 checks.push(self.budget_check("total time budget exceeded"));
                 break;
             }
-            checks.push(self.run_one(probe.as_ref()));
+            if worker_busy {
+                checks.push(self.probe_failure(
+                    probe.as_ref(),
+                    0.0,
+                    "probe worker pool was still busy from an earlier timeout",
+                ));
+                continue;
+            }
+            let per_check = self.budget.per_check_timeout_seconds.min(remaining);
+            let probe_id = probe.check_id().to_owned();
+            let probe_name = probe.name().to_owned();
+            let result = match executor {
+                Ok(executor) => executor.run(
+                    probe,
+                    self.budget.clone(),
+                    Duration::from_secs_f64(per_check),
+                ),
+                Err(_) => {
+                    worker_busy = true;
+                    Err("doctor probe workers are unavailable".to_owned())
+                }
+            };
+            let check = match result {
+                Ok(ProbeOutcome::Check(check)) => *check,
+                Ok(ProbeOutcome::Panicked) => self.probe_failure_named(
+                    &probe_id,
+                    &probe_name,
+                    per_check,
+                    "probe failed without crashing the report",
+                ),
+                Err(error) => {
+                    worker_busy = true;
+                    self.probe_failure_named(&probe_id, &probe_name, per_check, &error)
+                }
+            };
+            checks.push(bound_check(check, &self.budget));
         }
         let total = started.elapsed().as_secs_f64();
         let error_count = checks
@@ -697,14 +959,27 @@ impl DoctorService {
             .count();
         let mandatory_failure = checks.iter().any(|check| {
             check.status == CheckStatus::Fail
-                && check
+                || check
                     .issues
                     .iter()
                     .any(|issue| issue.severity == Severity::Error)
+                || check
+                    .feature_readiness
+                    .iter()
+                    .any(|readiness| !readiness.ready && readiness.blocks_core_start)
+        });
+        let limited = checks.iter().any(|check| {
+            matches!(
+                check.status,
+                CheckStatus::Warn | CheckStatus::Unavailable | CheckStatus::Skipped
+            ) || check
+                .feature_readiness
+                .iter()
+                .any(|readiness| !readiness.ready)
         });
         let aggregate = if mandatory_failure {
             AggregateHealth::Failed
-        } else if checks.iter().any(|check| check.status == CheckStatus::Warn) {
+        } else if limited {
             AggregateHealth::PassWithLimitedFeatures
         } else {
             AggregateHealth::Healthy
@@ -722,42 +997,54 @@ impl DoctorService {
         })
     }
 
-    fn run_one(&self, probe: &dyn DiagnosticProbe) -> DiagnosticCheck {
-        let started = Instant::now();
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| probe.run(&self.budget)));
-        let duration = started.elapsed().as_secs_f64();
-        match result {
-            Ok(check) => check,
-            Err(_) => DiagnosticCheck {
-                check_id: probe.check_id().to_owned(),
-                name: probe.name().to_owned(),
-                status: CheckStatus::Unavailable,
-                severity: Severity::Warn,
-                duration_seconds: (duration * 1000.0).round() / 1000.0,
+    fn probe_failure(
+        &self,
+        probe: &dyn DiagnosticProbe,
+        duration: f64,
+        note: &str,
+    ) -> DiagnosticCheck {
+        self.probe_failure_named(probe.check_id(), probe.name(), duration, note)
+    }
+
+    fn probe_failure_named(
+        &self,
+        check_id: &str,
+        name: &str,
+        duration: f64,
+        note: &str,
+    ) -> DiagnosticCheck {
+        DiagnosticCheck {
+            check_id: check_id.to_owned(),
+            name: name.to_owned(),
+            status: CheckStatus::Unavailable,
+            severity: Severity::Warn,
+            duration_seconds: (duration * 1000.0).round() / 1000.0,
+            observed_source: "doctor".to_owned(),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
                 observed_source: "doctor".to_owned(),
-                observed_at_iso: now_iso(),
-                evidence: Evidence {
-                    observed_source: "doctor".to_owned(),
-                    value: None,
-                    basename: None,
-                    digest_prefix: None,
-                    boolean_presence: Some(false),
-                    notes: vec!["probe failed without crashing the report".to_owned()],
-                },
-                issues: vec![DiagnosticIssue {
-                    code: "PROBE_FAILED".to_owned(),
-                    severity: Severity::Warn,
-                    message: "A diagnostic probe failed; the report remains usable.".to_owned(),
-                    recovery_actions: vec![RecoveryAction {
-                        code: "RETRY_DOCTOR".to_owned(),
-                        message: "Run the doctor again after correcting the environment."
-                            .to_owned(),
-                        optional: false,
-                    }],
-                }],
-                feature_readiness: Vec::new(),
+                value: None,
+                basename: None,
+                digest_prefix: None,
+                boolean_presence: Some(false),
+                notes: vec![note.to_owned()],
             },
+            issues: vec![DiagnosticIssue {
+                code: if note.contains("time budget") {
+                    "PROBE_TIMEOUT".to_owned()
+                } else {
+                    "PROBE_FAILED".to_owned()
+                },
+                severity: Severity::Warn,
+                message: "A diagnostic probe did not complete within its bounded budget."
+                    .to_owned(),
+                recovery_actions: vec![RecoveryAction {
+                    code: "RETRY_DOCTOR".to_owned(),
+                    message: "Run the doctor again after correcting the environment.".to_owned(),
+                    optional: false,
+                }],
+            }],
+            feature_readiness: Vec::new(),
         }
     }
 
@@ -784,9 +1071,230 @@ impl DoctorService {
     }
 }
 
+fn bound_check(mut check: DiagnosticCheck, budget: &ProbeBudget) -> DiagnosticCheck {
+    if !check.duration_seconds.is_finite() || check.duration_seconds < 0.0 {
+        check.duration_seconds = 0.0;
+    }
+    check.check_id = truncate_text(check.check_id, 64, budget.max_output_chars);
+    check.name = truncate_text(check.name, 128, budget.max_output_chars);
+    check.observed_source = truncate_text(check.observed_source, 128, budget.max_output_chars);
+    check.observed_at_iso = truncate_text(check.observed_at_iso, 64, budget.max_output_chars);
+    check.evidence.observed_source =
+        truncate_text(check.evidence.observed_source, 128, budget.max_output_chars);
+    check.evidence.value = check
+        .evidence
+        .value
+        .map(|value| bound_json_value(value, budget.max_output_chars));
+    check.evidence.basename = check
+        .evidence
+        .basename
+        .map(|value| truncate_text(value, 128, budget.max_output_chars));
+    check.evidence.digest_prefix = check
+        .evidence
+        .digest_prefix
+        .map(|value| truncate_text(value, 32, budget.max_output_chars));
+    check.evidence.notes = check
+        .evidence
+        .notes
+        .into_iter()
+        .take(8)
+        .map(|value| truncate_text(value, 256, budget.max_output_chars))
+        .collect();
+    check.issues.truncate(budget.max_error_count);
+    for issue in &mut check.issues {
+        issue.code = truncate_text(issue.code.clone(), 64, budget.max_output_chars);
+        issue.message = truncate_text(issue.message.clone(), 512, budget.max_output_chars);
+        issue.recovery_actions = issue
+            .recovery_actions
+            .iter()
+            .take(8)
+            .map(|action| RecoveryAction {
+                code: truncate_text(action.code.clone(), 64, budget.max_output_chars),
+                message: truncate_text(action.message.clone(), 512, budget.max_output_chars),
+                optional: action.optional,
+            })
+            .collect();
+    }
+    check.feature_readiness = check
+        .feature_readiness
+        .into_iter()
+        .take(8)
+        .map(|readiness| FeatureReadiness {
+            feature: truncate_text(readiness.feature, 128, budget.max_output_chars),
+            ready: readiness.ready,
+            blocks_core_start: readiness.blocks_core_start,
+            blocks_feature_only: readiness.blocks_feature_only,
+            missing_reason: truncate_text(readiness.missing_reason, 256, budget.max_output_chars),
+        })
+        .collect();
+    check
+}
+
+fn bound_json_value(value: Value, max_output: usize) -> Value {
+    if value_size_within(value.clone(), 0, max_output) {
+        value
+    } else {
+        Value::String("...[truncated]".to_owned())
+    }
+}
+
+/// Bounded non-allocating size/depth walk that stops at `limit + 1`.
+fn value_size_within(value: Value, depth: usize, limit: usize) -> bool {
+    if depth > 24 {
+        return false;
+    }
+    let mut size = 0usize;
+    let mut stack = vec![value];
+    while let Some(item) = stack.pop() {
+        size += 1;
+        if size > limit {
+            return false;
+        }
+        match item {
+            Value::Object(map) => {
+                if depth >= 24 {
+                    return false;
+                }
+                for (key, child) in map {
+                    size += key.len();
+                    if size > limit {
+                        return false;
+                    }
+                    stack.push(child);
+                }
+            }
+            Value::Array(items) => {
+                if depth >= 24 {
+                    return false;
+                }
+                for child in items {
+                    stack.push(child);
+                }
+            }
+            Value::String(text) => {
+                size += text.len();
+                if size > limit {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
+}
+
+fn truncate_text(value: String, max_chars: usize, max_output_chars: usize) -> String {
+    let marker = "...[truncated]";
+    let marker_bytes = marker.len();
+    let max = max_chars.min(max_output_chars);
+    let budget = max.saturating_sub(marker_bytes);
+    if value.len() <= max {
+        return value;
+    }
+    let bytes = value.as_bytes();
+    let mut end = budget.min(bytes.len());
+    while end > 0 && (bytes[end] & 0xC0) == 0x80 {
+        end -= 1;
+    }
+    let mut result = String::with_capacity(end + marker_bytes);
+    result.push_str(&value[..end]);
+    result.push_str(marker);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static DOCTOR_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    struct NormalProbe;
+
+    impl DiagnosticProbe for NormalProbe {
+        fn check_id(&self) -> &'static str {
+            "normal"
+        }
+
+        fn name(&self) -> &'static str {
+            "Normal probe"
+        }
+
+        fn run(&self, _budget: &ProbeBudget) -> DiagnosticCheck {
+            DiagnosticCheck {
+                check_id: self.check_id().to_owned(),
+                name: self.name().to_owned(),
+                status: CheckStatus::Pass,
+                severity: Severity::Info,
+                duration_seconds: 0.0,
+                observed_source: "normal".to_owned(),
+                observed_at_iso: now_iso(),
+                evidence: Evidence {
+                    observed_source: "normal".to_owned(),
+                    value: None,
+                    basename: None,
+                    digest_prefix: None,
+                    boolean_presence: Some(true),
+                    notes: Vec::new(),
+                },
+                issues: Vec::new(),
+                feature_readiness: Vec::new(),
+            }
+        }
+    }
+
+    struct SlowProbe {
+        millis: u64,
+    }
+
+    struct StaticProbe(DiagnosticCheck);
+
+    impl DiagnosticProbe for StaticProbe {
+        fn check_id(&self) -> &'static str {
+            "static"
+        }
+
+        fn name(&self) -> &'static str {
+            "Static probe"
+        }
+
+        fn run(&self, _budget: &ProbeBudget) -> DiagnosticCheck {
+            self.0.clone()
+        }
+    }
+
+    impl DiagnosticProbe for SlowProbe {
+        fn check_id(&self) -> &'static str {
+            "slow"
+        }
+
+        fn name(&self) -> &'static str {
+            "Slow probe"
+        }
+
+        fn run(&self, _budget: &ProbeBudget) -> DiagnosticCheck {
+            std::thread::sleep(Duration::from_millis(self.millis));
+            DiagnosticCheck {
+                check_id: self.check_id().to_owned(),
+                name: self.name().to_owned(),
+                status: CheckStatus::Pass,
+                severity: Severity::Info,
+                duration_seconds: 0.0,
+                observed_source: "slow".to_owned(),
+                observed_at_iso: now_iso(),
+                evidence: Evidence {
+                    observed_source: "slow".to_owned(),
+                    value: None,
+                    basename: None,
+                    digest_prefix: None,
+                    boolean_presence: Some(true),
+                    notes: Vec::new(),
+                },
+                issues: Vec::new(),
+                feature_readiness: Vec::new(),
+            }
+        }
+    }
 
     struct PanicProbe;
 
@@ -806,6 +1314,7 @@ mod tests {
 
     #[test]
     fn doctor_aggregates_failures_and_isolates_panics() {
+        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
         let doctor = DoctorService {
             budget: ProbeBudget::default(),
         };
@@ -828,6 +1337,7 @@ mod tests {
 
     #[test]
     fn doctor_respects_check_budget() {
+        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
         let doctor = DoctorService {
             budget: ProbeBudget {
                 max_checks: 1,
@@ -844,5 +1354,245 @@ mod tests {
                 }),
             ])
             .is_err());
+    }
+
+    #[test]
+    fn doctor_timeout_keeps_worker_permit_until_finished_and_bounds_run() {
+        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let doctor = DoctorService {
+            budget: ProbeBudget {
+                per_check_timeout_seconds: 0.05,
+                total_budget_seconds: 2.0,
+                ..ProbeBudget::default()
+            },
+        };
+        let started = Instant::now();
+        let report = doctor
+            .run(vec![
+                Box::new(SlowProbe { millis: 200 }),
+                Box::new(NormalProbe),
+                Box::new(NormalProbe),
+            ])
+            .expect("runs");
+        let elapsed = started.elapsed().as_secs_f64();
+        assert!(
+            elapsed < 1.5,
+            "run duration must stay bounded, got {elapsed}"
+        );
+        assert_eq!(report.checks[0].status, CheckStatus::Unavailable);
+        assert_eq!(
+            report.checks[1].status,
+            CheckStatus::Unavailable,
+            "later probes are not launched after a timeout"
+        );
+        assert_eq!(report.checks[2].status, CheckStatus::Unavailable);
+        let executor = executor().expect("executor");
+        assert_eq!(
+            *executor.permits.lock().expect("locks"),
+            1,
+            "timed-out worker still owns its permit"
+        );
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(
+            *executor.permits.lock().expect("locks"),
+            PROBE_WORKERS,
+            "worker releases exactly once after finishing"
+        );
+        let normal = doctor
+            .run(vec![Box::new(NormalProbe)])
+            .expect("normal run succeeds");
+        assert_eq!(normal.checks[0].status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn doctor_executor_never_exceeds_fixed_worker_cap() {
+        let executor = local_executor().expect("local executor");
+        let budget = ProbeBudget {
+            per_check_timeout_seconds: 0.05,
+            ..ProbeBudget::default()
+        };
+        let first = executor.run(
+            Box::new(SlowProbe { millis: 200 }),
+            budget.clone(),
+            Duration::from_millis(50),
+        );
+        assert!(first.is_err());
+        let second = executor.run(
+            Box::new(SlowProbe { millis: 200 }),
+            budget.clone(),
+            Duration::from_millis(50),
+        );
+        assert!(second.is_err());
+        assert_eq!(
+            *executor.permits.lock().expect("locks"),
+            0,
+            "both fixed workers are occupied"
+        );
+        let third = executor.run(Box::new(NormalProbe), budget, Duration::from_millis(50));
+        assert!(third.is_err(), "no worker permit is available");
+        std::thread::sleep(Duration::from_millis(450));
+        assert_eq!(*executor.permits.lock().expect("locks"), PROBE_WORKERS);
+        let recovered = executor.run(
+            Box::new(NormalProbe),
+            ProbeBudget::default(),
+            Duration::from_secs(1),
+        );
+        assert!(matches!(recovered, Ok(ProbeOutcome::Check(_))));
+    }
+
+    #[test]
+    fn doctor_aggregates_limited_for_unavailable_and_readiness() {
+        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let doctor = DoctorService {
+            budget: ProbeBudget::default(),
+        };
+        let unavailable = doctor.run(vec![Box::new(PanicProbe)]).expect("runs");
+        assert_eq!(
+            unavailable.aggregate_health,
+            AggregateHealth::PassWithLimitedFeatures
+        );
+        let limited = doctor
+            .run(vec![Box::new(OptionalFeatureProbe {
+                features: vec![FeatureReadiness {
+                    feature: "mlx_runtime".to_owned(),
+                    ready: false,
+                    blocks_core_start: false,
+                    blocks_feature_only: true,
+                    missing_reason: "MLX runtime is not configured".to_owned(),
+                }],
+            })])
+            .expect("runs");
+        assert_eq!(
+            limited.aggregate_health,
+            AggregateHealth::PassWithLimitedFeatures
+        );
+        assert_eq!(limited.checks[0].status, CheckStatus::Warn);
+        let all_ready = doctor
+            .run(vec![Box::new(OptionalFeatureProbe {
+                features: vec![FeatureReadiness {
+                    feature: "local_runtime".to_owned(),
+                    ready: true,
+                    blocks_core_start: false,
+                    blocks_feature_only: true,
+                    missing_reason: String::new(),
+                }],
+            })])
+            .expect("runs");
+        assert_eq!(all_ready.aggregate_health, AggregateHealth::Healthy);
+    }
+
+    #[test]
+    fn aggregate_fails_closed_for_bare_fail_error_and_core_readiness() {
+        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let doctor = DoctorService {
+            budget: ProbeBudget::default(),
+        };
+        let bare_fail = DiagnosticCheck {
+            check_id: "fail".to_owned(),
+            name: "Fail".to_owned(),
+            status: CheckStatus::Fail,
+            severity: Severity::Warn,
+            duration_seconds: 0.0,
+            observed_source: "test".to_owned(),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
+                observed_source: "test".to_owned(),
+                value: None,
+                basename: None,
+                digest_prefix: None,
+                boolean_presence: Some(false),
+                notes: Vec::new(),
+            },
+            issues: Vec::new(),
+            feature_readiness: Vec::new(),
+        };
+        let report = doctor
+            .run(vec![Box::new(StaticProbe(bare_fail))])
+            .expect("runs");
+        assert_eq!(report.aggregate_health, AggregateHealth::Failed);
+
+        let core_blocked = DiagnosticCheck {
+            check_id: "core".to_owned(),
+            name: "Core".to_owned(),
+            status: CheckStatus::Pass,
+            severity: Severity::Info,
+            duration_seconds: 0.0,
+            observed_source: "test".to_owned(),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
+                observed_source: "test".to_owned(),
+                value: None,
+                basename: None,
+                digest_prefix: None,
+                boolean_presence: Some(true),
+                notes: Vec::new(),
+            },
+            issues: Vec::new(),
+            feature_readiness: vec![FeatureReadiness {
+                feature: "core".to_owned(),
+                ready: false,
+                blocks_core_start: true,
+                blocks_feature_only: false,
+                missing_reason: "core prerequisite missing".to_owned(),
+            }],
+        };
+        let report = doctor
+            .run(vec![Box::new(StaticProbe(core_blocked))])
+            .expect("runs");
+        assert_eq!(report.aggregate_health, AggregateHealth::Failed);
+    }
+
+    #[test]
+    fn bound_check_bounds_hostile_json_and_strings() {
+        let budget = ProbeBudget {
+            max_output_chars: 512,
+            ..ProbeBudget::default()
+        };
+        let mut check = DiagnosticCheck {
+            check_id: "id".repeat(100),
+            name: "name".repeat(100),
+            status: CheckStatus::Pass,
+            severity: Severity::Info,
+            duration_seconds: 0.0,
+            observed_source: "source".repeat(100),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
+                observed_source: "source".repeat(100),
+                value: Some(serde_json::json!({
+                    "huge": "😀".repeat(20_000),
+                    "nested": {"a": "x".repeat(10_000)}
+                })),
+                basename: Some("b".repeat(10_000)),
+                digest_prefix: Some("d".repeat(10_000)),
+                boolean_presence: Some(true),
+                notes: vec!["n".repeat(10_000)],
+            },
+            issues: vec![DiagnosticIssue {
+                code: "c".repeat(10_000),
+                severity: Severity::Warn,
+                message: "m".repeat(10_000),
+                recovery_actions: Vec::new(),
+            }],
+            feature_readiness: vec![FeatureReadiness {
+                feature: "f".repeat(10_000),
+                ready: false,
+                blocks_core_start: false,
+                blocks_feature_only: true,
+                missing_reason: "r".repeat(10_000),
+            }],
+        };
+        check = bound_check(check, &budget);
+        assert!(check.duration_seconds.is_finite() && check.duration_seconds >= 0.0);
+        assert!(check.check_id.len() <= 512);
+        assert!(check.name.len() <= 512);
+        assert!(check.observed_source.len() <= 512);
+        if let Some(value) = &check.evidence.value {
+            assert!(
+                serde_json::to_vec(value).expect("serializes").len() <= 512,
+                "hostile JSON must be bounded"
+            );
+        }
+        assert!(check.evidence.notes.iter().all(|note| note.len() <= 512));
+        assert!(check.issues.iter().all(|issue| issue.message.len() <= 512));
     }
 }

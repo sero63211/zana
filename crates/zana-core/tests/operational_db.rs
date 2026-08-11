@@ -454,6 +454,8 @@ fn normal_inserts_auto_enforce_bounded_event_retention() {
     let mut conn = open_conn(&database);
     let job = JobService::create_job(&mut conn, JobKind::RuntimeRefresh, "", "").expect("creates");
     let mut previous_id = 0i64;
+    conn.execute_batch("BEGIN")
+        .expect("begins retention transaction");
     for index in 0..(MAX_RETAINED_EVENTS_PER_JOB + 7) {
         let id = JobEvents::insert(
             &conn,
@@ -471,6 +473,8 @@ fn normal_inserts_auto_enforce_bounded_event_retention() {
         );
         previous_id = id;
     }
+    conn.execute_batch("COMMIT")
+        .expect("commits retention transaction");
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM job_events WHERE job_id = ?1",
