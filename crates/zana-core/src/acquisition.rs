@@ -726,7 +726,7 @@ fn canonical_digest(value: &str) -> bool {
     rest.len() == 64
         && rest
             .bytes()
-            .all(|byte| byte.is_ascii_lowercase() && byte.is_ascii_hexdigit())
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 pub fn bounded_text(value: &str, max_bytes: usize) -> String {
@@ -2216,6 +2216,65 @@ mod tests {
     }
 
     #[test]
+    fn canonical_digest_accepts_digits_and_lowercase_hex_exactly() {
+        let transport = FakeTransport {
+            chunks: vec![
+                br#"{"status":"downloading","digest":"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
+"#
+                .to_vec(),
+                br#"{"status":"completed"}
+"#
+                .to_vec(),
+            ],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let admitted = AdmissionResult {
+            allowed: true,
+            reason: "ADMITTED".to_owned(),
+            conservative_reserve_bytes: 0,
+            explicit_user_approval: true,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &transport,
+            &admitted,
+            &Arc::new(AtomicUsize::new(0)),
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Succeeded);
+        assert_eq!(
+            result.retained_events[0].digest.as_deref(),
+            Some("sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+    }
+
+    #[test]
+    fn canonical_digest_rejects_uppercase_prefix_length_and_controls() {
+        for digest in [
+            "sha256:ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde",
+            "SHA256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "sha256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\x01",
+        ] {
+            assert!(!canonical_digest(digest), "rejected: {digest}");
+        }
+        assert!(canonical_digest(
+            "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        ));
+        assert!(canonical_digest(&format!("sha256:{}", "0".repeat(64))));
+        assert!(canonical_digest(&format!("sha256:{}", "a".repeat(64))));
+    }
+
+    #[test]
     fn hostile_metadata_is_sanitized_and_not_persisted() {
         let transport = FakeTransport {
             chunks: vec![
@@ -2334,26 +2393,16 @@ mod tests {
         supervisor.dispatch(11).expect("dispatches");
         assert!(supervisor.shutdown().is_err(), "db open failure is honest");
         assert_eq!(supervisor.pending_count(), 0);
-        // Capacity is free: a fresh dispatch is admitted even though shutdown
-        // was attempted; the stop flag is true, so create a new supervisor to
-        // prove tokens are not permanently consumed on the same instance.
-        let supervisor = AcquisitionSupervisor::new(
-            dir.join("missing").join("zana.sqlite3"),
-            Arc::new(FakeTransport {
-                chunks: vec![],
-                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
-                close_error: false,
-            }),
-            Arc::new(ConfigurableAdmission {
-                reserve_bytes: 0,
-                headroom_unknown: false,
-                headroom_bytes: Some(1 << 30),
-            }),
-            2,
-        )
-        .expect("supervisor");
-        supervisor.dispatch(12).expect("fresh dispatch admitted");
-        assert_eq!(supervisor.pending_count(), 1);
+        assert_eq!(
+            supervisor.tokens.lock().expect("tokens").len(),
+            0,
+            "internal token map is empty after DB-open failure"
+        );
+        assert_eq!(
+            supervisor.queue.lock().expect("queue").len(),
+            0,
+            "internal queue is empty after DB-open failure"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
