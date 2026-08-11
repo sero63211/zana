@@ -126,8 +126,8 @@ None.
 ## Merge instructions
 
 Merge the accepted commit stack (`8e8b119` product, `fb2306c` correction,
-`5708d06` second correction, plus this receipt) onto the canonical lane at base
-`ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
+`5708d06` second correction, `57ee166` third correction, plus this receipt)
+onto the canonical lane at base `ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
 The desktop supervisor and `tauri.conf.json` need no merge-side change;
 `scripts/package-core.sh` must remain the accepted Python/PyInstaller version.
 The Rust `zana-core` binary remains an available runnable foundation, not the
@@ -227,14 +227,73 @@ The Rust foundation is available but the shipped sidecar remains Python-only
 until T925; desktop product routes remain Python-backed until T921/T922
 parity.
 
+## Third correction addendum
+
+Independent Codex rerun reported two accepted findings and one stale-board
+finding rejected by the lead. Third correction commit `57ee166` repairs the
+two accepted findings in the same exclusive scope:
+
+1. Total request deadline: the 5 s socket timeout previously reset after each
+   successful read, so a slow-drip peer could occupy an 8-slot worker
+   indefinitely and shutdown joins could block. `read_request_with_clock`
+   now enforces one monotonic wall-clock deadline across headers plus body and
+   rechecks it before every read, including after `Interrupted`. On expiry it
+   returns `ParseError::Timeout`, the handler answers 408, and the slot is
+   released. Deterministic fake-clock tests prove repeated successful partial
+   reads, slow body drains, and `Interrupted` retries cannot extend the total
+   budget; no sleeping test or framework was added.
+2. Startup token validation: `zana_core::auth::valid_launch_token` is now a
+   shared predicate used by both startup and request verification, so the two
+   paths cannot drift. Before any filesystem/database mutation or server
+   launch, `resolve_launch_token` rejects empty, whitespace-containing, and
+   over-`MAX_TOKEN_BYTES` CLI/env tokens with a fixed sanitized error that
+   prints neither token content nor length. Focused auth and startup-boundary
+   tests cover both sources without launching the server.
+
+The third board finding about canonical `main` would have required touching
+PM-owned GoalBuddy state that this old-base isolated branch intentionally
+does not contain; the lead rejected it because canonical main commit
+`a83a296` already registers/activates T920. No `state.yaml`, ledger, or other
+PM-owned file was touched, and this handoff remains the only coordination
+write in this worktree.
+
+### Third correction gates
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace` (escalated for loopback sockets) | PASS, 23 lib + 23 server tests |
+| `bash -n scripts/package-core.sh` | PASS |
+| `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
+| `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
+| `git diff --check` before and after third correction commit | PASS |
+
+### Third correction security delta
+
+Slow-drip peers are bounded by one total request deadline instead of
+per-read idle time, so worker slots and shutdown are bounded; `Interrupted`
+cannot reset the clock. Launch tokens are validated before any filesystem
+mutation using the same predicate as authentication, and startup errors stay
+fixed/sanitized with no secret content or length disclosure.
+
+### Third correction residual risk
+
+The request deadline is enforced at parse boundaries with a monotonic clock;
+live Tauri/native bundle and release-package behavior remain deferred. The
+sidecar port reservation race and Python-only transitional packaging remain
+as documented.
+
 ## Accepted commit stack and clean proof
 
 - Product commit: `8e8b119aea63caeade6f6e56f9bab08394901d32`
 - Correction commit: `fb2306c16a97d84b9bf6df6b3985d88ab4afe87e`
 - Second correction commit: `5708d06256f7056c8b49d0919826074fd746d131`
+- Third correction commit: `57ee166cd854e5fad6b7cd388f71f2ccf55cba7c`
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`)
 - Branch: `agent/t920-rust-core-foundation`
 - Remote: `origin https://github.com/sero63211/zana.git`; no push attempted
   (explicit T920 no-push policy).
-- Clean proof after second correction commit: `git status --porcelain` empty
+- Clean proof after third correction commit: `git status --porcelain` empty
   and `git diff --check` clean; the handoff commit adds only this file.
