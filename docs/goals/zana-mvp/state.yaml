@@ -1455,7 +1455,7 @@ tasks:
       - id: T921-rust-operational-core
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t921-rust-operational-core
         base: 8c11ac4f53993e826323418d69e7f9e4675fcd22
         thread: 019ff17c-9aad-7af1-8e9c-c330b19a4275
@@ -1464,10 +1464,13 @@ tasks:
         depends_on: T920-rust-core-foundation
         owns: "Exclusive shared-Rust library writer: root Cargo.toml/Cargo.lock; crates/zana-core/**; exact focused Rust tests; .agent-work/handoffs/T921-rust-operational-core.md. crates/zana-core-server/** is reassigned exclusively to T921B after accepted core integration 05c7eec and must not be touched by T921. Excludes Python, TypeScript, Tauri/package/supervisor, Android, GoalBuddy state/ledger, capability/build/evaluation/Image/Instance/knowledge/portability product logic, generated binaries/caches and unrelated paths."
         input_contract: "Treat accepted Python implementations/tests as migration evidence for SQLite migrations/repositories, global jobs and fetch-SSE events, cancellation/restart/idempotency, resource admission, system doctor, local runtime/model discovery and acquisition execution, settings/security, observability/audit, redaction and exact current API envelopes. Preserve T920 auth/path/error/deadline boundaries."
-        output_contract: "One dependency-complete Python-free Rust operational control plane: compatible SQLite schema/repositories; bounded persistent jobs/events/cancellation; resource governor and doctor; local runtime/model discovery; approved model-acquisition execution boundary; settings/security and observability/audit; and authenticated compatibility API routes with real bounded JSON/SSE behavior. Desktop package cutover remains forbidden in this task."
+        output_contract: "One dependency-complete Python-free Rust operational control plane: compatible SQLite schema/repositories; bounded persistent jobs/events/cancellation; resource governor and doctor; local runtime/model discovery; approved model-acquisition execution boundary; settings/security, observability/audit and bounded SSE primitives ready for the T921B authenticated compatibility routes. Desktop package cutover remains forbidden in this task."
         gates: "Focused Rust unit/integration/static gates with injected filesystem/process/HTTP clocks only; exact migration/transaction/restart/cancellation/SSE/bounds/redaction/error tests; cargo fmt/check/clippy with warnings denied; direct readability/security/failure review; focused commits and clean worktree. No live runtime/model/provider/network, download, inference, training, app/browser/device, bundle, broad/load test or dependency install."
         stop_if: "Stop before changing a stable T920 interface, touching capability lifecycle ownership, exposing secrets/host paths, executing unapproved processes or network, switching desktop packaging, or needing a DB/API contract change not already supported by accepted evidence; escalate the exact interface delta first."
-        verification: "Canonical reservation commit 8c11ac4 was pushed cleanly after accepted T920 integration. Visible Flash-Max task 019ff17c-9aad-7af1-8e9c-c330b19a4275 started in local isolated worktree /Users/sero/.codex/worktrees/1668/zana from exact clean 8c11ac4; detached setup was detected and the worker was explicitly required to create/switch agent/t921-rust-operational-core before product writes."
+        product_commits: "Canonical accepted operational plane through 05c7eec; acquisition/observability/SSE integration 2fc62bb, bf347fd, 90be943, 36c7eed, 3a51fa7, dbbac9c, cd8fd2d and 6fcb95f."
+        handoff_commits: "f599a3b, 6cd1a33, 2bd349d, fb10d7d, 3df5fd7 and 64126f9"
+        integration_head: 64126f9
+        verification: "PASS. Visible Flash-Max worker completed in the isolated clean branch with no push. Lead fetched and reconciled exact origin/main 295c4e9, manually reviewed every final correction, then serially cherry-picked only the accepted T921 product/receipt commits; no whole-branch merge or unrelated coordination overwrite occurred. Canonical cargo fmt PASS; zana-core 122 unit plus 13 operational DB integration tests PASS; workspace clippy with warnings denied PASS; diff hygiene and clean index/worktree PASS. Exact lowercase sha256 digest handling, DB-open shutdown token/queue cleanup, acquisition failure truth, resource admission, observability redaction and bounded SSE were directly checked. No live runtime/model/provider/network, download, inference, training, app/browser/device, bundle, broad/load test or dependency install ran. Push pending the focused coordination receipt commit."
       - id: T921B-rust-compatibility-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
@@ -1476,7 +1479,7 @@ tasks:
         thread: 019ff24f-7688-7153-926e-68c09175e299
         worktree: /Users/sero/.codex/worktrees/0b16/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
-        depends_on: "accepted canonical Rust operational core through origin/main 05c7eec; later acquisition/observability modules are serial follow-up inputs after T921 acceptance"
+        depends_on: "accepted canonical Rust operational core through local main 64126f9; acquisition/observability/SSE modules are now stable serial inputs; safe remote push receipt remains pending"
         owns: "Only crates/zana-core-server/** and new .agent-work/handoffs/T921B-rust-compatibility-api.md. Root Cargo files, crates/zana-core/**, Python, TypeScript/Tauri, Android, GoalBuddy state/ledger and all other paths are excluded."
         input_contract: "Preserve T920 loopback/auth/CORS/header/body/concurrency/deadline/error envelopes and expose only already-accepted zana-core repository/service truth. Initial dependency-complete phase covers jobs/events/fetch-SSE, cancellation, resources/System Doctor, runtime/model discovery and settings; acquisition and observability routes follow only after their exact core modules are accepted."
         output_contract: "A lean authenticated Rust compatibility router/server with bounded JSON parsing/projection, exact route/method/status/error behavior, real persisted job snapshots/cancellation and replayable fetch-SSE terminal semantics, plus operational resource/doctor/runtime/settings routes. No fake data, placeholder success or desktop cutover."
@@ -1485,7 +1488,7 @@ tasks:
       - id: T922-rust-capability-lifecycle
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         depends_on: T921-rust-operational-core
         owns: "To be reserved after T921 stabilizes the shared Rust persistence/job/API contracts: Rust capability/source/knowledge/build/evaluation/benchmark/Image/Instance/memory/portability services and exact compatibility routes/tests; docs/goals/zana-mvp/notes/T922-evaluation-benchmark-policy.md is controlling input, not worker ownership."
         input_contract: "Preserve accepted platform-neutral capability and knowledge provenance, exact model/runtime identity, build/evaluation/Image/Instance boundaries and portability behavior. Implement the pinned, license-gated, contamination-resistant paired baseline-versus-candidate contract in T922-evaluation-benchmark-policy.md; support source-backed math/medical registry metadata plus custom held-out suites without bundling unapproved dataset bytes."
