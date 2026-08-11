@@ -99,9 +99,28 @@ pub fn reason_phrase(status: u16) -> &'static str {
     }
 }
 
+/// Reader boundary that can limit each blocking read to a caller-provided
+/// remaining budget. The production socket implementation applies the timeout
+/// on the underlying `TcpStream` before every read.
+pub trait ReadWithTimeout {
+    fn read_with_timeout(&mut self, buffer: &mut [u8], timeout: Duration)
+        -> std::io::Result<usize>;
+}
+
+impl ReadWithTimeout for TcpStream {
+    fn read_with_timeout(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Duration,
+    ) -> std::io::Result<usize> {
+        self.set_read_timeout(Some(timeout))?;
+        self.read(buffer)
+    }
+}
+
 /// Read exactly one bounded request. Bodies are drained up to a hard cap so a
 /// slow or oversized client cannot retain server state.
-pub fn read_request<R: Read>(reader: &mut R) -> Result<Request, ParseError> {
+pub fn read_request<W: ReadWithTimeout>(reader: &mut W) -> Result<Request, ParseError> {
     read_request_with_clock(reader, &SystemClock, CONNECTION_TIMEOUT)
 }
 
@@ -123,9 +142,11 @@ impl Clock for SystemClock {
 ///
 /// The deadline covers headers and body together. Rechecking it before every
 /// read means successful partial reads and `Interrupted` retries can never
-/// extend the budget, so a slow-drip peer cannot hold a worker slot forever.
-pub fn read_request_with_clock<R: Read, C: Clock>(
-    reader: &mut R,
+/// extend the budget. Each read is also limited to the remaining budget, so a
+/// peer sending one byte just before the deadline cannot block for another
+/// full idle timeout, and a read that crosses the deadline fails afterwards.
+pub fn read_request_with_clock<W: ReadWithTimeout, C: Clock>(
+    reader: &mut W,
     clock: &C,
     total_budget: Duration,
 ) -> Result<Request, ParseError> {
@@ -137,9 +158,16 @@ pub fn read_request_with_clock<R: Read, C: Clock>(
         if clock.now() >= deadline {
             return Err(ParseError::Timeout);
         }
-        match reader.read(&mut chunk) {
+        let remaining = deadline.saturating_duration_since(clock.now());
+        if remaining.is_zero() {
+            return Err(ParseError::Timeout);
+        }
+        match reader.read_with_timeout(&mut chunk, remaining) {
             Ok(0) => return Err(ParseError::BadRequest),
             Ok(count) => {
+                if clock.now() >= deadline {
+                    return Err(ParseError::Timeout);
+                }
                 buffer.extend_from_slice(&chunk[..count]);
                 if let Some(position) = find_subsequence(&buffer, b"\r\n\r\n") {
                     header_end = position + 4;
@@ -244,10 +272,19 @@ pub fn read_request_with_clock<R: Read, C: Clock>(
         if clock.now() >= deadline {
             return Err(ParseError::Timeout);
         }
+        let remaining_budget = deadline.saturating_duration_since(clock.now());
+        if remaining_budget.is_zero() {
+            return Err(ParseError::Timeout);
+        }
         let wanted = usize::min(discard.len(), remaining);
-        match reader.read(&mut discard[..wanted]) {
+        match reader.read_with_timeout(&mut discard[..wanted], remaining_budget) {
             Ok(0) => return Err(ParseError::BadRequest),
-            Ok(count) => remaining -= count,
+            Ok(count) => {
+                if clock.now() >= deadline {
+                    return Err(ParseError::Timeout);
+                }
+                remaining -= count;
+            }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error)
                 if error.kind() == std::io::ErrorKind::WouldBlock
@@ -302,6 +339,26 @@ fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ReadWithTimeout for &[u8] {
+        fn read_with_timeout(
+            &mut self,
+            buffer: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
+            Read::read(self, buffer)
+        }
+    }
+
+    impl ReadWithTimeout for &mut &[u8] {
+        fn read_with_timeout(
+            &mut self,
+            buffer: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
+            Read::read(self, buffer)
+        }
+    }
 
     #[test]
     fn parses_valid_get_request() {
@@ -431,6 +488,45 @@ mod tests {
         );
     }
 
+    #[test]
+    fn single_read_crossing_budget_fails_after_the_read() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let request = b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader =
+            CrossingReader::new(request.to_vec(), clock.clone(), Duration::from_millis(1100));
+        assert_eq!(
+            read_request_with_clock(&mut reader, &clock, Duration::from_secs(1))
+                .expect_err("crossing read must time out"),
+            ParseError::Timeout
+        );
+    }
+
+    #[test]
+    fn remaining_read_timeout_decreases_across_reads() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let request = b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader =
+            TimeoutRecorder::new(request.to_vec(), clock.clone(), Duration::from_millis(300));
+        assert_eq!(
+            read_request_with_clock(&mut reader, &clock, Duration::from_secs(1))
+                .expect_err("slow drip must time out"),
+            ParseError::Timeout
+        );
+        let observed = reader.timeouts();
+        assert!(
+            observed.len() >= 3,
+            "expected at least three bounded reads, got {observed:?}"
+        );
+        for pair in observed.windows(2) {
+            assert!(
+                pair[0] > pair[1],
+                "remaining timeout must decrease: {observed:?}"
+            );
+        }
+    }
+
     #[derive(Clone)]
     struct FakeClock {
         now: std::rc::Rc<std::cell::Cell<Instant>>,
@@ -472,8 +568,12 @@ mod tests {
         }
     }
 
-    impl Read for SlowReader {
-        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+    impl ReadWithTimeout for SlowReader {
+        fn read_with_timeout(
+            &mut self,
+            output: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
             self.clock.advance(self.step);
             if self.offset >= self.data.len() || output.is_empty() {
                 return Ok(0);
@@ -495,8 +595,12 @@ mod tests {
         }
     }
 
-    impl Read for InterruptReader {
-        fn read(&mut self, _output: &mut [u8]) -> std::io::Result<usize> {
+    impl ReadWithTimeout for InterruptReader {
+        fn read_with_timeout(
+            &mut self,
+            _output: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
             self.clock.advance(self.step);
             Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
@@ -521,8 +625,12 @@ mod tests {
         }
     }
 
-    impl Read for SplitReader {
-        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+    impl ReadWithTimeout for SplitReader {
+        fn read_with_timeout(
+            &mut self,
+            output: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
             let available = self.data.len().saturating_sub(self.offset);
             if available == 0 {
                 return Ok(0);
@@ -531,6 +639,83 @@ mod tests {
             output[..count].copy_from_slice(&self.data[self.offset..self.offset + count]);
             self.offset += count;
             Ok(count)
+        }
+    }
+
+    struct CrossingReader {
+        data: Vec<u8>,
+        offset: usize,
+        clock: FakeClock,
+        step: Duration,
+    }
+
+    impl CrossingReader {
+        fn new(data: Vec<u8>, clock: FakeClock, step: Duration) -> Self {
+            Self {
+                data,
+                offset: 0,
+                clock,
+                step,
+            }
+        }
+    }
+
+    impl ReadWithTimeout for CrossingReader {
+        fn read_with_timeout(
+            &mut self,
+            output: &mut [u8],
+            _timeout: Duration,
+        ) -> std::io::Result<usize> {
+            self.clock.advance(self.step);
+            let available = self.data.len().saturating_sub(self.offset);
+            if available == 0 || output.is_empty() {
+                return Ok(0);
+            }
+            let count = available.min(output.len());
+            output[..count].copy_from_slice(&self.data[self.offset..self.offset + count]);
+            self.offset += count;
+            Ok(count)
+        }
+    }
+
+    struct TimeoutRecorder {
+        data: Vec<u8>,
+        offset: usize,
+        clock: FakeClock,
+        step: Duration,
+        timeouts: Vec<Duration>,
+    }
+
+    impl TimeoutRecorder {
+        fn new(data: Vec<u8>, clock: FakeClock, step: Duration) -> Self {
+            Self {
+                data,
+                offset: 0,
+                clock,
+                step,
+                timeouts: Vec::new(),
+            }
+        }
+
+        fn timeouts(&self) -> Vec<Duration> {
+            self.timeouts.clone()
+        }
+    }
+
+    impl ReadWithTimeout for TimeoutRecorder {
+        fn read_with_timeout(
+            &mut self,
+            output: &mut [u8],
+            timeout: Duration,
+        ) -> std::io::Result<usize> {
+            self.timeouts.push(timeout);
+            self.clock.advance(self.step);
+            if self.offset >= self.data.len() || output.is_empty() {
+                return Ok(0);
+            }
+            output[0] = self.data[self.offset];
+            self.offset += 1;
+            Ok(1)
         }
     }
 }
