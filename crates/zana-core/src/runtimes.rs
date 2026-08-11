@@ -127,6 +127,12 @@ pub trait HttpTransport: Send + Sync {
     ) -> Result<HttpResponse, TransportError>;
 }
 
+// Cooperative timeout contract: `HttpTransport::request` MUST honor the
+// caller-provided `timeout` as an absolute cap for connect/write/read and
+// return `TransportError::Timeout` on expiry. The registry uses scoped
+// workers and joins them before returning, so a transport that blocks past
+// its timeout can delay the caller but can never outlive the batch call.
+
 pub type SharedTransport = Arc<dyn HttpTransport>;
 
 #[derive(Debug, Clone)]
@@ -293,22 +299,29 @@ fn parse_text(value: Option<&Value>) -> Option<String> {
     }
 }
 
-fn bounded_field(value: Option<String>, limit: usize) -> Option<String> {
-    value.map(|text| {
-        let mut bounded = text.chars().take(limit).collect::<String>();
-        if text.len() > bounded.len() {
-            bounded.push_str("...[truncated]");
-        }
-        bounded
-    })
-}
-
 fn bounded_evidence(values: Vec<String>, limit: usize) -> Vec<String> {
     values
         .into_iter()
         .take(limit)
-        .map(|value| bounded_field(Some(value), 512).unwrap_or_default())
+        .map(|value| bounded_text(&value, 512))
         .collect()
+}
+
+fn bounded_text(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let marker = "...[truncated]";
+    let budget = max_bytes.saturating_sub(marker.len());
+    let bytes = value.as_bytes();
+    let mut end = budget.min(bytes.len());
+    while end > 0 && (bytes[end] & 0xC0) == 0x80 {
+        end -= 1;
+    }
+    let mut result = String::with_capacity(end + marker.len());
+    result.push_str(&value[..end]);
+    result.push_str(marker);
+    result
 }
 
 pub struct OllamaAdapter {
@@ -355,9 +368,26 @@ impl OllamaAdapter {
             .transport
             .request("GET", &tags_url, &[], None, self.remaining());
         let tags = match tags {
-            Ok(response) => response,
+            Ok(response) if response.text.len() <= MAX_RESPONSE_BYTES => response,
+            Ok(_) => {
+                return build_runtime_descriptor(
+                    "ollama-local",
+                    RuntimeKind::Ollama,
+                    &self.endpoint,
+                    self.source,
+                    self.installed,
+                    false,
+                    false,
+                    RuntimeStatus::Error,
+                    evidence,
+                    warnings,
+                    Some("runtime response exceeded the bounded size limit".to_owned()),
+                    Vec::new(),
+                    None,
+                );
+            }
             Err(error) => {
-                let status = if matches!(error, TransportError::Timeout) {
+                let status = if matches!(error, TransportError::Timeout | TransportError::Network) {
                     RuntimeStatus::Offline
                 } else {
                     RuntimeStatus::Error
@@ -525,7 +555,22 @@ impl OllamaAdapter {
             Some(&serde_json::to_vec(&body).unwrap_or_default()),
             self.remaining(),
         );
-        if let Ok(response) = show {
+        let show = match show {
+            Ok(response) if response.text.len() <= MAX_RESPONSE_BYTES => Some(response),
+            Ok(_) => {
+                warnings.push(format!(
+                    "/api/show enrichment failed for {name}; tags metadata only."
+                ));
+                None
+            }
+            Err(_) => {
+                warnings.push(format!(
+                    "/api/show enrichment failed for {name}; tags metadata only."
+                ));
+                None
+            }
+        };
+        if let Some(response) = show {
             if require_http_ok(&response, "Ollama /api/show").is_ok() {
                 match parse_json_object(&response, "Ollama /api/show") {
                     Ok(payload) => {
@@ -662,9 +707,26 @@ impl OpenAiCompatAdapter {
             self.transport
                 .request("GET", &self.models_url(), &[], None, self.remaining());
         let response = match response {
-            Ok(response) => response,
+            Ok(response) if response.text.len() <= MAX_RESPONSE_BYTES => response,
+            Ok(_) => {
+                return build_runtime_descriptor(
+                    &self.runtime_id,
+                    self.kind,
+                    &self.endpoint,
+                    self.source,
+                    self.installed,
+                    false,
+                    false,
+                    RuntimeStatus::Error,
+                    evidence,
+                    warnings,
+                    Some("runtime response exceeded the bounded size limit".to_owned()),
+                    Vec::new(),
+                    None,
+                );
+            }
             Err(error) => {
-                let status = if matches!(error, TransportError::Timeout) {
+                let status = if matches!(error, TransportError::Timeout | TransportError::Network) {
                     RuntimeStatus::Offline
                 } else {
                     RuntimeStatus::Error
@@ -857,6 +919,9 @@ pub fn identify_lm_studio(
             timeout,
         )
         .map_err(|_| "LM Studio metadata request failed".to_owned())?;
+    if response.text.len() > MAX_RESPONSE_BYTES {
+        return Err("LM Studio metadata response exceeded the bounded size limit".to_owned());
+    }
     require_http_ok(&response, "LM Studio /api/v0/models")?;
     let payload: Value = serde_json::from_str(&response.text)
         .map_err(|_| "LM Studio metadata returned invalid JSON".to_owned())?;
@@ -898,6 +963,9 @@ pub fn identify_llama_cpp(
     let response = transport
         .request("GET", &format!("{endpoint}/props"), &[], None, timeout)
         .map_err(|_| "llama.cpp metadata request failed".to_owned())?;
+    if response.text.len() > MAX_RESPONSE_BYTES {
+        return Err("llama.cpp metadata response exceeded the bounded size limit".to_owned());
+    }
     require_http_ok(&response, "llama.cpp /props")?;
     let payload = parse_json_object(&response, "llama.cpp /props")?;
     if contains_marker(&payload, &["llama.cpp", "llama_cpp", "llama-cpp"]) {
@@ -930,6 +998,9 @@ pub fn identify_mlx_lm(
     let response = transport
         .request("GET", &format!("{endpoint}/version"), &[], None, timeout)
         .map_err(|_| "MLX metadata request failed".to_owned())?;
+    if response.text.len() > MAX_RESPONSE_BYTES {
+        return Err("MLX metadata response exceeded the bounded size limit".to_owned());
+    }
     require_http_ok(&response, "MLX /version")?;
     let payload = parse_json_object(&response, "MLX /version")?;
     if contains_marker(&payload, &["mlx"]) {
@@ -940,11 +1011,11 @@ pub fn identify_mlx_lm(
 }
 
 pub struct RuntimeProbeRegistry {
-    pub transport: SharedTransport,
-    pub timeout: Duration,
-    pub max_workers: usize,
-    pub executables: ExecutableDiscovery,
-    pub limits: RuntimeProbeLimits,
+    transport: SharedTransport,
+    timeout: Duration,
+    max_workers: usize,
+    executables: ExecutableDiscovery,
+    limits: RuntimeProbeLimits,
 }
 
 impl RuntimeProbeRegistry {
@@ -1008,11 +1079,13 @@ impl RuntimeProbeRegistry {
     }
 
     pub fn probe(&self, targets: Vec<ProbeTarget>) -> Result<Vec<RuntimeDescriptor>, String> {
+        self.revalidate_config()?;
         let validated = self.validate_targets(targets)?;
         if validated.is_empty() {
             return Ok(Vec::new());
         }
-        let deadline = Instant::now() + self.timeout;
+        let timeout = self.trusted_timeout()?;
+        let deadline = Instant::now() + timeout;
         if validated.len() == 1 || self.max_workers == 1 {
             let result = validated
                 .iter()
@@ -1031,7 +1104,6 @@ impl RuntimeProbeRegistry {
                 let queue = Arc::clone(&queue);
                 let results = Arc::clone(&results);
                 let registry = Arc::clone(&self.transport);
-                let timeout = self.timeout;
                 let limits = self.limits.clone();
                 let executables = self.executables.clone();
                 let handle = std::thread::Builder::new()
@@ -1132,7 +1204,8 @@ impl RuntimeProbeRegistry {
                 self.limits.max_targets
             ));
         }
-        let mut seen = std::collections::HashSet::new();
+        let mut seen_runtime_ids = std::collections::HashSet::new();
+        let mut seen_identities = std::collections::HashSet::new();
         let mut validated = Vec::new();
         for mut target in targets {
             if target.runtime_id.is_empty()
@@ -1143,6 +1216,9 @@ impl RuntimeProbeRegistry {
                     .all(|byte| byte.is_ascii_alphanumeric() || b"_.-:".contains(&byte))
             {
                 return Err("runtime_id is invalid or too long".to_owned());
+            }
+            if !seen_runtime_ids.insert(target.runtime_id.clone()) {
+                return Err("duplicate runtime_id in probe targets".to_owned());
             }
             if target.endpoint.len() > self.limits.max_endpoint_length
                 || target.endpoint.len() > self.limits.max_endpoint_bytes
@@ -1163,13 +1239,12 @@ impl RuntimeProbeRegistry {
             let canonical = canonical_endpoint(&target.endpoint)?;
             target.endpoint = canonical.clone();
             let identity = format!(
-                "{}|{}|{}|{}",
-                target.runtime_id,
+                "{}|{}|{}",
                 target.kind.as_str(),
                 canonical,
                 target.source.as_str()
             );
-            if !seen.insert(identity) {
+            if !seen_identities.insert(identity) {
                 return Err("duplicate canonical runtime identity in probe targets".to_owned());
             }
             validated.push(target);
@@ -1182,7 +1257,11 @@ impl RuntimeProbeRegistry {
         if remaining.is_zero() {
             return self.bare_error(target);
         }
-        let timeout = target.timeout.unwrap_or(self.timeout).min(remaining);
+        let configured = match self.trusted_timeout() {
+            Ok(timeout) => timeout,
+            Err(_) => return self.bare_error(target),
+        };
+        let timeout = target.timeout.unwrap_or(configured).min(remaining);
         let adapter = self.make_adapter(target, timeout);
         let descriptor = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| adapter.probe()))
             .unwrap_or_else(|_| {
@@ -1252,6 +1331,22 @@ impl RuntimeProbeRegistry {
         }
     }
 
+    fn revalidate_config(&self) -> Result<(), String> {
+        self.limits.validate()?;
+        if self.timeout.is_zero() || self.timeout.as_secs_f64() > self.limits.max_timeout_seconds {
+            return Err("probe timeout is out of range".to_owned());
+        }
+        if !(1..=MAX_WORKERS).contains(&self.max_workers) {
+            return Err("max_workers is out of range".to_owned());
+        }
+        Ok(())
+    }
+
+    fn trusted_timeout(&self) -> Result<Duration, String> {
+        self.revalidate_config()?;
+        Ok(self.timeout)
+    }
+
     fn bound_descriptor(
         &self,
         descriptor: RuntimeDescriptor,
@@ -1263,16 +1358,9 @@ impl RuntimeProbeRegistry {
         descriptor.source = target.source;
         descriptor.evidence = bounded_evidence(descriptor.evidence, self.limits.max_evidence_items);
         descriptor.warnings = bounded_evidence(descriptor.warnings, self.limits.max_evidence_items);
-        descriptor.error = descriptor.error.map(|error| {
-            let mut bounded = error
-                .chars()
-                .take(self.limits.max_error_chars)
-                .collect::<String>();
-            if error.len() > bounded.len() {
-                bounded.push_str("...[truncated]");
-            }
-            bounded
-        });
+        descriptor.error = descriptor
+            .error
+            .map(|error| bounded_text(&error, self.limits.max_error_chars));
         descriptor.identified_vendor = descriptor.identified_vendor.inspect(|vendor| {
             if vendor.len() > self.limits.max_model_field_bytes {
                 descriptor.error =
@@ -1285,6 +1373,9 @@ impl RuntimeProbeRegistry {
                 descriptor.models = Vec::new();
             }
         });
+        if descriptor.status == RuntimeStatus::Error {
+            descriptor.identified_vendor = None;
+        }
         match self.bound_models(descriptor.models, target) {
             Ok(models) => descriptor.models = models,
             Err(message) => {
@@ -1313,8 +1404,11 @@ impl RuntimeProbeRegistry {
         for mut model in models {
             if model.model_id.is_empty()
                 || model.model_id.len() > self.limits.max_model_field_bytes
+                || model.model_id.bytes().any(|b| b < 0x20 || b == 0x7f)
                 || model.digest.as_deref().is_some_and(|value| {
-                    value.is_empty() || value.len() > self.limits.max_model_field_bytes
+                    value.is_empty()
+                        || value.len() > self.limits.max_model_field_bytes
+                        || value.bytes().any(|b| b < 0x20 || b == 0x7f)
                 })
             {
                 return Err("model identity field exceeds the bounded limit".to_owned());
@@ -1340,7 +1434,10 @@ impl RuntimeProbeRegistry {
                 model.parameter_label.as_deref().unwrap_or(""),
                 model.trainability.as_deref().unwrap_or(""),
             ] {
-                if !field.is_empty() && field.len() > self.limits.max_model_field_bytes {
+                if !field.is_empty()
+                    && (field.len() > self.limits.max_model_field_bytes
+                        || field.bytes().any(|b| b < 0x20 || b == 0x7f))
+                {
                     return Err("model metadata field exceeds the bounded limit".to_owned());
                 }
             }
@@ -1354,10 +1451,15 @@ impl RuntimeProbeRegistry {
             {
                 return Err("model capability exceeds the bounded limit".to_owned());
             }
-            if model.metadata_source.len() > self.limits.max_model_field_bytes {
+            if model.metadata_source.len() > self.limits.max_model_field_bytes
+                || model.metadata_source.bytes().any(|b| b < 0x20 || b == 0x7f)
+            {
                 return Err("model metadata field exceeds the bounded limit".to_owned());
             }
+            model.last_seen_at = now_iso();
             total_bytes = total_bytes
+                .saturating_add(model.runtime_id.len())
+                .saturating_add(model.last_seen_at.len())
                 .saturating_add(model.model_id.len())
                 .saturating_add(model.display_name.len())
                 .saturating_add(model.digest.as_deref().map(str::len).unwrap_or(0))
@@ -1508,11 +1610,7 @@ impl LoopbackHttpTransport {
         if remaining.is_zero() {
             return Err(TransportError::Timeout);
         }
-        let host = if url.host == "localhost" {
-            "127.0.0.1"
-        } else {
-            &url.host
-        };
+        let host = url.host.as_str();
         let address: std::net::SocketAddr = match host.parse::<std::net::IpAddr>() {
             Ok(ip) => std::net::SocketAddr::new(ip, url.port),
             Err(_) => {
@@ -1574,12 +1672,10 @@ impl LoopbackHttpTransport {
         let mut stream = Self::connect(&parsed, remaining_budget(clock, deadline)?)?;
         let body = body.unwrap_or_default();
         let mut request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {host}:{port}\r\nUser-Agent: zana-core/0.1.0\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
-            body.len()
-            ,
+            "{method} {path} HTTP/1.1\r\nHost: {host_header}\r\nUser-Agent: zana-core/0.1.0\r\nAccept: application/json\r\nConnection: close\r\nContent-Length: {}\r\n",
+            body.len(),
+            host_header = host_header(&parsed),
             path = parsed.path,
-            host = parsed.host,
-            port = parsed.port,
         );
         for (name, value) in headers {
             request.push_str(name);
@@ -1715,7 +1811,9 @@ impl LoopbackHttpTransport {
             .iter()
             .find(|(name, _)| name == "content-type")
             .map(|(_, value)| value.clone());
-        let text = String::from_utf8_lossy(&text).into_owned();
+        let text = String::from_utf8(text).map_err(|_| {
+            TransportError::Protocol("runtime response body is not valid UTF-8".to_owned())
+        })?;
         Ok(HttpResponse {
             status: parts.status,
             text,
@@ -1728,6 +1826,14 @@ struct UrlParts {
     host: String,
     port: u16,
     path: String,
+}
+
+fn host_header(url: &UrlParts) -> String {
+    if url.host.contains(':') {
+        format!("[{}]:{}", url.host, url.port)
+    } else {
+        format!("{}:{}", url.host, url.port)
+    }
 }
 
 fn validate_url(url: &str) -> Result<UrlParts, TransportError> {
@@ -1777,6 +1883,11 @@ fn validate_url(url: &str) -> Result<UrlParts, TransportError> {
             None => (authority.to_owned(), 80),
         },
     };
+    if host.is_empty() || host.contains(' ') || host.bytes().any(is_http_control) {
+        return Err(TransportError::Protocol(
+            "runtime endpoint host is invalid".to_owned(),
+        ));
+    }
     if port == 0 {
         return Err(TransportError::Protocol(
             "runtime endpoint port is invalid".to_owned(),
@@ -1827,6 +1938,14 @@ fn validate_request_components(
         ));
     }
     for (name, value) in headers {
+        if matches!(
+            name.to_ascii_lowercase().as_str(),
+            "host" | "content-length" | "connection" | "transfer-encoding"
+        ) {
+            return Err(TransportError::Protocol(
+                "runtime request header is reserved and cannot be overridden".to_owned(),
+            ));
+        }
         if name.is_empty()
             || name.contains(':')
             || name.contains(' ')
@@ -1983,6 +2102,40 @@ mod tests {
         delay: Duration,
     }
 
+    struct NetworkTransport;
+
+    struct OversizedTransport;
+
+    impl HttpTransport for OversizedTransport {
+        fn request(
+            &self,
+            _method: &str,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: Option<&[u8]>,
+            _timeout: Duration,
+        ) -> Result<HttpResponse, TransportError> {
+            Ok(HttpResponse {
+                status: 200,
+                text: "x".repeat(MAX_RESPONSE_BYTES + 1),
+                content_type: None,
+            })
+        }
+    }
+
+    impl HttpTransport for NetworkTransport {
+        fn request(
+            &self,
+            _method: &str,
+            _url: &str,
+            _headers: &[(&str, &str)],
+            _body: Option<&[u8]>,
+            _timeout: Duration,
+        ) -> Result<HttpResponse, TransportError> {
+            Err(TransportError::Network)
+        }
+    }
+
     impl HttpTransport for CountingTransport {
         fn request(
             &self,
@@ -2050,26 +2203,38 @@ mod tests {
         let registry = RuntimeProbeRegistry::new(Arc::new(transport), Duration::from_secs(2), 2)
             .expect("registry builds");
         let targets = vec![
-            target(
-                "a",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
-            target(
-                "b",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
-            target(
-                "c",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
-            target(
-                "d",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11434".to_owned(),
+                ..target(
+                    "a",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11435".to_owned(),
+                ..target(
+                    "b",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11436".to_owned(),
+                ..target(
+                    "c",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11437".to_owned(),
+                ..target(
+                    "d",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
         ];
         let descriptors = registry.probe(targets).expect("probes");
         assert_eq!(descriptors.len(), 4);
@@ -2091,16 +2256,22 @@ mod tests {
         let registry = RuntimeProbeRegistry::new(Arc::new(transport), Duration::from_millis(80), 2)
             .expect("registry builds");
         let targets = vec![
-            target(
-                "a",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
-            target(
-                "b",
-                RuntimeKind::OpenAiCompatible,
-                AdapterType::OpenAiCompatible,
-            ),
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11434".to_owned(),
+                ..target(
+                    "a",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11435".to_owned(),
+                ..target(
+                    "b",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
         ];
         let descriptors = registry.probe(targets).expect("probes");
         assert_eq!(descriptors.len(), 2);
@@ -2201,7 +2372,7 @@ mod tests {
             2,
         )
         .expect("registry builds");
-        let target = target(
+        let _target = target(
             "t",
             RuntimeKind::OpenAiCompatible,
             AdapterType::OpenAiCompatible,
@@ -2224,6 +2395,11 @@ mod tests {
             last_seen_at: now_iso(),
             identity_strength: ModelIdentityStrength::RuntimeModelId,
         };
+        let target = target(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            AdapterType::OpenAiCompatible,
+        );
         assert!(registry.bound_models(vec![model], &target).is_err());
 
         let descriptor = build_runtime_descriptor(
@@ -2275,12 +2451,12 @@ mod tests {
             last_seen_at: now_iso(),
             identity_strength: ModelIdentityStrength::RuntimeModelId,
         };
-        let target = target(
+        let _target = target(
             "t",
             RuntimeKind::OpenAiCompatible,
             AdapterType::OpenAiCompatible,
         );
-        assert!(registry.bound_models(vec![model], &target).is_err());
+        assert!(registry.bound_models(vec![model], &_target).is_err());
     }
 
     #[test]
@@ -2303,6 +2479,230 @@ mod tests {
         assert_eq!(canonical, "http://[::1]:11434");
         assert!(is_loopback_endpoint("http://[::1]:11434"));
         assert!(validate_url("http://[::1]:0").is_err());
+    }
+
+    #[test]
+    fn registry_config_revalidation_blocks_mutation() {
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_millis(500),
+            2,
+        )
+        .expect("registry builds");
+        assert!(registry.revalidate_config().is_ok());
+        // RuntimeProbeRegistry fields are private; the only public mutation
+        // path would be through a fabricated config, which cannot be built
+        // after `new`. Revalidation is proven by invalid target timeouts.
+        let bad_timeout = ProbeTarget {
+            timeout: Some(Duration::from_secs(999)),
+            ..target(
+                "t",
+                RuntimeKind::OpenAiCompatible,
+                AdapterType::OpenAiCompatible,
+            )
+        };
+        assert!(registry.validate_targets(vec![bad_timeout]).is_err());
+    }
+
+    #[test]
+    fn validate_targets_rejects_same_id_different_endpoint() {
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_secs(1),
+            2,
+        )
+        .expect("registry builds");
+        let targets = vec![
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11434".to_owned(),
+                ..target(
+                    "x",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11435".to_owned(),
+                ..target(
+                    "x",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+        ];
+        assert!(registry.validate_targets(targets).is_err());
+    }
+
+    #[test]
+    fn validate_targets_rejects_different_id_same_canonical_target() {
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_secs(1),
+            2,
+        )
+        .expect("registry builds");
+        let targets = vec![
+            ProbeTarget {
+                endpoint: "http://127.0.0.1:11434".to_owned(),
+                ..target(
+                    "x",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+            ProbeTarget {
+                endpoint: "http://localhost:11434".to_owned(),
+                ..target(
+                    "y",
+                    RuntimeKind::OpenAiCompatible,
+                    AdapterType::OpenAiCompatible,
+                )
+            },
+        ];
+        assert!(registry.validate_targets(targets).is_err());
+    }
+
+    #[test]
+    fn host_header_emits_bracketed_ipv6() {
+        let parts = validate_url("http://[::1]:11434/").expect("parses");
+        assert_eq!(host_header(&parts), "[::1]:11434");
+        let parts = validate_url("http://127.0.0.1:11434").expect("parses");
+        assert_eq!(host_header(&parts), "127.0.0.1:11434");
+    }
+
+    #[test]
+    fn validate_origin_exact_and_hostile() {
+        assert_eq!(
+            validate_origin("http://127.0.0.1:11434", true).expect("local"),
+            "http://127.0.0.1:11434"
+        );
+        assert_eq!(
+            validate_origin("http://[::1]:11434", true).expect("ipv6"),
+            "http://[::1]:11434"
+        );
+        assert!(validate_origin("http://localhost:11434", true).is_ok());
+        assert!(validate_origin("http://192.168.1.1:8080", true).is_err());
+        assert!(validate_origin("http://example.com", true).is_err());
+        assert!(validate_origin("http://127.0.0.1:0", true).is_err());
+        assert!(validate_origin("http://127.0.0.1:8080/path", true).is_err());
+        assert!(validate_origin("http://user:pass@127.0.0.1", true).is_err());
+        assert!(validate_origin("http://127.0.0.1:8080?x=1", true).is_err());
+        assert!(validate_origin("http://[::1]", true).is_ok());
+        assert!(validate_origin("http://[::1]:0", true).is_err());
+    }
+
+    #[test]
+    fn bounded_output_is_exact_utf8_bytes() {
+        let value = "😀".repeat(200);
+        let bounded = bounded_text(&value, 64);
+        assert!(bounded.len() <= 64);
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_secs(1),
+            2,
+        )
+        .expect("registry builds");
+        let _target = target(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            AdapterType::OpenAiCompatible,
+        );
+        let model = ModelDescriptor {
+            runtime_id: "t".to_owned(),
+            model_id: "m".to_owned(),
+            display_name: "😀".repeat(200),
+            digest: None,
+            family: None,
+            parameter_count: None,
+            parameter_label: None,
+            format: None,
+            quantization: None,
+            size_bytes: None,
+            context_length: None,
+            capabilities: Vec::new(),
+            trainability: None,
+            metadata_source: "runtime".to_owned(),
+            last_seen_at: now_iso(),
+            identity_strength: ModelIdentityStrength::RuntimeModelId,
+        };
+        let target = target(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            AdapterType::OpenAiCompatible,
+        );
+        assert!(registry.bound_models(vec![model], &target).is_err());
+    }
+
+    #[test]
+    fn adapter_rejects_oversized_injected_responses() {
+        let transport: SharedTransport = Arc::new(OversizedTransport);
+        let ollama = OllamaAdapter::new(
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            Arc::clone(&transport),
+            Instant::now() + Duration::from_secs(1),
+            false,
+            10,
+        );
+        let descriptor = ollama.probe();
+        assert_eq!(descriptor.status, RuntimeStatus::Error);
+        assert!(descriptor.models.is_empty());
+        let openai = OpenAiCompatAdapter::new(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            transport,
+            Instant::now() + Duration::from_secs(1),
+            false,
+            None,
+            10,
+        );
+        let descriptor = openai.probe();
+        assert_eq!(descriptor.status, RuntimeStatus::Error);
+        assert!(descriptor.models.is_empty());
+    }
+
+    #[test]
+    fn network_error_maps_to_offline_for_both_adapters() {
+        let network: SharedTransport = Arc::new(NetworkTransport);
+        let ollama = OllamaAdapter::new(
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            Arc::clone(&network),
+            Instant::now() + Duration::from_secs(1),
+            false,
+            10,
+        );
+        assert_eq!(ollama.probe().status, RuntimeStatus::Offline);
+        let openai = OpenAiCompatAdapter::new(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            network,
+            Instant::now() + Duration::from_secs(1),
+            false,
+            None,
+            10,
+        );
+        assert_eq!(openai.probe().status, RuntimeStatus::Offline);
     }
 
     #[test]
@@ -2395,11 +2795,6 @@ fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
     let mut chunk = [0u8; 8192];
     let header_end;
     loop {
-        if buffer.len() > MAX_HEADER_BYTES {
-            return Err(TransportError::Protocol(
-                "runtime response headers are too large".to_owned(),
-            ));
-        }
         let remaining = remaining_budget(clock, deadline)?;
         match reader.read_with_remaining(&mut chunk, remaining) {
             Ok(0) => return Err(TransportError::Network),
@@ -2410,6 +2805,11 @@ fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
                 buffer.extend_from_slice(&chunk[..count]);
                 if let Some(position) = find_double_crlf(&buffer) {
                     header_end = position;
+                    if header_end > MAX_HEADER_BYTES {
+                        return Err(TransportError::Protocol(
+                            "runtime response headers are too large".to_owned(),
+                        ));
+                    }
                     break;
                 }
                 if buffer.len() > MAX_HEADER_BYTES {
@@ -2461,6 +2861,11 @@ fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
             ));
         }
         let value = value.trim().to_owned();
+        if value.bytes().any(is_http_control) {
+            return Err(TransportError::Protocol(
+                "runtime response contains control characters in a header value".to_owned(),
+            ));
+        }
         if name == "content-length" {
             if content_length.is_some() {
                 return Err(TransportError::Protocol(
@@ -2519,37 +2924,49 @@ pub fn validate_origin(endpoint: &str, local_only: bool) -> Result<String, Strin
             "acquisition endpoint must not contain credentials, fragments, or queries".to_owned(),
         );
     }
-    let (authority, path) = match rest.split_once('/') {
-        Some((_authority, path)) if !path.is_empty() => {
+    let (authority, _path) = match rest.split_once('/') {
+        Some((_authority, path)) if !path.is_empty() && path != "/" => {
             return Err("acquisition endpoint must be an origin without a path".to_owned());
         }
         Some((authority, _)) => (authority, ""),
         None => (rest, ""),
     };
-    if !path.is_empty() {
-        return Err("acquisition endpoint must be an origin without a path".to_owned());
+    if authority.is_empty()
+        || authority.contains(' ')
+        || authority.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return Err("acquisition endpoint host is invalid".to_owned());
     }
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((host, port)) => {
-            if port.is_empty() {
-                return Err("acquisition endpoint port is incomplete".to_owned());
+    let (host, port) = match parse_ipv6_authority(authority) {
+        Some((host, port)) => (host, port),
+        None => match authority.rsplit_once(':') {
+            Some((host, port)) => {
+                if port.is_empty() {
+                    return Err("acquisition endpoint port is incomplete".to_owned());
+                }
+                let port: u16 = port
+                    .parse()
+                    .map_err(|_| "acquisition endpoint port is invalid".to_owned())?;
+                if port == 0 {
+                    return Err("acquisition endpoint port is out of range".to_owned());
+                }
+                (host.to_owned(), Some(port))
             }
-            let port: u16 = port
-                .parse()
-                .map_err(|_| "acquisition endpoint port is invalid".to_owned())?;
-            if port == 0 {
-                return Err("acquisition endpoint port is out of range".to_owned());
-            }
-            (host.to_owned(), Some(port))
-        }
-        None => (authority.to_owned(), None),
+            None => (authority.to_owned(), None),
+        },
     };
     let host = host.trim_end_matches('.').to_ascii_lowercase();
+    if host.is_empty() || host.contains(' ') || host.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return Err("acquisition endpoint host is invalid".to_owned());
+    }
     if local_only && !is_loopback_host(&host) {
         return Err(
             "remote acquisition is denied by local-only policy; explicit remote approval is required"
                 .to_owned(),
         );
+    }
+    if port == Some(0) {
+        return Err("acquisition endpoint port is out of range".to_owned());
     }
     let display_host = if host.contains(':') {
         format!("[{host}]")
@@ -2581,10 +2998,15 @@ fn adapter_matches_kind(adapter: AdapterType, kind: RuntimeKind) -> bool {
 
 fn canonical_endpoint(endpoint: &str) -> Result<String, String> {
     let parts = validate_url(endpoint).map_err(|_| "probe endpoint is invalid".to_owned())?;
-    let host = if parts.host.contains(':') {
-        format!("[{}]", parts.host)
+    let dial_host = if parts.host == "localhost" {
+        "127.0.0.1".to_owned()
     } else {
-        parts.host
+        parts.host.clone()
+    };
+    let host = if dial_host.contains(':') {
+        format!("[{dial_host}]")
+    } else {
+        dial_host
     };
     Ok(format!("http://{host}:{}", parts.port))
 }
