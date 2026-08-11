@@ -1523,8 +1523,10 @@ tasks:
       - id: T922C-rust-knowledge-retrieval
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t922c-rust-knowledge-retrieval
+        thread: 019ff274-cdc1-77b3-99e3-69a9f760eb0b
+        worktree: /Users/sero/.codex/worktrees/0fd3/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation and accepted Python knowledge normalization/chunking/embedding/retrieval contracts; parallel-safe pure-domain subtask for later T922 integration"
         owns: "Only new files under crates/zana-knowledge/** and .agent-work/handoffs/T922C-rust-knowledge-retrieval.md. Root Cargo files, zana-core, zana-core-server, zana-evaluation, zana-artifacts, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
