@@ -1455,13 +1455,17 @@ tasks:
       - id: T921-rust-operational-core
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
+        branch: agent/t921-rust-operational-core
+        base: b244ba586bb67da69feb19959b6b8d8217b8f445
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: T920-rust-core-foundation
         owns: "Next exclusive shared-Rust writer after a visible task is recorded: root Cargo.toml/Cargo.lock; crates/zana-core/**; crates/zana-core-server/**; exact focused Rust tests; .agent-work/handoffs/T921-rust-operational-core.md. Excludes Python, TypeScript, Tauri/package/supervisor, Android, GoalBuddy state/ledger, capability/build/evaluation/Image/Instance/knowledge/portability product logic, generated binaries/caches and unrelated paths."
         input_contract: "Treat accepted Python implementations/tests as migration evidence for SQLite migrations/repositories, global jobs and fetch-SSE events, cancellation/restart/idempotency, resource admission, system doctor, local runtime/model discovery and acquisition execution, settings/security, observability/audit, redaction and exact current API envelopes. Preserve T920 auth/path/error/deadline boundaries."
         output_contract: "One dependency-complete Python-free Rust operational control plane: compatible SQLite schema/repositories; bounded persistent jobs/events/cancellation; resource governor and doctor; local runtime/model discovery; approved model-acquisition execution boundary; settings/security and observability/audit; and authenticated compatibility API routes with real bounded JSON/SSE behavior. Desktop package cutover remains forbidden in this task."
         gates: "Focused Rust unit/integration/static gates with injected filesystem/process/HTTP clocks only; exact migration/transaction/restart/cancellation/SSE/bounds/redaction/error tests; cargo fmt/check/clippy with warnings denied; direct readability/security/failure review; focused commits and clean worktree. No live runtime/model/provider/network, download, inference, training, app/browser/device, bundle, broad/load test or dependency install."
         stop_if: "Stop before changing a stable T920 interface, touching capability lifecycle ownership, exposing secrets/host paths, executing unapproved processes or network, switching desktop packaging, or needing a DB/API contract change not already supported by accepted evidence; escalate the exact interface delta first."
+        verification: "Canonical main and origin/main are clean and identical at b244ba5 after accepted T920 integration. One visible Flash-Max worktree task is authorized; exact thread/worktree receipt is pending creation before product writes."
       - id: T922-rust-capability-lifecycle
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
