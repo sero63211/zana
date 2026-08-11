@@ -1537,8 +1537,10 @@ tasks:
       - id: T922D-rust-build-planner
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t922d-rust-build-planner
+        thread: 019ff27e-cfac-74f3-9e47-d680131c74e9
+        worktree: /Users/sero/.codex/worktrees/88e1/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation plus accepted Python build-planning, training-provider and resource-safety contracts; parallel-safe pure-domain subtask for later T922 integration"
         owns: "Only new files under crates/zana-build/** and .agent-work/handoffs/T922D-rust-build-planner.md. Root Cargo files, zana-core, zana-core-server, zana-evaluation, zana-artifacts, zana-knowledge, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
@@ -1549,8 +1551,10 @@ tasks:
       - id: T922E-rust-permission-engine
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t922e-rust-permission-engine
+        thread: 019ff27e-cfac-74f3-9e47-d6a175052b1e
+        worktree: /Users/sero/.codex/worktrees/c6f9/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation plus accepted Python permission/tool contracts and Android safety requirements; parallel-safe pure-domain subtask for later T922/T923 integration"
         owns: "Only new files under crates/zana-permissions/** and .agent-work/handoffs/T922E-rust-permission-engine.md. Root Cargo files, every other Rust crate, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
@@ -1561,8 +1565,10 @@ tasks:
       - id: T922F-rust-instance-memory
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t922f-rust-instance-memory
+        thread: 019ff27e-cfac-74f3-9e47-d66fa715caac
+        worktree: /Users/sero/.codex/worktrees/87bf/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation plus accepted Python Instance conversation/memory/provenance contracts; parallel-safe pure-domain subtask for later T922 integration"
         owns: "Only new files under crates/zana-memory/** and .agent-work/handoffs/T922F-rust-instance-memory.md. Root Cargo files, every other Rust crate, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
