@@ -1,5 +1,6 @@
 //! Bounded native model acquisition planning, execution, and persistence.
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -48,11 +49,12 @@ impl AcquisitionRequest {
     ) -> Result<Self, String> {
         let reference = sanitize_model_reference(model_reference)?;
         let endpoint = validate_origin(endpoint, true)?;
-        if expected_size_bytes.is_some_and(|value| !(0..=MAX_PROGRESS_VALUE).contains(&value)) {
+        if expected_size_bytes.is_some_and(|value| !(1..=MAX_PROGRESS_VALUE).contains(&value)) {
             return Err("expected_size_bytes is out of range".to_owned());
         }
         if !deadline_seconds.is_finite()
             || !(0.0..=MAX_DEADLINE_SECONDS).contains(&deadline_seconds)
+            || deadline_seconds <= 0.0
         {
             return Err("deadline_seconds is out of range".to_owned());
         }
@@ -88,6 +90,18 @@ pub struct ConfigurableAdmission {
 
 impl AdmissionProvider for ConfigurableAdmission {
     fn admit(&self, request: &AcquisitionRequest) -> AdmissionResult {
+        if !(0..=MAX_ADMISSION_HEADROOM).contains(&self.reserve_bytes)
+            || self
+                .headroom_bytes
+                .is_some_and(|value| !(0..=MAX_ADMISSION_HEADROOM).contains(&value))
+        {
+            return AdmissionResult {
+                allowed: false,
+                reason: "INVALID_ADMISSION_CONFIG".to_owned(),
+                conservative_reserve_bytes: 0,
+                explicit_user_approval: request.user_approved,
+            };
+        }
         if self.headroom_unknown {
             return AdmissionResult {
                 allowed: false,
@@ -121,7 +135,15 @@ impl AdmissionProvider for ConfigurableAdmission {
                 explicit_user_approval: request.user_approved,
             };
         }
-        if expected.unwrap_or(0) + self.reserve_bytes > headroom {
+        let Some(requirement) = expected.unwrap_or(0).checked_add(self.reserve_bytes) else {
+            return AdmissionResult {
+                allowed: false,
+                reason: "ADMISSION_OVERFLOW".to_owned(),
+                conservative_reserve_bytes: self.reserve_bytes,
+                explicit_user_approval: request.user_approved,
+            };
+        };
+        if requirement > headroom {
             return AdmissionResult {
                 allowed: false,
                 reason: "DISK_INSUFFICIENT".to_owned(),
@@ -148,6 +170,14 @@ pub struct FilesystemAdmission {
 
 impl AdmissionProvider for FilesystemAdmission {
     fn admit(&self, request: &AcquisitionRequest) -> AdmissionResult {
+        if !(0..=MAX_ADMISSION_HEADROOM).contains(&self.reserve_bytes) || self.root.is_empty() {
+            return AdmissionResult {
+                allowed: false,
+                reason: "INVALID_ADMISSION_CONFIG".to_owned(),
+                conservative_reserve_bytes: 0,
+                explicit_user_approval: request.user_approved,
+            };
+        }
         if (self.lease_conflict)() {
             return AdmissionResult {
                 allowed: false,
@@ -190,11 +220,18 @@ impl AdmissionProvider for FilesystemAdmission {
                 explicit_user_approval: request.user_approved,
             };
         }
-        if expected
+        let Some(requirement) = expected
             .checked_add(self.reserve_bytes)
             .and_then(|value| value.checked_add(active))
-            .is_some_and(|value| value > headroom)
-        {
+        else {
+            return AdmissionResult {
+                allowed: false,
+                reason: "ADMISSION_OVERFLOW".to_owned(),
+                conservative_reserve_bytes: self.reserve_bytes,
+                explicit_user_approval: request.user_approved,
+            };
+        };
+        if requirement > headroom {
             return AdmissionResult {
                 allowed: false,
                 reason: "DISK_INSUFFICIENT".to_owned(),
@@ -311,7 +348,7 @@ pub trait NativeStreamTransport: Send + Sync {
 }
 
 pub trait LineSource: Send {
-    fn next_line(&mut self, remaining: Duration) -> Result<Option<String>, String>;
+    fn next_chunk(&mut self, remaining: Duration) -> Result<Option<Vec<u8>>, String>;
 }
 
 /// Bounded JSONL framer that lazily assembles lines from arbitrary chunks.
@@ -380,6 +417,8 @@ impl JsonlFramer {
 pub struct NativeAcquisitionAdapter {
     pub max_event_count: usize,
     pub max_retained_events: usize,
+    pub max_line_bytes: usize,
+    pub max_total_event_bytes: usize,
 }
 
 impl NativeAcquisitionAdapter {
@@ -402,13 +441,13 @@ impl NativeAcquisitionAdapter {
         }
         let plan = match plan_ollama_pull(request) {
             Ok(plan) => plan,
-            Err(message) => {
+            Err(_message) => {
                 return AcquisitionResult {
                     state: AcquisitionState::Failed,
                     events_consumed: 0,
                     retained_events: Vec::new(),
                     error_code: Some("PLAN_FAILED".to_owned()),
-                    error_message: Some(message),
+                    error_message: Some("Ollama pull planning failed.".to_owned()),
                 };
             }
         };
@@ -424,89 +463,172 @@ impl NativeAcquisitionAdapter {
         }
         let mut source = match transport.open(&plan, remaining) {
             Ok(source) => source,
-            Err(message) => {
+            Err(_message) => {
                 return AcquisitionResult {
                     state: AcquisitionState::Failed,
                     events_consumed: 0,
                     retained_events: Vec::new(),
                     error_code: Some("TRANSPORT_FAILED".to_owned()),
-                    error_message: Some(message),
+                    error_message: Some("Native acquisition transport failed.".to_owned()),
                 };
             }
         };
-        let mut framer = JsonlFramer::new(MAX_LINE_BYTES, MAX_TOTAL_EVENT_BYTES);
+        let mut framer = JsonlFramer::new(self.max_line_bytes, self.max_total_event_bytes);
         let mut retained = Vec::new();
         let mut consumed = 0i64;
-        loop {
+        let mut lines_seen = 0usize;
+        let mut result: Option<AcquisitionResult> = loop {
             if cancel.load(Ordering::SeqCst) != 0 {
-                return AcquisitionResult {
+                break Some(AcquisitionResult {
                     state: AcquisitionState::Cancelled,
                     events_consumed: consumed,
-                    retained_events: retained,
+                    retained_events: std::mem::take(&mut retained),
                     error_code: Some("CANCELLED".to_owned()),
                     error_message: None,
-                };
+                });
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return AcquisitionResult {
+                break Some(AcquisitionResult {
                     state: AcquisitionState::Failed,
                     events_consumed: consumed,
-                    retained_events: retained,
+                    retained_events: std::mem::take(&mut retained),
                     error_code: Some("DEADLINE_EXCEEDED".to_owned()),
                     error_message: Some("Acquisition deadline exceeded.".to_owned()),
-                };
+                });
             }
-            let line = match source.next_line(remaining) {
-                Ok(Some(line)) => line,
-                Ok(None) => break,
-                Err(message) => {
-                    return AcquisitionResult {
+            let chunk = match source.next_chunk(remaining) {
+                Ok(Some(chunk)) => chunk,
+                Ok(None) => break None,
+                Err(_) => {
+                    break Some(AcquisitionResult {
                         state: AcquisitionState::Failed,
                         events_consumed: consumed,
-                        retained_events: retained,
+                        retained_events: std::mem::take(&mut retained),
                         error_code: Some("TRANSPORT_FAILED".to_owned()),
-                        error_message: Some(message),
-                    };
+                        error_message: Some("Native acquisition transport failed.".to_owned()),
+                    });
                 }
             };
-            let _ = &mut framer;
-            match parse_progress_line(&line, consumed + 1) {
+            let lines = match framer.feed(&chunk) {
+                Ok(lines) => lines,
+                Err(_) => {
+                    break Some(AcquisitionResult {
+                        state: AcquisitionState::Failed,
+                        events_consumed: consumed,
+                        retained_events: std::mem::take(&mut retained),
+                        error_code: Some("STREAM_OVER_BUDGET".to_owned()),
+                        error_message: Some(
+                            "Native stream exceeded bounded size limits.".to_owned(),
+                        ),
+                    });
+                }
+            };
+            match self.process_lines(lines, &mut lines_seen, &mut consumed, &mut retained) {
+                Ok(Some(result)) => break Some(result),
+                Ok(None) => {}
+                Err(code) => {
+                    break Some(AcquisitionResult {
+                        state: AcquisitionState::Failed,
+                        events_consumed: consumed,
+                        retained_events: std::mem::take(&mut retained),
+                        error_code: Some(code),
+                        error_message: Some(
+                            "Native stream exceeded bounded event limits.".to_owned(),
+                        ),
+                    });
+                }
+            }
+        };
+        if result.is_none() {
+            match framer.finish() {
+                Ok(lines) => {
+                    match self.process_lines(lines, &mut lines_seen, &mut consumed, &mut retained) {
+                        Ok(Some(terminal)) => result = Some(terminal),
+                        Ok(None) => {}
+                        Err(code) => {
+                            result = Some(AcquisitionResult {
+                                state: AcquisitionState::Failed,
+                                events_consumed: consumed,
+                                retained_events: std::mem::take(&mut retained),
+                                error_code: Some(code),
+                                error_message: Some(
+                                    "Native stream exceeded bounded event limits.".to_owned(),
+                                ),
+                            });
+                        }
+                    }
+                }
+                Err(_) => {
+                    result = Some(AcquisitionResult {
+                        state: AcquisitionState::Failed,
+                        events_consumed: consumed,
+                        retained_events: std::mem::take(&mut retained),
+                        error_code: Some("STREAM_OVER_BUDGET".to_owned()),
+                        error_message: Some(
+                            "Native stream exceeded bounded size limits.".to_owned(),
+                        ),
+                    });
+                }
+            };
+        }
+        let mut result = result.unwrap_or(AcquisitionResult {
+            state: AcquisitionState::Failed,
+            events_consumed: consumed,
+            retained_events: std::mem::take(&mut retained),
+            error_code: Some("STREAM_ENDED_WITHOUT_SUCCESS".to_owned()),
+            error_message: Some("Native stream ended without a success event.".to_owned()),
+        });
+        // Close must be attempted on every path after open; a close failure is
+        // never silently converted into success.
+        if transport.close().is_err() {
+            result = AcquisitionResult {
+                state: AcquisitionState::Failed,
+                events_consumed: result.events_consumed,
+                retained_events: result.retained_events,
+                error_code: Some("TRANSPORT_CLOSE_FAILED".to_owned()),
+                error_message: Some("Native transport cleanup failed.".to_owned()),
+            };
+        }
+        result
+    }
+
+    fn process_lines(
+        &self,
+        lines: Vec<String>,
+        lines_seen: &mut usize,
+        consumed: &mut i64,
+        retained: &mut Vec<NativeProgress>,
+    ) -> Result<Option<AcquisitionResult>, String> {
+        for line in lines {
+            *lines_seen += 1;
+            if *lines_seen > self.max_event_count {
+                return Err("STREAM_EVENT_COUNT_EXCEEDED".to_owned());
+            }
+            match parse_progress_line(&line, *consumed + 1) {
                 Ok(Some(progress)) => {
-                    consumed += 1;
+                    *consumed += 1;
                     retained.push(progress.clone());
                     if retained.len() > self.max_retained_events {
                         retained.remove(0);
                     }
                     if progress.status == "success" {
-                        return AcquisitionResult {
+                        return Ok(Some(AcquisitionResult {
                             state: AcquisitionState::Succeeded,
-                            events_consumed: consumed,
-                            retained_events: retained,
+                            events_consumed: *consumed,
+                            retained_events: std::mem::take(retained),
                             error_code: None,
                             error_message: None,
-                        };
+                        }));
                     }
                 }
                 Ok(None) => {}
-                Err(message) => {
-                    return AcquisitionResult {
-                        state: AcquisitionState::Failed,
-                        events_consumed: consumed,
-                        retained_events: retained,
-                        error_code: Some("STREAM_MALFORMED".to_owned()),
-                        error_message: Some(message),
-                    };
+                Err(_) => {
+                    return Err("STREAM_MALFORMED".to_owned());
                 }
             }
         }
-        AcquisitionResult {
-            state: AcquisitionState::Failed,
-            events_consumed: consumed,
-            retained_events: retained,
-            error_code: Some("STREAM_ENDED_WITHOUT_SUCCESS".to_owned()),
-            error_message: Some("Native stream ended without a success event.".to_owned()),
-        }
+        Ok(None)
     }
 }
 
@@ -633,6 +755,8 @@ impl AcquisitionService {
             NativeAcquisitionAdapter {
                 max_event_count: MAX_EVENT_COUNT,
                 max_retained_events: MAX_RETAINED_EVENTS,
+                max_line_bytes: MAX_LINE_BYTES,
+                max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
             }
             .run(request, transport, &admitted, cancel, deadline)
         };
@@ -652,7 +776,7 @@ pub struct AcquisitionSupervisor {
     db_path: PathBuf,
     transport: Arc<dyn NativeStreamTransport>,
     admission: Arc<dyn AdmissionProvider>,
-    queue: Mutex<Vec<i64>>,
+    queue: Mutex<VecDeque<i64>>,
     tokens: Mutex<std::collections::HashMap<i64, Arc<AtomicUsize>>>,
     max_queue: usize,
     stop: std::sync::atomic::AtomicBool,
@@ -672,7 +796,7 @@ impl AcquisitionSupervisor {
             db_path,
             transport,
             admission,
-            queue: Mutex::new(Vec::new()),
+            queue: Mutex::new(VecDeque::new()),
             tokens: Mutex::new(std::collections::HashMap::new()),
             max_queue,
             stop: std::sync::atomic::AtomicBool::new(false),
@@ -697,7 +821,7 @@ impl AcquisitionSupervisor {
         if tokens.len() >= self.max_queue {
             return Err("acquisition queue is full".to_owned());
         }
-        queue.push(job_id);
+        queue.push_back(job_id);
         tokens.insert(job_id, Arc::new(AtomicUsize::new(0)));
         Ok(())
     }
@@ -721,7 +845,7 @@ impl AcquisitionSupervisor {
                 .queue
                 .lock()
                 .map_err(|_| "acquisition queue is unavailable".to_owned())?;
-            queue.pop()
+            queue.pop_front()
         };
         let Some(job_id) = job_id else {
             return Ok(());
@@ -743,12 +867,13 @@ impl AcquisitionSupervisor {
             &token,
         );
         if let Err(code) = result {
-            let _ = mark_pull_failed(
+            mark_pull_failed(
                 &mut worker_conn,
                 job_id,
                 &code,
                 "Model acquisition could not be executed.",
-            );
+            )
+            .map_err(|_| "acquisition failure could not be persisted".to_owned())?;
         }
         if let Ok(mut tokens) = self.tokens.lock() {
             tokens.remove(&job_id);
@@ -762,20 +887,19 @@ impl AcquisitionSupervisor {
 
     pub fn shutdown(&self) -> Result<(), String> {
         self.stop.store(true, Ordering::SeqCst);
-        let tokens = self
-            .tokens
-            .lock()
-            .map_err(|_| "acquisition tokens are unavailable".to_owned())?;
-        for token in tokens.values() {
-            token.store(1, Ordering::SeqCst);
-        }
         let queued = self
             .queue
             .lock()
             .map_err(|_| "acquisition queue is unavailable".to_owned())?
             .drain(..)
             .collect::<Vec<_>>();
-        drop(tokens);
+        let mut tokens = self
+            .tokens
+            .lock()
+            .map_err(|_| "acquisition tokens are unavailable".to_owned())?;
+        for token in tokens.values() {
+            token.store(1, Ordering::SeqCst);
+        }
         let mut conn = crate::db::open_connection(&self.db_path)
             .map_err(|_| "acquisition database could not be opened".to_owned())?;
         for job_id in queued {
@@ -785,7 +909,7 @@ impl AcquisitionSupervisor {
                 "recoverable": true,
                 "actions": ["retry_pull"],
             });
-            let _ = JobService::transition_job(
+            JobService::transition_job(
                 &mut conn,
                 job_id,
                 JobStatus::Failed,
@@ -793,10 +917,9 @@ impl AcquisitionSupervisor {
                 Some("Model acquisition was interrupted by shutdown."),
                 None,
                 Some(&error),
-            );
-            if let Ok(mut tokens) = self.tokens.lock() {
-                tokens.remove(&job_id);
-            }
+            )
+            .map_err(|_| "interrupted-job persistence failed".to_owned())?;
+            tokens.remove(&job_id);
         }
         Ok(())
     }
@@ -838,9 +961,10 @@ pub fn execute_persisted_pull(
     let result = NativeAcquisitionAdapter {
         max_event_count: MAX_EVENT_COUNT,
         max_retained_events: MAX_RETAINED_EVENTS,
+        max_line_bytes: MAX_LINE_BYTES,
+        max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
     }
     .run(&request, transport, &admitted, cancel, deadline);
-    let _ = transport.close();
     for progress in &result.retained_events {
         let value = progress
             .progress_0_1
@@ -849,14 +973,29 @@ pub fn execute_persisted_pull(
         if JobService::record_progress(conn, job_id, value, "downloading", &progress.status)
             .is_err()
         {
-            break;
+            let error = serde_json::json!({
+                "code": "PROGRESS_PERSISTENCE_FAILED",
+                "message": "Native progress could not be persisted.",
+                "recoverable": true,
+                "actions": ["retry_pull"],
+            });
+            let _ = JobService::transition_job(
+                conn,
+                job_id,
+                JobStatus::Failed,
+                Some("failed"),
+                Some("Native progress could not be persisted."),
+                None,
+                Some(&error),
+            );
+            return Err("PROGRESS_PERSISTENCE_FAILED".to_owned());
         }
     }
     match result.state {
         AcquisitionState::Succeeded => {
             let message = serde_json::json!({
-                "code": "ACQUISITION_SUCCEEDED",
-                "message": "Model acquired and discovery confirmed.",
+                "code": "ACQUISITION_COMPLETED",
+                "message": "Model acquisition reported completion by the runtime.",
             });
             JobService::transition_job(
                 conn,
@@ -1018,6 +1157,21 @@ pub fn sanitize_job_payload(
     runtime_status: &str,
     runtime_identity: &str,
 ) -> Result<serde_json::Value, String> {
+    if runtime_id <= 0 {
+        return Err("runtime_id must be a positive int".to_owned());
+    }
+    if expected_size_bytes.is_some_and(|value| !(1..=MAX_PROGRESS_VALUE).contains(&value)) {
+        return Err("expected_size_bytes is out of range".to_owned());
+    }
+    if !deadline_seconds.is_finite()
+        || !(0.0..=MAX_DEADLINE_SECONDS).contains(&deadline_seconds)
+        || deadline_seconds <= 0.0
+    {
+        return Err("deadline_seconds is out of range".to_owned());
+    }
+    if !is_hex64(runtime_identity) {
+        return Err("runtime_identity must be a 64-character hexadecimal digest".to_owned());
+    }
     let reference = sanitize_model_reference(model_reference)?;
     Ok(serde_json::json!({
         "code": "ACQUISITION_QUEUED",
@@ -1034,30 +1188,36 @@ pub fn sanitize_job_payload(
     }))
 }
 
+fn is_hex64(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::RuntimeSource;
     use crate::repositories::JobEvents;
 
-    struct FakeLines {
-        lines: Vec<String>,
+    struct FakeChunks {
+        chunks: Vec<Vec<u8>>,
         index: usize,
     }
 
-    impl LineSource for FakeLines {
-        fn next_line(&mut self, _remaining: Duration) -> Result<Option<String>, String> {
-            if self.index >= self.lines.len() {
+    impl LineSource for FakeChunks {
+        fn next_chunk(&mut self, _remaining: Duration) -> Result<Option<Vec<u8>>, String> {
+            if self.index >= self.chunks.len() {
                 return Ok(None);
             }
-            let line = self.lines[self.index].clone();
+            let chunk = self.chunks[self.index].clone();
             self.index += 1;
-            Ok(Some(line))
+            Ok(Some(chunk))
         }
     }
 
     struct FakeTransport {
-        lines: Vec<String>,
+        chunks: Vec<Vec<u8>>,
+        close_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        close_error: bool,
     }
 
     impl NativeStreamTransport for FakeTransport {
@@ -1066,14 +1226,20 @@ mod tests {
             _plan: &AcquisitionPlan,
             _timeout: Duration,
         ) -> Result<Box<dyn LineSource>, String> {
-            Ok(Box::new(FakeLines {
-                lines: self.lines.clone(),
+            Ok(Box::new(FakeChunks {
+                chunks: self.chunks.clone(),
                 index: 0,
             }))
         }
 
         fn close(&self) -> Result<(), String> {
-            Ok(())
+            self.close_calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.close_error {
+                Err("close failed".to_owned())
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -1142,10 +1308,11 @@ mod tests {
     #[test]
     fn adapter_succeeds_on_terminal_and_cancels() {
         let transport = FakeTransport {
-            lines: vec![
-                r#"{"status":"downloading","total":100,"completed":50}"#.to_owned(),
-                r#"{"status":"success","digest":"sha256:abc"}"#.to_owned(),
-            ],
+            chunks: vec![br#"{"status":"downloading","total":100,"completed":50}
+{"status":"success","digest":"sha256:abc"}"#
+                .to_vec()],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
         };
         let admitted = AdmissionResult {
             allowed: true,
@@ -1157,6 +1324,8 @@ mod tests {
         let result = NativeAcquisitionAdapter {
             max_event_count: MAX_EVENT_COUNT,
             max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
         }
         .run(
             &request(true),
@@ -1168,11 +1337,19 @@ mod tests {
         assert_eq!(result.state, AcquisitionState::Succeeded);
         assert_eq!(result.events_consumed, 2);
         assert_eq!(result.retained_events[0].progress_0_1, Some(0.5));
+        assert_eq!(
+            transport
+                .close_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
 
         cancel.store(1, Ordering::SeqCst);
         let result = NativeAcquisitionAdapter {
             max_event_count: MAX_EVENT_COUNT,
             max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
         }
         .run(
             &request(true),
@@ -1251,7 +1428,9 @@ mod tests {
         )
         .expect("stores payload");
         let transport = FakeTransport {
-            lines: vec![r#"{"status":"success"}"#.to_owned()],
+            chunks: vec![br#"{"status":"success"}"#.to_vec()],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
         };
         let admission = ConfigurableAdmission {
             reserve_bytes: 0,
@@ -1349,7 +1528,9 @@ mod tests {
         let supervisor = AcquisitionSupervisor::new(
             database.path.clone(),
             Arc::new(FakeTransport {
-                lines: vec![r#"{"status":"success"}"#.to_owned()],
+                chunks: vec![br#"{"status":"success"}"#.to_vec()],
+                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                close_error: false,
             }),
             Arc::new(ConfigurableAdmission {
                 reserve_bytes: 0,
@@ -1426,7 +1607,11 @@ mod tests {
         drop(setup);
         let supervisor = AcquisitionSupervisor::new(
             database.path.clone(),
-            Arc::new(FakeTransport { lines: vec![] }),
+            Arc::new(FakeTransport {
+                chunks: vec![],
+                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                close_error: false,
+            }),
             Arc::new(ConfigurableAdmission {
                 reserve_bytes: 0,
                 headroom_unknown: false,
@@ -1448,5 +1633,324 @@ mod tests {
         drop(conn);
         database.close();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn adapter_enforces_line_total_and_event_bounds() {
+        let admitted = AdmissionResult {
+            allowed: true,
+            reason: "ADMITTED".to_owned(),
+            conservative_reserve_bytes: 0,
+            explicit_user_approval: true,
+        };
+        let cancel = Arc::new(AtomicUsize::new(0));
+
+        let oversized = FakeTransport {
+            chunks: vec![vec![b'x'; MAX_LINE_BYTES + 1]],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &oversized,
+            &admitted,
+            &cancel,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Failed);
+        assert_eq!(result.error_code.as_deref(), Some("STREAM_OVER_BUDGET"));
+        assert_eq!(
+            oversized
+                .close_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+
+        let cumulative = FakeTransport {
+            chunks: vec![
+                vec![b'{'; MAX_TOTAL_EVENT_BYTES / 2],
+                vec![b'}'; MAX_TOTAL_EVENT_BYTES / 2 + 1],
+            ],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &cumulative,
+            &admitted,
+            &cancel,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Failed);
+        assert_eq!(result.error_code.as_deref(), Some("STREAM_OVER_BUDGET"));
+
+        let many_statusless = FakeTransport {
+            chunks: vec![(0..4000)
+                .map(|_| "{\"status\":null}\n")
+                .collect::<String>()
+                .into_bytes()],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: 3,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &many_statusless,
+            &admitted,
+            &cancel,
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Failed);
+        assert_eq!(
+            result.error_code.as_deref(),
+            Some("STREAM_EVENT_COUNT_EXCEEDED")
+        );
+    }
+
+    #[test]
+    fn admission_rejects_invalid_config_and_overflow() {
+        assert!(AcquisitionRequest::new(
+            "http://127.0.0.1:11434",
+            "zephyr:7b",
+            Some(0),
+            true,
+            30.0,
+        )
+        .is_err());
+        assert!(
+            AcquisitionRequest::new("http://127.0.0.1:11434", "zephyr:7b", Some(1), true, 0.0,)
+                .is_err()
+        );
+
+        let config = ConfigurableAdmission {
+            reserve_bytes: -1,
+            headroom_unknown: false,
+            headroom_bytes: Some(1 << 30),
+        };
+        assert_eq!(
+            config.admit(&request(true)).reason,
+            "INVALID_ADMISSION_CONFIG"
+        );
+        let overflow = ConfigurableAdmission {
+            reserve_bytes: MAX_ADMISSION_HEADROOM,
+            headroom_unknown: false,
+            headroom_bytes: Some(MAX_ADMISSION_HEADROOM),
+        };
+        let mut overflow_request = request(true);
+        overflow_request.expected_size_bytes = Some(i64::MAX);
+        assert_eq!(
+            overflow.admit(&overflow_request).reason,
+            "ADMISSION_OVERFLOW"
+        );
+
+        let filesystem = FilesystemAdmission {
+            root: std::env::temp_dir().to_string_lossy().into_owned(),
+            reserve_bytes: -1,
+            active_bytes: Arc::new(|| 0),
+            lease_conflict: Arc::new(|| false),
+        };
+        assert_eq!(
+            filesystem.admit(&request(true)).reason,
+            "INVALID_ADMISSION_CONFIG"
+        );
+        let filesystem_overflow = FilesystemAdmission {
+            root: std::env::temp_dir().to_string_lossy().into_owned(),
+            reserve_bytes: MAX_ADMISSION_HEADROOM,
+            active_bytes: Arc::new(|| 0),
+            lease_conflict: Arc::new(|| false),
+        };
+        assert_eq!(
+            filesystem_overflow.admit(&overflow_request).reason,
+            "ADMISSION_OVERFLOW"
+        );
+    }
+
+    #[test]
+    fn close_failure_never_converts_to_success() {
+        let transport = FakeTransport {
+            chunks: vec![br#"{"status":"success"}"#.to_vec()],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: true,
+        };
+        let admitted = AdmissionResult {
+            allowed: true,
+            reason: "ADMITTED".to_owned(),
+            conservative_reserve_bytes: 0,
+            explicit_user_approval: true,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &transport,
+            &admitted,
+            &Arc::new(AtomicUsize::new(0)),
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Failed);
+        assert_eq!(result.error_code.as_deref(), Some("TRANSPORT_CLOSE_FAILED"));
+        assert_eq!(
+            transport
+                .close_calls
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+    }
+
+    #[test]
+    fn supervisor_queue_is_fifo() {
+        let (database, dir) = db("fifo");
+        let mut setup = database.connect().expect("connects");
+        let runtime_id = Runtimes::insert(
+            &setup,
+            RuntimeKind::Ollama,
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            RuntimeStatus::Online,
+            &serde_json::json!({}),
+            &crate::time::now_iso(),
+        )
+        .expect("runtime");
+        let identity = crate::sha256::sha256_hex(
+            format!(
+                "{}|{}|{}",
+                RuntimeKind::Ollama.as_str(),
+                "http://127.0.0.1:11434",
+                RuntimeSource::Auto.as_str()
+            )
+            .as_bytes(),
+        );
+        let mut ids = Vec::new();
+        for index in 0..2 {
+            let payload = sanitize_job_payload(
+                runtime_id,
+                &format!("zephyr:{index}b"),
+                Some(1 << 20),
+                true,
+                30.0,
+                "ollama",
+                "auto",
+                "online",
+                &identity,
+            )
+            .expect("payload");
+            let job = JobService::create_job(
+                &mut setup,
+                JobKind::ModelPull,
+                "queued",
+                &format!("zephyr:{index}b"),
+            )
+            .expect("creates");
+            Jobs::update(
+                &setup,
+                job.id,
+                JobStatus::Pending,
+                JobStatus::Pending,
+                "queued",
+                &format!("zephyr:{index}b"),
+                0.0,
+                Some(&payload),
+            )
+            .expect("stores payload");
+            ids.push(job.id);
+        }
+        drop(setup);
+        let supervisor = AcquisitionSupervisor::new(
+            database.path.clone(),
+            Arc::new(FakeTransport {
+                chunks: vec![br#"{"status":"success"}"#.to_vec()],
+                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                close_error: false,
+            }),
+            Arc::new(ConfigurableAdmission {
+                reserve_bytes: 0,
+                headroom_unknown: false,
+                headroom_bytes: Some(1 << 30),
+            }),
+            2,
+        )
+        .expect("supervisor");
+        supervisor.dispatch(ids[0]).expect("first");
+        supervisor.dispatch(ids[1]).expect("second");
+        supervisor.drain_once().expect("first drains");
+        assert_eq!(supervisor.pending_count(), 1, "second job remains queued");
+        supervisor.drain_once().expect("second drains");
+        assert_eq!(supervisor.pending_count(), 0);
+        drop(database);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_payload_validates_identity_and_bounds() {
+        let identity = "a".repeat(64);
+        assert!(sanitize_job_payload(
+            0,
+            "zephyr:7b",
+            Some(1),
+            true,
+            30.0,
+            "ollama",
+            "auto",
+            "online",
+            &identity,
+        )
+        .is_err());
+        assert!(sanitize_job_payload(
+            1,
+            "zephyr:7b",
+            Some(0),
+            true,
+            30.0,
+            "ollama",
+            "auto",
+            "online",
+            &identity,
+        )
+        .is_err());
+        assert!(sanitize_job_payload(
+            1,
+            "zephyr:7b",
+            Some(1),
+            true,
+            0.0,
+            "ollama",
+            "auto",
+            "online",
+            &identity,
+        )
+        .is_err());
+        assert!(sanitize_job_payload(
+            1,
+            "zephyr:7b",
+            Some(1),
+            true,
+            30.0,
+            "ollama",
+            "auto",
+            "online",
+            "not-hex",
+        )
+        .is_err());
     }
 }
