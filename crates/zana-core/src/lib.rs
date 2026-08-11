@@ -1,5 +1,6 @@
 //! Shared Rust foundation for the ZANA local core.
 
+pub mod acquisition;
 pub mod auth;
 pub mod db;
 pub mod diagnostics;

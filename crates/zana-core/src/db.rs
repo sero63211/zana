@@ -155,7 +155,7 @@ impl Database {
     }
 }
 
-fn open_connection(path: &std::path::Path) -> Result<Connection, CoreError> {
+pub fn open_connection(path: &std::path::Path) -> Result<Connection, CoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| CoreError::database())?;
     }
