@@ -1117,10 +1117,20 @@ fn bound_check(mut check: DiagnosticCheck, budget: &ProbeBudget) -> DiagnosticCh
         128,
         &mut budget_remaining,
     );
-    check.evidence.value = check
-        .evidence
-        .value
-        .map(|value| bound_json_value(value, budget_remaining));
+    check.evidence.value = match check.evidence.value {
+        Some(value) => match bound_json_value(value, budget_remaining) {
+            Some(bounded) => {
+                let mut writer = LimitWriter {
+                    remaining: budget_remaining,
+                };
+                let _ = serde_json::to_writer(&mut writer, &bounded);
+                budget_remaining = writer.remaining;
+                Some(bounded)
+            }
+            None => None,
+        },
+        None => None,
+    };
     check.evidence.basename = check
         .evidence
         .basename
@@ -1180,17 +1190,17 @@ fn bound_check(mut check: DiagnosticCheck, budget: &ProbeBudget) -> DiagnosticCh
     check
 }
 
-fn bound_json_value(value: Value, max_output: usize) -> Value {
-    if !json_tree_within(&value, 0, max_output) {
-        return Value::String("...[truncated]".to_owned());
+fn bound_json_value(value: Value, max_output: usize) -> Option<Value> {
+    if max_output == 0 || !json_tree_within(&value, 0, max_output) {
+        return None;
     }
     let mut writer = LimitWriter {
         remaining: max_output,
     };
     if serde_json::to_writer(&mut writer, &value).is_ok() {
-        value
+        Some(value)
     } else {
-        Value::String("...[truncated]".to_owned())
+        None
     }
 }
 
@@ -1214,7 +1224,7 @@ fn json_tree_within(value: &Value, depth: usize, limit: usize) -> bool {
                     return false;
                 }
                 for (key, child) in map {
-                    visited += key.len();
+                    visited = visited.saturating_add(1).saturating_add(key.len());
                     if visited > limit {
                         return false;
                     }
@@ -1226,6 +1236,10 @@ fn json_tree_within(value: &Value, depth: usize, limit: usize) -> bool {
                     return false;
                 }
                 for child in items {
+                    visited += 1;
+                    if visited > limit {
+                        return false;
+                    }
                     stack.push((child, current_depth + 1));
                 }
             }
@@ -1263,26 +1277,35 @@ impl Write for LimitWriter {
 }
 
 fn truncate_text(value: String, max_chars: usize, max_output_chars: usize) -> String {
+    truncate_str(&value, max_chars, max_output_chars)
+}
+
+fn truncate_str(value: &str, max_chars: usize, max_output_chars: usize) -> String {
     let marker = "...[truncated]";
     let marker_bytes = marker.len();
     let max = max_chars.min(max_output_chars);
-    let budget = max.saturating_sub(marker_bytes);
     if value.len() <= max {
-        return value;
+        return value.to_owned();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let budget = max.saturating_sub(marker_bytes);
+    if budget == 0 {
+        // Return only the bounded marker prefix when there is no room for the
+        // full marker, so the result never exceeds the byte cap.
+        return marker[..max.min(marker_bytes)].to_owned();
     }
     let bytes = value.as_bytes();
     let mut end = budget.min(bytes.len());
     while end > 0 && (bytes[end] & 0xC0) == 0x80 {
         end -= 1;
     }
-    let mut result = String::with_capacity(end + marker_bytes);
+    let mut result = String::with_capacity(end + marker_bytes.min(max - end));
     result.push_str(&value[..end]);
-    result.push_str(marker);
+    let marker_room = max - end;
+    result.push_str(&marker[..marker_room.min(marker_bytes)]);
     result
-}
-
-fn truncate_str(value: &str, max_chars: usize, max_output_chars: usize) -> String {
-    truncate_text(value.to_owned(), max_chars, max_output_chars)
 }
 
 #[cfg(test)]
@@ -1685,16 +1708,14 @@ mod tests {
         let quote_heavy = serde_json::json!({
             "value": "\"\\\u{0001}\u{001f}".repeat(2000)
         });
-        let bounded = bound_json_value(quote_heavy, limit);
-        assert_eq!(bounded, Value::String("...[truncated]".to_owned()));
+        assert!(bound_json_value(quote_heavy, limit).is_none());
 
         let deep = serde_json::json!({ "nested": { "a": [true, [true, [true]]] } });
         let mut deep = deep;
         for _ in 0..200 {
             deep = serde_json::json!([deep]);
         }
-        let bounded = bound_json_value(deep, 64);
-        assert_eq!(bounded, Value::String("...[truncated]".to_owned()));
+        assert!(bound_json_value(deep, 64).is_none());
     }
 
     #[test]
@@ -1724,5 +1745,84 @@ mod tests {
                 .all(|readiness| readiness.ready),
             "all capped entries are ready; only omitted entries are not"
         );
+    }
+
+    #[test]
+    fn bound_check_cumulative_budget_includes_evidence_json() {
+        let budget = ProbeBudget {
+            max_output_chars: 64,
+            max_error_count: 4,
+            ..ProbeBudget::default()
+        };
+        let mut check = DiagnosticCheck {
+            check_id: "id".to_owned(),
+            name: "name".to_owned(),
+            status: CheckStatus::Pass,
+            severity: Severity::Info,
+            duration_seconds: 0.0,
+            observed_source: "source".to_owned(),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
+                observed_source: "source".to_owned(),
+                value: Some(serde_json::json!({ "huge": "x".repeat(500) })),
+                basename: None,
+                digest_prefix: None,
+                boolean_presence: Some(true),
+                notes: Vec::new(),
+            },
+            issues: vec![DiagnosticIssue {
+                code: "code".to_owned(),
+                severity: Severity::Warn,
+                message: "y".repeat(500),
+                recovery_actions: Vec::new(),
+            }],
+            feature_readiness: Vec::new(),
+        };
+        check = bound_check(check, &budget);
+        let mut total = check.check_id.len()
+            + check.name.len()
+            + check.observed_source.len()
+            + check.observed_at_iso.len()
+            + check.evidence.observed_source.len();
+        total += check
+            .evidence
+            .basename
+            .as_deref()
+            .map(str::len)
+            .unwrap_or(0);
+        total += check
+            .evidence
+            .digest_prefix
+            .as_deref()
+            .map(str::len)
+            .unwrap_or(0);
+        total += check.evidence.notes.iter().map(String::len).sum::<usize>();
+        if let Some(value) = &check.evidence.value {
+            total += serde_json::to_vec(value).expect("serializes").len();
+        }
+        total += check
+            .issues
+            .iter()
+            .map(|issue| issue.code.len() + issue.message.len())
+            .sum::<usize>();
+        assert!(
+            total <= 512,
+            "cumulative dynamic bytes stay bounded, got {total}"
+        );
+    }
+
+    #[test]
+    fn truncate_never_exceeds_remaining_even_below_marker_len() {
+        for max in 0..=14 {
+            let result = truncate_str(&"x".repeat(100), 100, max);
+            assert!(
+                result.len() <= max,
+                "truncate exceeded {max} with {result:?}"
+            );
+        }
+        let empty = truncate_str("abcdef", 100, 0);
+        assert!(empty.is_empty());
+        let partial = truncate_str("abcdef", 100, 3);
+        assert!(partial.len() <= 3);
     }
 }
