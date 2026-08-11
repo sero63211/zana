@@ -1509,8 +1509,10 @@ tasks:
       - id: T922B-rust-artifact-domain
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: reserved
+        status: active
         branch: agent/t922b-rust-artifact-domain
+        thread: 019ff263-0b6e-7ad0-b123-debea7eb6440
+        worktree: /Users/sero/.codex/worktrees/0e5f/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation and accepted Python capability/build/Image/Instance/portability contracts; parallel-safe pure-domain subtask for later T922 integration"
         owns: "Only new files under crates/zana-artifacts/** and .agent-work/handoffs/T922B-rust-artifact-domain.md. Root Cargo files, zana-core, zana-core-server, zana-evaluation, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
