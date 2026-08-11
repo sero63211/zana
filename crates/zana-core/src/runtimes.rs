@@ -312,7 +312,14 @@ fn bounded_text(value: &str, max_bytes: usize) -> String {
         return value.to_owned();
     }
     let marker = "...[truncated]";
-    let budget = max_bytes.saturating_sub(marker.len());
+    if max_bytes == 0 {
+        return String::new();
+    }
+    let marker_prefix_len = marker.len().min(max_bytes);
+    if max_bytes <= marker.len() {
+        return marker[..marker_prefix_len].to_owned();
+    }
+    let budget = max_bytes - marker.len();
     let bytes = value.as_bytes();
     let mut end = budget.min(bytes.len());
     while end > 0 && (bytes[end] & 0xC0) == 0x80 {
@@ -546,28 +553,28 @@ impl OllamaAdapter {
             last_seen_at: now_iso(),
             identity_strength: identity,
         };
-        let show_url = format!("{}/api/show", self.endpoint);
-        let body = serde_json::json!({ "model": name });
-        let show = self.transport.request(
-            "POST",
-            &show_url,
-            &[("Content-Type", "application/json")],
-            Some(&serde_json::to_vec(&body).unwrap_or_default()),
-            self.remaining(),
-        );
-        let show = match show {
-            Ok(response) if response.text.len() <= MAX_RESPONSE_BYTES => Some(response),
-            Ok(_) => {
-                warnings.push(format!(
-                    "/api/show enrichment failed for {name}; tags metadata only."
-                ));
-                None
-            }
-            Err(_) => {
-                warnings.push(format!(
-                    "/api/show enrichment failed for {name}; tags metadata only."
-                ));
-                None
+        let show = if self.remaining().is_zero() {
+            warnings.push(format!(
+                "/api/show enrichment skipped for {name}; deadline exhausted."
+            ));
+            None
+        } else {
+            let show_url = format!("{}/api/show", self.endpoint);
+            let body = serde_json::json!({ "model": name });
+            match self.transport.request(
+                "POST",
+                &show_url,
+                &[("Content-Type", "application/json")],
+                Some(&serde_json::to_vec(&body).unwrap_or_default()),
+                self.remaining(),
+            ) {
+                Ok(response) if response.text.len() <= MAX_RESPONSE_BYTES => Some(response),
+                _ => {
+                    warnings.push(format!(
+                        "/api/show enrichment failed for {name}; tags metadata only."
+                    ));
+                    None
+                }
             }
         };
         if let Some(response) = show {
@@ -585,10 +592,6 @@ impl OllamaAdapter {
                     "/api/show enrichment failed for {name}; tags metadata only."
                 ));
             }
-        } else {
-            warnings.push(format!(
-                "/api/show enrichment failed for {name}; tags metadata only."
-            ));
         }
         Some(descriptor)
     }
@@ -1362,7 +1365,9 @@ impl RuntimeProbeRegistry {
             .error
             .map(|error| bounded_text(&error, self.limits.max_error_chars));
         descriptor.identified_vendor = descriptor.identified_vendor.inspect(|vendor| {
-            if vendor.len() > self.limits.max_model_field_bytes {
+            if vendor.len() > self.limits.max_model_field_bytes
+                || vendor.bytes().any(|b| b < 0x20 || b == 0x7f)
+            {
                 descriptor.error =
                     Some("runtime vendor metadata exceeds the bounded limit".to_owned());
                 descriptor.status = RuntimeStatus::Error;
@@ -1444,11 +1449,10 @@ impl RuntimeProbeRegistry {
             if model.capabilities.len() > self.limits.max_model_capabilities {
                 return Err("model capability count exceeds the bounded limit".to_owned());
             }
-            if model
-                .capabilities
-                .iter()
-                .any(|value| value.len() > self.limits.max_model_field_bytes)
-            {
+            if model.capabilities.iter().any(|value| {
+                value.len() > self.limits.max_model_field_bytes
+                    || value.bytes().any(|b| b < 0x20 || b == 0x7f)
+            }) {
                 return Err("model capability exceeds the bounded limit".to_owned());
             }
             if model.metadata_source.len() > self.limits.max_model_field_bytes
@@ -1462,12 +1466,12 @@ impl RuntimeProbeRegistry {
                 .saturating_add(model.last_seen_at.len())
                 .saturating_add(model.model_id.len())
                 .saturating_add(model.display_name.len())
-                .saturating_add(model.digest.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.family.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.format.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.quantization.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.parameter_label.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.trainability.as_deref().map(str::len).unwrap_or(0))
+                .saturating_add(model.digest.as_deref().map(str::len).unwrap_or(0))
                 .saturating_add(model.metadata_source.len())
                 .saturating_add(model.capabilities.iter().map(String::len).sum::<usize>());
             if total_bytes > self.limits.max_models_total_bytes {
@@ -1610,7 +1614,7 @@ impl LoopbackHttpTransport {
         if remaining.is_zero() {
             return Err(TransportError::Timeout);
         }
-        let host = url.host.as_str();
+        let host = dial_host(&url.host);
         let address: std::net::SocketAddr = match host.parse::<std::net::IpAddr>() {
             Ok(ip) => std::net::SocketAddr::new(ip, url.port),
             Err(_) => {
@@ -1627,6 +1631,14 @@ impl LoopbackHttpTransport {
                 TransportError::Network
             }
         })
+    }
+}
+
+fn dial_host(host: &str) -> &str {
+    if host.eq_ignore_ascii_case("localhost") {
+        "127.0.0.1"
+    } else {
+        host
     }
 }
 
@@ -1777,9 +1789,6 @@ impl LoopbackHttpTransport {
         } else {
             let mut chunk = [0u8; 8192];
             loop {
-                if text.len() >= MAX_RESPONSE_BYTES {
-                    return Err(TransportError::Oversized);
-                }
                 let remaining = remaining_budget(clock, deadline)?;
                 match stream.read_with_remaining(&mut chunk, remaining) {
                     Ok(0) => break,
@@ -1787,10 +1796,11 @@ impl LoopbackHttpTransport {
                         if clock.now() >= deadline {
                             return Err(TransportError::Timeout);
                         }
-                        text.extend_from_slice(&chunk[..count]);
-                        if text.len() > MAX_RESPONSE_BYTES {
+                        let new_len = text.len().saturating_add(count);
+                        if new_len > MAX_RESPONSE_BYTES {
                             return Err(TransportError::Oversized);
                         }
+                        text.extend_from_slice(&chunk[..count]);
                     }
                     Err(error)
                         if error.kind() == io::ErrorKind::WouldBlock
@@ -2106,6 +2116,27 @@ mod tests {
 
     struct OversizedTransport;
 
+    struct CountingUrlTransport {
+        inner: CountingTransport,
+        calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HttpTransport for CountingUrlTransport {
+        fn request(
+            &self,
+            _method: &str,
+            url: &str,
+            headers: &[(&str, &str)],
+            body: Option<&[u8]>,
+            timeout: Duration,
+        ) -> Result<HttpResponse, TransportError> {
+            if url.contains("/api/show") {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            self.inner.request(_method, url, headers, body, timeout)
+        }
+    }
+
     impl HttpTransport for OversizedTransport {
         fn request(
             &self,
@@ -2372,7 +2403,7 @@ mod tests {
             2,
         )
         .expect("registry builds");
-        let _target = target(
+        let target = target(
             "t",
             RuntimeKind::OpenAiCompatible,
             AdapterType::OpenAiCompatible,
@@ -2395,11 +2426,6 @@ mod tests {
             last_seen_at: now_iso(),
             identity_strength: ModelIdentityStrength::RuntimeModelId,
         };
-        let target = target(
-            "t",
-            RuntimeKind::OpenAiCompatible,
-            AdapterType::OpenAiCompatible,
-        );
         assert!(registry.bound_models(vec![model], &target).is_err());
 
         let descriptor = build_runtime_descriptor(
@@ -2451,12 +2477,12 @@ mod tests {
             last_seen_at: now_iso(),
             identity_strength: ModelIdentityStrength::RuntimeModelId,
         };
-        let _target = target(
+        let target = target(
             "t",
             RuntimeKind::OpenAiCompatible,
             AdapterType::OpenAiCompatible,
         );
-        assert!(registry.bound_models(vec![model], &_target).is_err());
+        assert!(registry.bound_models(vec![model], &target).is_err());
     }
 
     #[test]
@@ -2618,7 +2644,7 @@ mod tests {
             2,
         )
         .expect("registry builds");
-        let _target = target(
+        let target = target(
             "t",
             RuntimeKind::OpenAiCompatible,
             AdapterType::OpenAiCompatible,
@@ -2641,12 +2667,39 @@ mod tests {
             last_seen_at: now_iso(),
             identity_strength: ModelIdentityStrength::RuntimeModelId,
         };
-        let target = target(
-            "t",
-            RuntimeKind::OpenAiCompatible,
-            AdapterType::OpenAiCompatible,
-        );
         assert!(registry.bound_models(vec![model], &target).is_err());
+    }
+
+    #[test]
+    fn bounded_text_is_exact_for_every_budget() {
+        for max in 0..=20 {
+            let bounded = bounded_text(&"😀".repeat(100), max);
+            assert!(bounded.len() <= max, "max={max} got {}", bounded.len());
+        }
+        assert_eq!(bounded_text("abc", 0), "");
+        assert_eq!(bounded_text("abcdef", 3), "...");
+    }
+
+    #[test]
+    fn dial_host_normalizes_localhost() {
+        assert_eq!(dial_host("localhost"), "127.0.0.1");
+        assert_eq!(dial_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(dial_host("[::1]"), "[::1]");
+    }
+
+    #[test]
+    fn validate_origin_rejects_hostile_remote_and_allows_https_remote() {
+        assert!(validate_origin("https://example.com:443", false).is_ok());
+        assert!(validate_origin("http://example.com", false).is_ok());
+        assert!(validate_origin("http://[not-v6]:8080", false).is_err());
+        assert!(validate_origin("http://foo::bar", false).is_err());
+        assert!(validate_origin("http://", false).is_err());
+        assert!(validate_origin("http://a..b", false).is_err());
+        assert!(validate_origin("http://-bad.example", false).is_err());
+        assert!(validate_origin("http://bad-.example", false).is_err());
+        assert!(validate_origin("http://bad_label.example", false).is_err());
+        assert!(validate_origin("http://[::1]:0", false).is_err());
+        assert!(validate_origin("http://[::1]:443", false).is_ok());
     }
 
     #[test]
@@ -2677,6 +2730,32 @@ mod tests {
         let descriptor = openai.probe();
         assert_eq!(descriptor.status, RuntimeStatus::Error);
         assert!(descriptor.models.is_empty());
+    }
+
+    #[test]
+    fn ollama_show_is_skipped_after_deadline() {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let transport = CountingTransport {
+            concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+        };
+        let transport = CountingUrlTransport {
+            inner: transport,
+            calls: std::sync::Arc::clone(&calls),
+        };
+        let adapter = OllamaAdapter::new(
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            Arc::new(transport),
+            Instant::now(),
+            false,
+            10,
+        );
+        let descriptor = adapter.probe();
+        assert_eq!(descriptor.status, RuntimeStatus::Offline);
+        let show_calls = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(show_calls, 0, "no /api/show calls after deadline");
     }
 
     #[test]
@@ -2783,6 +2862,34 @@ mod tests {
             .expect_err("slow drip times out");
         assert!(matches!(error, TransportError::Timeout));
     }
+
+    #[test]
+    fn response_reader_rejects_raw_header_controls_and_bad_status() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let data = b"HTTP/1.1 200 OK\r\nX-Bad: \tvalue\r\nContent-Length: 0\r\n\r\n";
+        let mut reader = &data[..];
+        assert!(
+            read_response_with_clock(&mut reader, &clock, start + Duration::from_secs(1)).is_err()
+        );
+
+        let data = b"HTTP/2.0 200 OK\r\nContent-Length: 0\r\n\r\n";
+        let mut reader = &data[..];
+        assert!(
+            read_response_with_clock(&mut reader, &clock, start + Duration::from_secs(1)).is_err()
+        );
+    }
+
+    #[test]
+    fn read_response_headers_and_body_prefix_are_bounded() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let data = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nab";
+        let mut reader = &data[..];
+        let parts = read_response_with_clock(&mut reader, &clock, start + Duration::from_secs(5))
+            .expect("headers parse");
+        assert_eq!(parts.body_prefix, b"ab");
+    }
 }
 
 fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
@@ -2834,6 +2941,11 @@ fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
     let status_line = lines.next().unwrap_or_default();
     let mut parts = status_line.split(' ');
     let _version = parts.next();
+    if !status_line.starts_with("HTTP/1.0 ") && !status_line.starts_with("HTTP/1.1 ") {
+        return Err(TransportError::Protocol(
+            "runtime response status line is not HTTP/1.x".to_owned(),
+        ));
+    }
     let status: u16 = parts
         .next()
         .and_then(|value| value.parse().ok())
@@ -2845,12 +2957,22 @@ fn read_response_with_clock<R: ReadWithRemaining, C: TransportClock>(
         if line.is_empty() {
             continue;
         }
+        if line.bytes().any(is_http_control) {
+            return Err(TransportError::Protocol(
+                "runtime response header contains control characters".to_owned(),
+            ));
+        }
         let Some((name, value)) = line.split_once(':') else {
             return Err(TransportError::Protocol(
                 "runtime response contains a malformed header line".to_owned(),
             ));
         };
         let name = name.trim().to_ascii_lowercase();
+        if line.as_bytes().starts_with(b" ") || line.as_bytes().starts_with(b"\t") {
+            return Err(TransportError::Protocol(
+                "runtime response header contains obs-fold or leading whitespace".to_owned(),
+            ));
+        }
         if name.is_empty()
             || !name
                 .bytes()
@@ -2959,6 +3081,9 @@ pub fn validate_origin(endpoint: &str, local_only: bool) -> Result<String, Strin
     if host.is_empty() || host.contains(' ') || host.bytes().any(|b| b < 0x20 || b == 0x7f) {
         return Err("acquisition endpoint host is invalid".to_owned());
     }
+    if !valid_origin_host(&host) {
+        return Err("acquisition endpoint host is invalid".to_owned());
+    }
     if local_only && !is_loopback_host(&host) {
         return Err(
             "remote acquisition is denied by local-only policy; explicit remote approval is required"
@@ -2977,6 +3102,26 @@ pub fn validate_origin(endpoint: &str, local_only: bool) -> Result<String, Strin
         Some(port) => format!("{scheme}://{display_host}:{port}"),
         None => format!("{scheme}://{display_host}"),
     })
+}
+
+fn valid_origin_host(host: &str) -> bool {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    if host.len() > 253 || host.is_empty() {
+        return false;
+    }
+    host.split('.').all(valid_dns_label)
+}
+
+fn valid_dns_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && label
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        && !label.starts_with('-')
+        && !label.ends_with('-')
 }
 
 /// Loopback-only endpoint check used when building discovery targets.
