@@ -1471,9 +1471,10 @@ tasks:
       - id: T921B-rust-compatibility-api
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t921b-rust-compatibility-api
-        worktree: "pending visible local Codex task"
+        thread: 019ff24f-7688-7153-926e-68c09175e299
+        worktree: /Users/sero/.codex/worktrees/0b16/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "accepted canonical Rust operational core through origin/main 05c7eec; later acquisition/observability modules are serial follow-up inputs after T921 acceptance"
         owns: "Only crates/zana-core-server/** and new .agent-work/handoffs/T921B-rust-compatibility-api.md. Root Cargo files, crates/zana-core/**, Python, TypeScript/Tauri, Android, GoalBuddy state/ledger and all other paths are excluded."
