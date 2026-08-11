@@ -484,6 +484,91 @@ fn identifier_reference(value: &str) -> String {
     format!("redacted-{}", &digest[..16])
 }
 
+fn is_control_byte(byte: u8) -> bool {
+    byte == 0x7f || byte < 0x20
+}
+
+fn validate_event_structure(event: &Event) -> Result<(), String> {
+    if event.schema_version != 1 {
+        return Err("event schema_version must be 1".to_owned());
+    }
+    if let Some(progress) = event.progress_0_1 {
+        if !progress.is_finite() || !(0.0..=1.0).contains(&progress) {
+            return Err("event progress_0_1 must be finite in [0,1]".to_owned());
+        }
+    }
+    if event.duration_ms.is_some_and(|value| value < 0) {
+        return Err("event duration_ms must be non-negative".to_owned());
+    }
+    if event.message.len() > MAX_STRING_LENGTH
+        || event.message.len() > MAX_STRING_BYTES
+        || event.message.bytes().any(is_control_byte)
+    {
+        return Err("event message is invalid or beyond bounds".to_owned());
+    }
+    if !valid_timestamp(&event.timestamp) {
+        return Err("event timestamp is invalid".to_owned());
+    }
+    validate_context(&event.context)?;
+    Ok(())
+}
+
+fn valid_timestamp(value: &str) -> bool {
+    if value.len() > 64 || value.bytes().any(is_control_byte) {
+        return false;
+    }
+    value.len() == 32
+        && value.ends_with("+00:00")
+        && value.as_bytes().get(10) == Some(&b'T')
+        && value.as_bytes().get(19) == Some(&b'.')
+}
+
+fn validate_context(context: &EventContext) -> Result<(), String> {
+    for (name, value) in [
+        ("operation_id", &context.operation_id),
+        ("job_id", &context.job_id),
+        ("phase", &context.phase),
+    ] {
+        if value.len() > MAX_IDENTIFIER_LENGTH || value.bytes().any(is_control_byte) {
+            return Err(format!("event context {name} is invalid or beyond bounds"));
+        }
+    }
+    for (name, value) in [
+        ("instance_id", context.instance_id.as_deref()),
+        ("image_digest", context.image_digest.as_deref()),
+    ] {
+        if let Some(value) = value {
+            if value.len() > MAX_IDENTIFIER_LENGTH || value.bytes().any(is_control_byte) {
+                return Err(format!("event context {name} is invalid or beyond bounds"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_redaction_limits(limits: &RedactionLimits) -> Result<(), String> {
+    if limits.max_depth < 1
+        || limits.max_depth > 64
+        || limits.max_items < 1
+        || limits.max_items > 4096
+        || limits.max_container_items < 1
+        || limits.max_container_items > 1024
+        || limits.max_string_length < 1
+        || limits.max_string_length > 2048
+        || limits.max_string_bytes < 1
+        || limits.max_string_bytes > 4096
+        || limits.max_key_length < 1
+        || limits.max_key_length > 256
+        || limits.max_key_bytes < 1
+        || limits.max_key_bytes > 512
+        || limits.max_output_bytes < 1
+        || limits.max_output_bytes > 16_384
+    {
+        return Err("redaction limits are out of range".to_owned());
+    }
+    Ok(())
+}
+
 /// Build one consistent sanitized snapshot used by every outward path.
 pub fn sanitize_event(event: &Event) -> Event {
     let operation_id = safe_public_identifier(&event.operation_id);
@@ -523,6 +608,8 @@ pub fn sanitize_event(event: &Event) -> Event {
 
 /// Canonical compact JSON plus a trailing newline, bounded by the encoded cap.
 pub fn serialize_event(event: &Event, limits: &RedactionLimits) -> Result<String, String> {
+    validate_event_structure(event)?;
+    validate_redaction_limits(limits)?;
     let event = sanitize_event(event);
     let raw = serde_json::json!({
         "schema_version": event.schema_version,
@@ -643,6 +730,7 @@ impl ObservabilityRegistry {
         {
             return Err("observability retention bounds are out of range".to_owned());
         }
+        validate_redaction_limits(&limits)?;
         Ok(Self {
             limits,
             max_retained_events,
@@ -660,7 +748,19 @@ impl ObservabilityRegistry {
     }
 
     pub fn write(&self, event: &Event) -> WriteResult {
-        let event = sanitize_event(event);
+        let event = match validate_event_structure(event) {
+            Ok(()) => sanitize_event(event),
+            Err(_) => {
+                let mut state = lock(&self.state);
+                state.failures += 1;
+                return WriteResult {
+                    ok: false,
+                    event_id: String::new(),
+                    dropped: false,
+                    error: Some("WRITE_REJECTED".to_owned()),
+                };
+            }
+        };
         let line = match serialize_event(&event, &self.limits) {
             Ok(line) => line,
             Err(_) => {
@@ -788,6 +888,7 @@ pub struct AuditService;
 
 impl AuditService {
     pub fn write(conn: &rusqlite::Connection, event: &Event) -> Result<String, String> {
+        validate_event_structure(event)?;
         let limits = RedactionLimits::default();
         let event = sanitize_event(event);
         let line = serialize_event(&event, &limits)?;
@@ -923,7 +1024,15 @@ mod tests {
             assert!(value.is_empty() || value.starts_with("redacted-"));
         }
 
-        let line = serialize_event(&raw, &RedactionLimits::default()).expect("serializes");
+        // The hostile context job_id contains a control byte and the top-level
+        // identifiers are path/sensitive-lookalike; structure validation
+        // rejects them before serialization, which is the fail-closed truth.
+        let mut clean = raw.clone();
+        clean.context.job_id = "job".to_owned();
+        clean.job_id = "job".to_owned();
+        clean.context.phase = "phase".to_owned();
+        clean.phase = "phase".to_owned();
+        let line = serialize_event(&clean, &RedactionLimits::default()).expect("serializes");
         assert!(!line.contains("/Users/zana"));
         assert!(!line.contains("op/secret"));
         assert!(!line.contains("job\x01"));
@@ -994,5 +1103,57 @@ mod tests {
         assert_eq!(health.retained_bytes, 0);
         assert_eq!(health.retention_dropped, 1);
         assert!(health.retention_dropped_bytes > 0);
+    }
+
+    #[test]
+    fn invalid_events_are_rejected_before_retention_and_audit() {
+        let registry =
+            ObservabilityRegistry::new(10, 1 << 20, RedactionLimits::default()).expect("registry");
+
+        let mut bad_schema = event();
+        bad_schema.schema_version = 99;
+        assert!(!registry.write(&bad_schema).ok);
+
+        let mut bad_progress = event();
+        bad_progress.progress_0_1 = Some(f64::NAN);
+        assert!(!registry.write(&bad_progress).ok);
+
+        let mut bad_duration = event();
+        bad_duration.duration_ms = Some(-1);
+        assert!(!registry.write(&bad_duration).ok);
+
+        let mut bad_timestamp = event();
+        bad_timestamp.timestamp = "not-a-timestamp".to_owned();
+        assert!(!registry.write(&bad_timestamp).ok);
+
+        let health = registry.health();
+        assert_eq!(health.retained_events, 0);
+        assert_eq!(health.failures, 4);
+        assert_eq!(registry.events(10, None).expect("pages").items.len(), 0);
+
+        let dir = std::env::temp_dir().join(format!("zana-audit-invalid-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("db").join("zana.sqlite3");
+        let database = crate::db::Database::open(path.clone()).expect("opens");
+        database.migrate().expect("migrates");
+        let conn = database.connect().expect("connects");
+        assert!(AuditService::write(&conn, &bad_schema).is_err());
+        assert!(AuditService::write(&conn, &bad_progress).is_err());
+        assert!(AuditService::page(&conn, 10, None)
+            .expect("pages")
+            .is_empty());
+        drop(conn);
+        database.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonsensical_redaction_limits_are_rejected_in_production() {
+        let bad = RedactionLimits {
+            max_depth: 0,
+            ..RedactionLimits::default()
+        };
+        assert!(ObservabilityRegistry::new(10, 1 << 20, bad.clone()).is_err());
+        assert!(serialize_event(&event(), &bad).is_err());
     }
 }

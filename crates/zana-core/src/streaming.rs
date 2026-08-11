@@ -94,8 +94,29 @@ pub enum CursorStatus {
 
 #[derive(Debug, Clone)]
 pub struct EventCursor {
-    pub source_id: String,
-    pub sequence: i64,
+    source_id: String,
+    sequence: i64,
+}
+
+impl EventCursor {
+    pub fn new(source_id: impl Into<String>, sequence: i64) -> Result<Self, InvalidCursorError> {
+        let source_id = source_id.into();
+        if !valid_source(&source_id) || !(0..=i64::MAX).contains(&sequence) {
+            return Err(InvalidCursorError);
+        }
+        Ok(Self {
+            source_id,
+            sequence,
+        })
+    }
+
+    pub fn source_id(&self) -> &str {
+        &self.source_id
+    }
+
+    pub fn sequence(&self) -> i64 {
+        self.sequence
+    }
 }
 
 fn valid_source(value: &str) -> bool {
@@ -128,19 +149,13 @@ impl EventCursor {
             return Err(InvalidCursorError);
         }
         let sequence: i64 = sequence.parse().map_err(|_| InvalidCursorError)?;
-        if !(0..=i64::MAX / 2).contains(&sequence) {
+        if sequence < 0 {
             return Err(InvalidCursorError);
         }
-        Ok(Self {
-            source_id: source.to_owned(),
-            sequence,
-        })
+        Self::new(source, sequence)
     }
 
     pub fn to_header(&self) -> String {
-        if !valid_source(&self.source_id) {
-            return "invalid:0".to_owned();
-        }
         format!("{}:{}", self.source_id, self.sequence)
     }
 }
@@ -150,7 +165,7 @@ pub fn check_cursor(cursor: &EventCursor, expected: i64) -> CursorStatus {
 }
 
 pub fn check_cursor_with(cursor: &EventCursor, expected: i64, allow_ahead: bool) -> CursorStatus {
-    if !valid_source(&cursor.source_id) || cursor.sequence < 0 {
+    if expected < 0 {
         return CursorStatus::Invalid;
     }
     if cursor.sequence < expected {
@@ -192,15 +207,13 @@ impl SSEEncoder {
             return Err("event name exceeds the cap".to_owned());
         }
         if let Some(id) = &event.id {
-            if id.len() > self.limits.max_identifier_chars
-                || id.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0))
-            {
+            if id.len() > self.limits.max_identifier_chars || id.bytes().any(control_byte) {
                 return Err("event id is invalid".to_owned());
             }
         }
         let data = serde_json::to_string(&event.data)
             .map_err(|_| "event data is not JSON serializable".to_owned())?;
-        if data.len() > self.limits.max_data_bytes {
+        if data.len() > self.limits.max_data_bytes || contains_control(&data) {
             return Err("event data exceeds the cap".to_owned());
         }
         let block = self.encode_block(
@@ -209,12 +222,14 @@ impl SSEEncoder {
             event.retry_ms,
             &data,
         )?;
+        let block_len = block.len();
         output.extend_from_slice(&block);
 
         // A terminal/error event emits each canonical JSON value in its own
         // complete SSE block, then [DONE] in its own block; standard
         // fetch/EventSource parsers never see concatenated JSON values.
         if let Some(error) = &event.error {
+            validate_error(error)?;
             let error_json = serde_json::json!({
                 "error": {
                     "code": error.code,
@@ -232,6 +247,12 @@ impl SSEEncoder {
                 event.retry_ms,
                 &error_text,
             )?;
+            if error_text.len() > self.limits.max_data_bytes {
+                return Err("error data exceeds the cap".to_owned());
+            }
+            if error_block.len() > self.limits.max_event_bytes {
+                return Err("event exceeds the byte cap".to_owned());
+            }
             output.extend_from_slice(&error_block);
         }
         if event.terminal {
@@ -241,9 +262,12 @@ impl SSEEncoder {
                 event.retry_ms,
                 "[DONE]",
             )?;
+            if done.len() > self.limits.max_data_bytes || done.len() > self.limits.max_event_bytes {
+                return Err("event exceeds the byte cap".to_owned());
+            }
             output.extend_from_slice(&done);
         }
-        if output.len() > self.limits.max_event_bytes {
+        if output.len() > self.limits.max_event_bytes || block_len > self.limits.max_event_bytes {
             return Err("event exceeds the byte cap".to_owned());
         }
         if self.total_bytes.saturating_add(output.len()) > self.limits.max_total_bytes {
@@ -284,7 +308,7 @@ impl SSEEncoder {
     pub fn encode_keepalive(&mut self, comment: &str) -> Result<Vec<u8>, String> {
         if comment.is_empty()
             || comment.len() > self.limits.max_identifier_chars
-            || comment.bytes().any(|b| matches!(b, b'\r' | b'\n' | 0))
+            || comment.bytes().any(control_byte)
         {
             return Err("keepalive comment is invalid".to_owned());
         }
@@ -295,6 +319,27 @@ impl SSEEncoder {
         self.total_bytes += chunk.len();
         Ok(chunk)
     }
+}
+
+fn control_byte(byte: u8) -> bool {
+    byte == 0x7f || byte < 0x20
+}
+
+fn contains_control(value: &str) -> bool {
+    value.bytes().any(control_byte)
+}
+
+fn validate_error(error: &ErrorMetadata) -> Result<(), String> {
+    if error.code.len() > 64
+        || error.message.len() > 500
+        || error.recovery_action.len() > 300
+        || contains_control(&error.code)
+        || contains_control(&error.message)
+        || contains_control(&error.recovery_action)
+    {
+        return Err("error metadata exceeds the bounded limits".to_owned());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -449,5 +494,59 @@ mod tests {
             }),
         };
         assert!(encoder.encode(&event).is_err());
+    }
+
+    #[test]
+    fn hostile_error_and_control_ids_fail_without_counter_mutation() {
+        let mut encoder = SSEEncoder::new(StreamLimits::default());
+        let hostile_error = StreamEvent {
+            name: EventKind::JobError,
+            data: serde_json::json!({}),
+            id: None,
+            retry_ms: None,
+            terminal: false,
+            error: Some(ErrorMetadata {
+                code: "x".repeat(65),
+                message: "m".to_owned(),
+                recoverable: true,
+                recovery_action: "r".to_owned(),
+                terminal: true,
+            }),
+        };
+        assert!(encoder.encode(&hostile_error).is_err());
+
+        let control_id = StreamEvent {
+            name: EventKind::JobStatus,
+            data: serde_json::json!({}),
+            id: Some("id\x01x".to_owned()),
+            retry_ms: None,
+            terminal: false,
+            error: None,
+        };
+        assert!(encoder.encode(&control_id).is_err());
+
+        let valid = StreamEvent {
+            name: EventKind::JobStatus,
+            data: serde_json::json!({"ok": true}),
+            id: None,
+            retry_ms: None,
+            terminal: false,
+            error: None,
+        };
+        assert!(encoder.encode(&valid).is_ok());
+    }
+
+    #[test]
+    fn cursor_is_structurally_valid_and_handles_i64_max() {
+        assert!(EventCursor::new("jobs", -1).is_err());
+        let max = EventCursor::new("jobs", i64::MAX).expect("max cursor");
+        assert_eq!(max.to_header(), format!("jobs:{}", i64::MAX));
+        let parsed = EventCursor::parse(&format!("jobs:{}", i64::MAX), "jobs").expect("parses");
+        assert_eq!(parsed.to_header(), format!("jobs:{}", i64::MAX));
+        assert_eq!(
+            check_cursor_with(&parsed, i64::MAX, false),
+            CursorStatus::Valid
+        );
+        assert_eq!(check_cursor_with(&parsed, -1, false), CursorStatus::Invalid);
     }
 }
