@@ -126,6 +126,7 @@ dependency install ran.
 - `993e3aa` feat: add bounded observability audit and SSE primitives
 - `5ac4273` fix: harden T921 FIFO proof, identifiers, retention, cursors, and SSE framing
 - `7825d13` fix: structurally valid cursors, bounded SSE payloads, and observability validation
+- `1a209ae` fix: exact UTC timestamps, native error truth, and supervisor cleanup
 
 ## Hardening correction addendum (lead review)
 
@@ -179,6 +180,31 @@ defects were fixed in `5ac4273`:
 
 Sanitization happens once per outward path from one sanitized snapshot in
 `serialize_event`/registry/audit.
+
+## Final correctness addendum
+
+`1a209ae` closes the three production-contract defects:
+
+1. `valid_timestamp` fails closed on the exact `now_iso` UTC-microsecond
+   shape: ASCII digits in every numeric slot, exact separators, valid
+   hour/minute/second/microseconds, and valid month/day including leap-year
+   calendar. Hostile same-length invalid-date/range/nondigit tests prove
+   registry and audit retain nothing and registry failure increments exactly
+   once.
+2. Acquisition terminal truth matches the accepted Python adapter: any
+   nonempty native error yields `Failed/NATIVE_ERROR` and is never overridden
+   by `status=success`; both `success` and `completed` succeed when no error.
+   Raw native error/secret/path text is never retained or exposed; hostile
+   status/digest metadata is sanitized to a bounded generic public value.
+   Tests cover error-only, error+success, completed, and
+   control/path/credential-like metadata.
+3. `AcquisitionSupervisor::dispatch` validates positive job ids, and
+   `drain_once` removes its cancellation token/queue capacity on every exit
+   after dequeue, including DB-open, missing-token, execute, and failure
+   persistence errors. `shutdown` clears all queued internal tokens even if
+   one persistence transition fails and reports failure honestly after
+   cleanup. Injected DB-path and nonexistent-job tests prove the next dispatch
+   is admitted and pending/token state is clean.
 
 ## Security delta
 
