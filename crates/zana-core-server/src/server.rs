@@ -91,6 +91,10 @@ pub fn run(config: ServerConfig, database: Database) -> Result<(), zana_core::Co
         }
         match listener.accept() {
             Ok((stream, _)) => {
+                let stream = match prepare_accepted_stream(stream) {
+                    Ok(stream) => stream,
+                    Err(_) => continue,
+                };
                 if active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
                     active.fetch_sub(1, Ordering::SeqCst);
                     let _ = write_busy_response(stream);
@@ -129,10 +133,20 @@ fn validate_bootstrap(database: &Database) -> Result<(), zana_core::CoreError> {
     Ok(())
 }
 
+/// Make an accepted stream blocking with bounded read/write timeouts.
+///
+/// A stream accepted from a nonblocking listener may inherit nonblocking
+/// mode on some platforms. Returning an error drops the stream, which closes
+/// it safely, before any handler or busy response can observe it.
+fn prepare_accepted_stream(stream: TcpStream) -> std::io::Result<TcpStream> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(http::CONNECTION_TIMEOUT))?;
+    stream.set_write_timeout(Some(http::CONNECTION_TIMEOUT))?;
+    Ok(stream)
+}
+
 impl Server {
     fn handle_connection(&self, mut stream: TcpStream) -> std::io::Result<()> {
-        let _ = stream.set_read_timeout(Some(http::CONNECTION_TIMEOUT));
-        let _ = stream.set_write_timeout(Some(http::CONNECTION_TIMEOUT));
         let request = match http::read_request(&mut stream) {
             Ok(request) => request,
             Err(ParseError::HeadersTooLarge) => {
@@ -242,8 +256,6 @@ fn error_response(status: u16, detail: ErrorDetail) -> Response {
 }
 
 fn write_busy_response(mut stream: TcpStream) -> std::io::Result<()> {
-    let _ = stream.set_read_timeout(Some(http::CONNECTION_TIMEOUT));
-    let _ = stream.set_write_timeout(Some(http::CONNECTION_TIMEOUT));
     http::write_response(
         &mut stream,
         &error_response(503, error::service_unavailable()),
@@ -273,6 +285,7 @@ fn install_signal_handlers(_shutdown: Arc<AtomicBool>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
     use zana_core::db::Database;
 
     fn test_server(token: &str) -> Server {
@@ -398,5 +411,54 @@ mod tests {
         assert!(response.headers.iter().any(|(name, value)| {
             name == "access-control-allow-origin" && value == "http://127.0.0.1"
         }));
+    }
+
+    #[test]
+    fn delayed_client_receives_authenticated_health_response() {
+        let server = test_server("secret-token");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("binds test listener");
+        listener
+            .set_nonblocking(true)
+            .expect("nonblocking listener");
+        let port = listener.local_addr().expect("local address").port();
+
+        let server_thread = thread::spawn(move || {
+            let (stream, _) = loop {
+                match listener.accept() {
+                    Ok(accepted) => break accepted,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            let stream = prepare_accepted_stream(stream).expect("accepted stream is blocking");
+            server
+                .handle_connection(stream)
+                .expect("handles connection");
+        });
+
+        let client = TcpStream::connect(("127.0.0.1", port)).expect("connects");
+        // Connect first, then send after a bounded delay. The server must wait
+        // for the request instead of failing immediately on WouldBlock.
+        thread::sleep(Duration::from_millis(150));
+        let mut client = client;
+        client
+            .write_all(
+                b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer secret-token\r\n\r\n",
+            )
+            .expect("writes request");
+        let mut response = String::new();
+        client
+            .read_to_string(&mut response)
+            .expect("reads response");
+        server_thread.join().expect("server thread completes");
+
+        assert!(
+            response.starts_with("HTTP/1.1 200 OK\r\n"),
+            "unexpected response: {response:?}"
+        );
+        assert!(response.contains("\"status\":\"ok\""));
+        assert!(response.contains("\"python_version\":\"not-required\""));
     }
 }

@@ -27,11 +27,7 @@ impl Database {
     /// Migration/schema work remains with the accepted Python evidence until
     /// a later Rust parity cutover owns it.
     pub fn open(path: PathBuf) -> Result<Self, CoreError> {
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            if metadata.file_type().is_symlink() {
-                return Err(CoreError::database());
-            }
-        }
+        reject_symlink_or_other_metadata_error(&path)?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|_| CoreError::database())?;
         }
@@ -73,6 +69,20 @@ impl Database {
 
     pub fn close(self) {
         drop(self.conn);
+    }
+}
+
+/// Fail closed before creating or opening a database path.
+///
+/// `NotFound` is the only metadata error that may proceed; a symlink and any
+/// other metadata error reject so an unreadable or smuggled path is never
+/// silently created.
+fn reject_symlink_or_other_metadata_error(path: &std::path::Path) -> Result<(), CoreError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(CoreError::database()),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(CoreError::database()),
     }
 }
 
@@ -155,5 +165,50 @@ mod tests {
         std::fs::write(&path, b"not a sqlite database").expect("writes file");
         assert!(Database::open(path.clone()).is_err());
         let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[test]
+    fn metadata_helper_distinguishes_all_branches() {
+        let dir = std::env::temp_dir().join(format!("zana-core-db-meta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("creates temp dir");
+
+        let missing = dir.join("missing.sqlite3");
+        assert!(reject_symlink_or_other_metadata_error(&missing).is_ok());
+
+        let regular = dir.join("regular.sqlite3");
+        std::fs::write(&regular, b"data").expect("writes regular file");
+        assert!(reject_symlink_or_other_metadata_error(&regular).is_ok());
+
+        #[cfg(unix)]
+        {
+            let target = dir.join("target.sqlite3");
+            std::fs::write(&target, b"data").expect("writes target");
+            let link = dir.join("link.sqlite3");
+            std::os::unix::fs::symlink(&target, &link).expect("creates symlink");
+            assert!(reject_symlink_or_other_metadata_error(&link).is_err());
+        }
+
+        // A path under a regular file is not NotFound; it must reject.
+        let parent_file = dir.join("file.sqlite3");
+        std::fs::write(&parent_file, b"file").expect("writes parent file");
+        assert!(reject_symlink_or_other_metadata_error(&parent_file.join("db")).is_err());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn other_metadata_errors_reject_before_database_creation() {
+        let dir =
+            std::env::temp_dir().join(format!("zana-core-db-metadata-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("creates temp dir");
+        let parent_file = dir.join("not-a-directory");
+        std::fs::write(&parent_file, b"file").expect("writes parent file");
+        let path = parent_file.join("db").join("zana.sqlite3");
+
+        assert!(Database::open(path.clone()).is_err());
+        assert!(!path.exists(), "no database was created through a file");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -12,6 +12,14 @@ pub const MAX_COMPONENT_LENGTH: usize = 255;
 
 const DATABASE_COMPONENTS: [&str; 2] = ["db", "zana.sqlite3"];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformKind {
+    Macos,
+    Linux,
+    Windows,
+    Unsupported,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlatformPaths {
     pub data_root: PathBuf,
@@ -22,42 +30,69 @@ pub struct PlatformPaths {
 ///
 /// The layout matches the accepted Python `platformdirs` contract: macOS
 /// `~/Library/Application Support/zana`, Linux `$XDG_DATA_HOME/zana` (or
-/// `~/.local/share/zana`), and Windows `%LOCALAPPDATA%\zana`.
+/// `~/.local/share/zana`), and Windows `%LOCALAPPDATA%\zana\zana` because
+/// `platformdirs.user_data_dir("zana")` defaults appauthor to appname.
 pub fn data_root_for(
     home: Option<PathBuf>,
-    _xdg_data_home: Option<PathBuf>,
-    _local_app_data: Option<PathBuf>,
+    xdg_data_home: Option<PathBuf>,
+    local_app_data: Option<PathBuf>,
 ) -> Result<PathBuf, CoreError> {
-    #[cfg(target_os = "macos")]
-    {
-        let home = home.ok_or_else(CoreError::data_root)?;
-        Ok(home
-            .join("Library")
-            .join("Application Support")
-            .join(APP_NAME))
-    }
+    data_root_for_platform(
+        current_platform_kind(),
+        home.as_deref(),
+        xdg_data_home.as_deref(),
+        local_app_data.as_deref(),
+    )
+}
 
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let base = _xdg_data_home
-            .or_else(|| home.map(|home| home.join(".local").join("share")))
-            .ok_or_else(CoreError::data_root)?;
-        Ok(base.join(APP_NAME))
+/// Pure per-platform data-root derivation, testable on any host.
+pub fn data_root_for_platform(
+    platform: PlatformKind,
+    home: Option<&Path>,
+    xdg_data_home: Option<&Path>,
+    local_app_data: Option<&Path>,
+) -> Result<PathBuf, CoreError> {
+    match platform {
+        PlatformKind::Macos => {
+            let home = home.ok_or_else(CoreError::data_root)?;
+            Ok(home
+                .join("Library")
+                .join("Application Support")
+                .join(APP_NAME))
+        }
+        PlatformKind::Linux => {
+            let base = xdg_data_home
+                .map(Path::to_path_buf)
+                .or_else(|| home.map(|home| home.join(".local").join("share")))
+                .ok_or_else(CoreError::data_root)?;
+            Ok(base.join(APP_NAME))
+        }
+        PlatformKind::Windows => {
+            let base = local_app_data.ok_or_else(CoreError::data_root)?;
+            Ok(base.join(APP_NAME).join(APP_NAME))
+        }
+        PlatformKind::Unsupported => Err(CoreError::data_root()),
     }
+}
 
-    #[cfg(windows)]
-    {
-        let base = _local_app_data
-            .or_else(|| env::var_os("APPDATA").map(PathBuf::from))
-            .ok_or_else(CoreError::data_root)?;
-        Ok(base.join(APP_NAME))
-    }
+#[cfg(target_os = "macos")]
+fn current_platform_kind() -> PlatformKind {
+    PlatformKind::Macos
+}
 
-    #[cfg(not(any(target_os = "macos", windows, all(unix, not(target_os = "macos")))))]
-    {
-        let _ = (home, _xdg_data_home, _local_app_data);
-        Err(CoreError::data_root())
-    }
+#[cfg(all(unix, not(target_os = "macos")))]
+fn current_platform_kind() -> PlatformKind {
+    PlatformKind::Linux
+}
+
+#[cfg(windows)]
+fn current_platform_kind() -> PlatformKind {
+    PlatformKind::Windows
+}
+
+#[cfg(not(any(target_os = "macos", all(unix, not(target_os = "macos")), windows)))]
+fn current_platform_kind() -> PlatformKind {
+    PlatformKind::Unsupported
 }
 
 pub fn resolve_data_root() -> Result<PathBuf, CoreError> {
@@ -185,6 +220,23 @@ mod tests {
         );
         #[cfg(all(unix, not(target_os = "macos")))]
         assert_eq!(root, PathBuf::from("/tmp/zana-home/.local/share/zana"));
+    }
+
+    #[test]
+    fn windows_data_root_matches_platformdirs_nested_layout() {
+        let root = data_root_for_platform(
+            PlatformKind::Windows,
+            None,
+            None,
+            Some(Path::new(r"C:\Users\Zana\AppData\Local")),
+        )
+        .expect("resolves");
+        assert_eq!(
+            root,
+            Path::new(r"C:\Users\Zana\AppData\Local")
+                .join(APP_NAME)
+                .join(APP_NAME)
+        );
     }
 
     #[test]
