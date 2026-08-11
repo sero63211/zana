@@ -128,6 +128,7 @@ dependency install ran.
 - `7825d13` fix: structurally valid cursors, bounded SSE payloads, and observability validation
 - `1a209ae` fix: exact UTC timestamps, native error truth, and supervisor cleanup
 - `1cb0e6e` fix: exact native error truth, digest sanitization, and shutdown cleanup
+- `847e080` fix: accept exact lowercase sha256 hex digests and prove shutdown cleanup
 
 ## Hardening correction addendum (lead review)
 
@@ -235,6 +236,23 @@ Sanitization happens once per outward path from one sanitized snapshot in
    `00..59`. Calendar/leap-year behavior is preserved and tested.
 
 Handoff claims/counts were corrected to match the final code and gates.
+
+## Final digest predicate addendum
+
+`847e080` fixes the concrete red gate in `canonical_digest()`: the previous
+predicate required every byte to be both `is_ascii_lowercase()` and
+`is_ascii_hexdigit()`, which rejected ASCII digits `0-9`. It now accepts
+exactly `[0-9a-f]` after the exact lowercase `sha256:` prefix with exactly 64
+hex characters, and rejects uppercase, malformed, prefix/casing/whitespace,
+length-drift, and control variants. Focused tests through
+`parse_progress_line`/the native adapter prove mixed digit/`a-f`, all-digit,
+and lowercase-`a-f` digests survive exactly while hostile variants become
+`invalid-digest`; success/completed truth remains unchanged.
+
+The shutdown DB-open-failure test now inspects the same supervisor's internal
+queue/token maps (module-private, no public debug API) and proves both are
+zero after the reported error. Every shutdown exit after queue drain clears
+and removes queued tokens; no additional gap was found.
 
 ## Security delta
 
