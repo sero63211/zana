@@ -7,6 +7,88 @@ use rusqlite::Connection;
 
 use crate::error::CoreError;
 
+/// Idempotent operational schema compatible with the accepted Python
+/// migration. Existing Python-created tables are reused untouched; missing
+/// Rust-owned operational tables are created. No `alembic_version` row is
+/// ever claimed by the Rust bootstrap.
+const OPERATIONAL_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS runtimes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    last_seen_at TEXT
+);
+CREATE TABLE IF NOT EXISTS models (
+    key TEXT PRIMARY KEY,
+    runtime_id INTEGER NOT NULL REFERENCES runtimes(id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL,
+    digest TEXT,
+    family TEXT,
+    format TEXT,
+    quantization TEXT,
+    parameter_count INTEGER,
+    size_bytes INTEGER,
+    context_length INTEGER,
+    capabilities_json TEXT NOT NULL DEFAULT '[]',
+    identity_strength TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    last_seen_at TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_models_runtime_id ON models(runtime_id);
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    progress_0_1 REAL NOT NULL DEFAULT 0,
+    phase TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    error_json TEXT
+);
+CREATE TABLE IF NOT EXISTS job_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    phase TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    progress_0_1 REAL NOT NULL DEFAULT 0,
+    error_json TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_job_events_job_id ON job_events(job_id);
+CREATE INDEX IF NOT EXISTS ix_job_events_created_at ON job_events(created_at);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    sensitive INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS resource_snapshots (
+    revision INTEGER PRIMARY KEY,
+    captured_at TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    os_name TEXT NOT NULL DEFAULT '',
+    arch TEXT NOT NULL DEFAULT '',
+    logical_cores INTEGER,
+    memory_total_bytes INTEGER,
+    memory_available_bytes INTEGER,
+    disk_free_bytes INTEGER,
+    probe_error_code TEXT,
+    probe_status TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_events (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_id TEXT NOT NULL,
+    line TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    received_at TEXT NOT NULL
+);
+"#;
+
+pub const OPERATIONAL_REVISION: &str = "zana-rust-operational-v1";
+
 pub struct Database {
     pub path: PathBuf,
     conn: Connection,
@@ -28,23 +110,24 @@ impl Database {
     /// a later Rust parity cutover owns it.
     pub fn open(path: PathBuf) -> Result<Self, CoreError> {
         reject_symlink_or_other_metadata_error(&path)?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|_| CoreError::database())?;
-        }
-
-        let conn = Connection::open(&path).map_err(|_| CoreError::database())?;
-        conn.busy_timeout(Duration::from_millis(30_000))
-            .map_err(|_| CoreError::database())?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|_| CoreError::database())?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(|_| CoreError::database())?;
-        // Force SQLite to validate the file now so a non-SQLite path fails
-        // honestly at open instead of lazily during the first request.
-        conn.query_row("SELECT 1", [], |_| Ok(()))
-            .map_err(|_| CoreError::database())?;
-
+        let conn = open_connection(&path)?;
         Ok(Self { path, conn })
+    }
+
+    /// Apply the idempotent operational schema and return its revision.
+    pub fn migrate(&self) -> Result<&'static str, CoreError> {
+        self.conn
+            .execute_batch(OPERATIONAL_SCHEMA)
+            .map_err(|_| CoreError::database())?;
+        Ok(OPERATIONAL_REVISION)
+    }
+
+    /// Open an additional short-lived connection to the same database file.
+    ///
+    /// WAL mode allows concurrent readers and one writer; every connection
+    /// applies the same bounded pragmas and fails closed on invalid files.
+    pub fn connect(&self) -> Result<Connection, CoreError> {
+        open_connection(&self.path)
     }
 
     pub fn pragma_state(&self) -> Result<PragmaState, CoreError> {
@@ -70,6 +153,24 @@ impl Database {
     pub fn close(self) {
         drop(self.conn);
     }
+}
+
+fn open_connection(path: &std::path::Path) -> Result<Connection, CoreError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|_| CoreError::database())?;
+    }
+    let conn = Connection::open(path).map_err(|_| CoreError::database())?;
+    conn.busy_timeout(Duration::from_millis(30_000))
+        .map_err(|_| CoreError::database())?;
+    conn.pragma_update(None, "journal_mode", "WAL")
+        .map_err(|_| CoreError::database())?;
+    conn.pragma_update(None, "foreign_keys", "ON")
+        .map_err(|_| CoreError::database())?;
+    // Force SQLite to validate the file now so a non-SQLite path fails
+    // honestly at open instead of lazily during the first request.
+    conn.query_row("SELECT 1", [], |_| Ok(()))
+        .map_err(|_| CoreError::database())?;
+    Ok(conn)
 }
 
 /// Fail closed before creating or opening a database path.
