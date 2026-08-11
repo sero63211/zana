@@ -1481,9 +1481,10 @@ tasks:
       - id: T922A-rust-benchmark-engine
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: queued
+        status: active
         branch: agent/t922a-rust-benchmark-engine
-        worktree: "pending visible local Codex task"
+        thread: 019ff245-cb08-79c1-8514-43206fc16bb7
+        worktree: /Users/sero/.codex/worktrees/4060/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "T920-rust-core-foundation and docs/goals/zana-mvp/notes/T922-evaluation-benchmark-policy.md; parallel-safe pure-domain subtask for later T922 integration"
         owns: "Only new files under crates/zana-evaluation/** and .agent-work/handoffs/T922A-rust-benchmark-engine.md. Root Cargo files, zana-core, zana-core-server, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
