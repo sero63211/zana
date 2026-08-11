@@ -19,6 +19,18 @@ that runtime and references an exact compatible base model by digest. Device
 permissions, secrets, conversations, granted Android actions, and mutable memory
 belong to the Android Instance, never to the immutable Image.
 
+## Product surface invariant
+
+ZANA is capability- and model-centered, not Android-centered. The primary
+desktop journey starts from a local model, approved knowledge, or a capability
+goal. A deployment target is an optional later choice: run on this computer,
+produce a portable Image only, deploy to Android, or use another supported
+runtime such as a future iOS client. Extending a local model with Kurdish books,
+medical references, private documents, tools, or evaluation rules must never
+require a phone or any mobile deployment step. Android may appear as one target
+and one product area, but must not dominate the Dashboard or redefine the shared
+Image/Instance lifecycle.
+
 ## Target architecture
 
 - shared Rust Core: contracts, errors, identity/digests, permission decisions,

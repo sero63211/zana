@@ -1436,7 +1436,7 @@ tasks:
       - id: T920-rust-core-foundation
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
-        status: active
+        status: done
         branch: agent/t920-rust-core-foundation
         thread: 019ff10d-934d-7b73-80eb-17cf14594203
         worktree: /Users/sero/.codex/worktrees/af77/zana
@@ -1448,16 +1448,20 @@ tasks:
         output_contract: "A dependency-complete Rust M0: small shared zana-core crate, runnable standalone zana-core-server binary, exact authenticated health/error envelope, safe platform data root and SQLite bootstrap. The existing desktop package/supervisor remains on the functional Python compatibility Core until T921 and T922 provide route parity; T925 performs the atomic package cutover and Python-runtime removal. This foundation must not replace a full product server with a health-only binary."
         gates: "Focused cargo fmt --check, cargo check, cargo clippy with warnings denied, exact crate/unit/integration tests, Tauri manifest/workspace-boundary and diff hygiene, direct lifecycle/auth/path/error/security/readability review. Prove existing desktop package/supervisor product behavior is unchanged. No desktop/native bundle, app/browser/device, Python suite, model/provider/download, inference, training, load, broad test or dependency-cache cleanup. Focused accepted commits plus truthful handoff receipt commit; clean source worktree; no push."
         stop_if: "Stop before deleting or modifying Python product code, changing the accepted HTTP/sidecar contract incompatibly, editing an existing DB migration/schema without an explicit lead interface decision, touching TypeScript/Android files, running a model/provider/app/bundle, or requiring a large dependency fan-out. Escalate the exact interface delta first."
-        verification: "Visible Flash-Max task created successfully in local isolated worktree af77 from exact clean base ce806b5. Codex initially created a detached worktree; lead required the worker to create/switch to exclusive branch agent/t920-rust-core-foundation before any write. Independent review correctly rejected premature health-only desktop cutover; the PM reconciled this output boundary before acceptance so T920 establishes the Rust foundation while T925 owns the atomic package cutover after route parity. The real-socket total-deadline correction and final independent acceptance remain pending."
+        product_commits: "fc26dcd initial Rust foundation; 3bc0974, 3c5c5a9, 1837c2f and ce34548 accepted security/compatibility corrections"
+        handoff_commit: 31fbe1d
+        integration_head: 31fbe1d
+        verification: "PASS. Independent lead reran cargo fmt/check/clippy with warnings denied, 48 Rust tests, both workspace metadata checks, Tauri JSON, shell syntax and diff hygiene on canonical main. Final read-only Codex review reported no actionable defect after four accepted correction rounds. The fixed production socket applies the remaining total deadline to every read; invalid launch tokens reject before filesystem/DB mutation; platform/SQLite failures are fail-closed. Existing desktop package/supervisor behavior is byte-compatible and remains on the full Python compatibility Core until T921+T922 route parity; no app, bundle, model, provider, download, inference, training, device or broad live test ran."
       - id: T921-rust-operational-core
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
         depends_on: T920-rust-core-foundation
-        owns: "To be reserved after T920 stabilizes shared Rust contracts: Rust persistence repositories, job/event lifecycle, resource governor, runtime/model discovery and acquisition, observability/audit, settings/security and exact compatibility routes/tests."
-        output_contract: "Python-free operational control plane with accepted bounded job, cancellation, discovery, resource, security and failure semantics."
-        gates: "Focused Rust unit/integration/static gates only; no live model/provider/device/app or broad/load run; focused commits and clean worktree."
-        stop_if: "Stop before changing stable foundation contracts or capability lifecycle ownership without lead reconciliation."
+        owns: "Next exclusive shared-Rust writer after a visible task is recorded: root Cargo.toml/Cargo.lock; crates/zana-core/**; crates/zana-core-server/**; exact focused Rust tests; .agent-work/handoffs/T921-rust-operational-core.md. Excludes Python, TypeScript, Tauri/package/supervisor, Android, GoalBuddy state/ledger, capability/build/evaluation/Image/Instance/knowledge/portability product logic, generated binaries/caches and unrelated paths."
+        input_contract: "Treat accepted Python implementations/tests as migration evidence for SQLite migrations/repositories, global jobs and fetch-SSE events, cancellation/restart/idempotency, resource admission, system doctor, local runtime/model discovery and acquisition execution, settings/security, observability/audit, redaction and exact current API envelopes. Preserve T920 auth/path/error/deadline boundaries."
+        output_contract: "One dependency-complete Python-free Rust operational control plane: compatible SQLite schema/repositories; bounded persistent jobs/events/cancellation; resource governor and doctor; local runtime/model discovery; approved model-acquisition execution boundary; settings/security and observability/audit; and authenticated compatibility API routes with real bounded JSON/SSE behavior. Desktop package cutover remains forbidden in this task."
+        gates: "Focused Rust unit/integration/static gates with injected filesystem/process/HTTP clocks only; exact migration/transaction/restart/cancellation/SSE/bounds/redaction/error tests; cargo fmt/check/clippy with warnings denied; direct readability/security/failure review; focused commits and clean worktree. No live runtime/model/provider/network, download, inference, training, app/browser/device, bundle, broad/load test or dependency install."
+        stop_if: "Stop before changing a stable T920 interface, touching capability lifecycle ownership, exposing secrets/host paths, executing unapproved processes or network, switching desktop packaging, or needing a DB/API contract change not already supported by accepted evidence; escalate the exact interface delta first."
       - id: T922-rust-capability-lifecycle
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
