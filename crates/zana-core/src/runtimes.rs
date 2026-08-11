@@ -869,10 +869,11 @@ pub fn identify_lm_studio(
 
 fn is_lmstudio_payload(payload: &Value) -> bool {
     if let Some(list) = payload.as_array() {
-        return list.iter().all(|item| {
-            item.as_object()
-                .is_some_and(|object| object.contains_key("id"))
-        });
+        return !list.is_empty()
+            && list.iter().all(|item| {
+                item.as_object()
+                    .is_some_and(|object| object.contains_key("id"))
+            });
     }
     payload.as_object().is_some_and(|object| {
         ["data", "models"].iter().any(|key| {
@@ -880,8 +881,10 @@ fn is_lmstudio_payload(payload: &Value) -> bool {
                 .get(*key)
                 .and_then(Value::as_array)
                 .is_some_and(|list| {
-                    list.iter()
-                        .all(|item| item.as_object().is_some_and(|o| o.contains_key("id")))
+                    !list.is_empty()
+                        && list
+                            .iter()
+                            .all(|item| item.as_object().is_some_and(|o| o.contains_key("id")))
                 })
         })
     })
@@ -1154,6 +1157,9 @@ impl RuntimeProbeRegistry {
             if !adapter_matches_kind(target.adapter_type, target.kind) {
                 return Err("probe adapter and runtime kind do not match".to_owned());
             }
+            if !matches!(target.endpoint.as_str(), endpoint if endpoint_path_is_origin(endpoint)) {
+                return Err("probe endpoint must be an origin without a path".to_owned());
+            }
             let canonical = canonical_endpoint(&target.endpoint)?;
             target.endpoint = canonical.clone();
             let identity = format!(
@@ -1267,12 +1273,26 @@ impl RuntimeProbeRegistry {
             }
             bounded
         });
+        descriptor.identified_vendor = descriptor.identified_vendor.inspect(|vendor| {
+            if vendor.len() > self.limits.max_model_field_bytes {
+                descriptor.error =
+                    Some("runtime vendor metadata exceeds the bounded limit".to_owned());
+                descriptor.status = RuntimeStatus::Error;
+                descriptor.registered = false;
+                descriptor.server_running = false;
+                descriptor.installed_not_running =
+                    descriptor.installed && !descriptor.server_running;
+                descriptor.models = Vec::new();
+            }
+        });
         match self.bound_models(descriptor.models, target) {
             Ok(models) => descriptor.models = models,
             Err(message) => {
                 descriptor.status = RuntimeStatus::Error;
                 descriptor.registered = false;
                 descriptor.server_running = false;
+                descriptor.installed_not_running =
+                    descriptor.installed && !descriptor.server_running;
                 descriptor.models = Vec::new();
                 descriptor.error = Some(message);
             }
@@ -1291,6 +1311,14 @@ impl RuntimeProbeRegistry {
         let mut projected = Vec::new();
         let mut total_bytes = 0usize;
         for mut model in models {
+            if model.model_id.is_empty()
+                || model.model_id.len() > self.limits.max_model_field_bytes
+                || model.digest.as_deref().is_some_and(|value| {
+                    value.is_empty() || value.len() > self.limits.max_model_field_bytes
+                })
+            {
+                return Err("model identity field exceeds the bounded limit".to_owned());
+            }
             for value in [
                 model.parameter_count,
                 model.size_bytes,
@@ -1304,21 +1332,21 @@ impl RuntimeProbeRegistry {
                 }
             }
             model.runtime_id = target.runtime_id.clone();
-            model.model_id = bounded_field(Some(model.model_id), self.limits.max_model_field_bytes)
-                .unwrap_or_default();
-            model.display_name =
-                bounded_field(Some(model.display_name), self.limits.max_model_field_bytes)
-                    .unwrap_or_default();
-            model.digest = bounded_field(model.digest, self.limits.max_model_field_bytes);
-            model.family = bounded_field(model.family, self.limits.max_model_field_bytes);
-            model.format = bounded_field(model.format, self.limits.max_model_field_bytes);
-            model.quantization =
-                bounded_field(model.quantization, self.limits.max_model_field_bytes);
-            model.parameter_label =
-                bounded_field(model.parameter_label, self.limits.max_model_field_bytes);
-            model
-                .capabilities
-                .truncate(self.limits.max_model_capabilities);
+            for field in [
+                model.display_name.as_str(),
+                model.family.as_deref().unwrap_or(""),
+                model.format.as_deref().unwrap_or(""),
+                model.quantization.as_deref().unwrap_or(""),
+                model.parameter_label.as_deref().unwrap_or(""),
+                model.trainability.as_deref().unwrap_or(""),
+            ] {
+                if !field.is_empty() && field.len() > self.limits.max_model_field_bytes {
+                    return Err("model metadata field exceeds the bounded limit".to_owned());
+                }
+            }
+            if model.capabilities.len() > self.limits.max_model_capabilities {
+                return Err("model capability count exceeds the bounded limit".to_owned());
+            }
             if model
                 .capabilities
                 .iter()
@@ -1326,12 +1354,7 @@ impl RuntimeProbeRegistry {
             {
                 return Err("model capability exceeds the bounded limit".to_owned());
             }
-            if model
-                .trainability
-                .as_deref()
-                .is_some_and(|value| value.len() > self.limits.max_model_field_bytes)
-                || model.metadata_source.len() > self.limits.max_model_field_bytes
-            {
+            if model.metadata_source.len() > self.limits.max_model_field_bytes {
                 return Err("model metadata field exceeds the bounded limit".to_owned());
             }
             total_bytes = total_bytes
@@ -1732,9 +1755,9 @@ fn validate_url(url: &str) -> Result<UrlParts, TransportError> {
         Some((authority, path)) => (authority, format!("/{path}")),
         None => (rest, "/".to_owned()),
     };
-    if path.bytes().any(is_http_control) {
+    if path.len() > 2000 || path.bytes().any(is_http_control) || path.contains(' ') {
         return Err(TransportError::Protocol(
-            "runtime endpoint path contains control characters".to_owned(),
+            "runtime endpoint path is invalid or too long".to_owned(),
         ));
     }
     let (host, port) = match parse_ipv6_authority(authority) {
@@ -1754,6 +1777,11 @@ fn validate_url(url: &str) -> Result<UrlParts, TransportError> {
             None => (authority.to_owned(), 80),
         },
     };
+    if port == 0 {
+        return Err(TransportError::Protocol(
+            "runtime endpoint port is invalid".to_owned(),
+        ));
+    }
     let normalized_host = host.trim_end_matches('.').to_ascii_lowercase();
     let host = if normalized_host == "localhost" {
         "localhost".to_owned()
@@ -1765,11 +1793,7 @@ fn validate_url(url: &str) -> Result<UrlParts, TransportError> {
             "runtime endpoint must target a loopback host".to_owned(),
         ));
     }
-    Ok(UrlParts {
-        host,
-        port,
-        path: path.chars().take(2000).collect(),
-    })
+    Ok(UrlParts { host, port, path })
 }
 
 fn validate_request_components(
@@ -1791,7 +1815,13 @@ fn validate_request_components(
             "runtime request method is invalid".to_owned(),
         ));
     }
-    if path.is_empty() || path.len() > 2000 || path.bytes().any(is_http_control) {
+    if path.is_empty()
+        || path.len() > 2000
+        || path.contains(' ')
+        || path
+            .bytes()
+            .any(|byte| byte >= 0x80 || is_http_control(byte))
+    {
         return Err(TransportError::Protocol(
             "runtime request path contains forbidden characters".to_owned(),
         ));
@@ -2160,6 +2190,62 @@ mod tests {
     }
 
     #[test]
+    fn bound_models_rejects_oversized_identity_and_vendor() {
+        let registry = RuntimeProbeRegistry::new(
+            Arc::new(CountingTransport {
+                concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                max_concurrent: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                delay: Duration::ZERO,
+            }),
+            Duration::from_secs(1),
+            2,
+        )
+        .expect("registry builds");
+        let target = target(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            AdapterType::OpenAiCompatible,
+        );
+        let model = ModelDescriptor {
+            runtime_id: "t".to_owned(),
+            model_id: "x".repeat(MAX_MODEL_FIELD_BYTES + 1),
+            display_name: "x".to_owned(),
+            digest: None,
+            family: None,
+            parameter_count: None,
+            parameter_label: None,
+            format: None,
+            quantization: None,
+            size_bytes: None,
+            context_length: None,
+            capabilities: Vec::new(),
+            trainability: None,
+            metadata_source: "runtime".to_owned(),
+            last_seen_at: now_iso(),
+            identity_strength: ModelIdentityStrength::RuntimeModelId,
+        };
+        assert!(registry.bound_models(vec![model], &target).is_err());
+
+        let descriptor = build_runtime_descriptor(
+            "t",
+            RuntimeKind::OpenAiCompatible,
+            "http://127.0.0.1:11434",
+            RuntimeSource::Auto,
+            false,
+            true,
+            true,
+            RuntimeStatus::Online,
+            Vec::new(),
+            Vec::new(),
+            None,
+            Vec::new(),
+            Some("v".repeat(MAX_MODEL_FIELD_BYTES + 1)),
+        );
+        let bounded = registry.bound_descriptor(descriptor, &target);
+        assert_eq!(bounded.status, RuntimeStatus::Error);
+    }
+
+    #[test]
     fn model_overflow_marks_descriptor_non_success() {
         let registry = RuntimeProbeRegistry::new(
             Arc::new(CountingTransport {
@@ -2214,8 +2300,9 @@ mod tests {
         assert_eq!(parts.host, "::1");
         assert_eq!(parts.port, 11434);
         let canonical = canonical_endpoint("http://[::1]:11434").expect("canonical");
-        assert_eq!(canonical, "http://::1:11434");
+        assert_eq!(canonical, "http://[::1]:11434");
         assert!(is_loopback_endpoint("http://[::1]:11434"));
+        assert!(validate_url("http://[::1]:0").is_err());
     }
 
     #[test]
@@ -2494,5 +2581,18 @@ fn adapter_matches_kind(adapter: AdapterType, kind: RuntimeKind) -> bool {
 
 fn canonical_endpoint(endpoint: &str) -> Result<String, String> {
     let parts = validate_url(endpoint).map_err(|_| "probe endpoint is invalid".to_owned())?;
-    Ok(format!("http://{}:{}", parts.host, parts.port))
+    let host = if parts.host.contains(':') {
+        format!("[{}]", parts.host)
+    } else {
+        parts.host
+    };
+    Ok(format!("http://{host}:{}", parts.port))
+}
+
+fn endpoint_path_is_origin(endpoint: &str) -> bool {
+    let Some((_scheme, rest)) = endpoint.split_once("://") else {
+        return false;
+    };
+    let path = rest.split_once('/').map(|(_, path)| path).unwrap_or("");
+    path.is_empty() || path == "/"
 }
