@@ -2,7 +2,7 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const MAX_HEADER_BYTES: usize = 16 * 1024;
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -102,10 +102,41 @@ pub fn reason_phrase(status: u16) -> &'static str {
 /// Read exactly one bounded request. Bodies are drained up to a hard cap so a
 /// slow or oversized client cannot retain server state.
 pub fn read_request<R: Read>(reader: &mut R) -> Result<Request, ParseError> {
+    read_request_with_clock(reader, &SystemClock, CONNECTION_TIMEOUT)
+}
+
+/// Monotonic clock boundary so request deadlines are testable without real
+/// sleeps.
+pub trait Clock {
+    fn now(&self) -> Instant;
+}
+
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// Read one bounded request against one total monotonic deadline.
+///
+/// The deadline covers headers and body together. Rechecking it before every
+/// read means successful partial reads and `Interrupted` retries can never
+/// extend the budget, so a slow-drip peer cannot hold a worker slot forever.
+pub fn read_request_with_clock<R: Read, C: Clock>(
+    reader: &mut R,
+    clock: &C,
+    total_budget: Duration,
+) -> Result<Request, ParseError> {
+    let deadline = clock.now() + total_budget;
     let mut buffer = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
     let header_end;
     loop {
+        if clock.now() >= deadline {
+            return Err(ParseError::Timeout);
+        }
         match reader.read(&mut chunk) {
             Ok(0) => return Err(ParseError::BadRequest),
             Ok(count) => {
@@ -210,6 +241,9 @@ pub fn read_request<R: Read>(reader: &mut R) -> Result<Request, ParseError> {
     }
     let mut discard = [0u8; 4096];
     while remaining > 0 {
+        if clock.now() >= deadline {
+            return Err(ParseError::Timeout);
+        }
         let wanted = usize::min(discard.len(), remaining);
         match reader.read(&mut discard[..wanted]) {
             Ok(0) => return Err(ParseError::BadRequest),
@@ -355,6 +389,120 @@ mod tests {
             read_request(&mut &request[..]).expect_err("rejects"),
             ParseError::BadRequest
         );
+    }
+
+    #[test]
+    fn repeated_partial_reads_cannot_extend_total_budget() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let request = b"GET /api/v1/health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader =
+            SlowReader::new(request.to_vec(), clock.clone(), Duration::from_millis(400));
+        assert_eq!(
+            read_request_with_clock(&mut reader, &clock, Duration::from_secs(1))
+                .expect_err("times out"),
+            ParseError::Timeout
+        );
+    }
+
+    #[test]
+    fn slow_body_drain_respects_total_deadline() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let request = b"POST /api/v1/health HTTP/1.1\r\nContent-Length: 5\r\n\r\nhello";
+        let mut reader =
+            SlowReader::new(request.to_vec(), clock.clone(), Duration::from_millis(300));
+        assert_eq!(
+            read_request_with_clock(&mut reader, &clock, Duration::from_secs(1))
+                .expect_err("times out"),
+            ParseError::Timeout
+        );
+    }
+
+    #[test]
+    fn interrupted_reads_cannot_evade_total_deadline() {
+        let start = Instant::now();
+        let clock = FakeClock::new(start);
+        let mut reader = InterruptReader::new(clock.clone(), Duration::from_millis(700));
+        assert_eq!(
+            read_request_with_clock(&mut reader, &clock, Duration::from_secs(1))
+                .expect_err("times out"),
+            ParseError::Timeout
+        );
+    }
+
+    #[derive(Clone)]
+    struct FakeClock {
+        now: std::rc::Rc<std::cell::Cell<Instant>>,
+    }
+
+    impl FakeClock {
+        fn new(start: Instant) -> Self {
+            Self {
+                now: std::rc::Rc::new(std::cell::Cell::new(start)),
+            }
+        }
+
+        fn advance(&self, duration: Duration) {
+            self.now.set(self.now.get() + duration);
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&self) -> Instant {
+            self.now.get()
+        }
+    }
+
+    struct SlowReader {
+        data: Vec<u8>,
+        offset: usize,
+        clock: FakeClock,
+        step: Duration,
+    }
+
+    impl SlowReader {
+        fn new(data: Vec<u8>, clock: FakeClock, step: Duration) -> Self {
+            Self {
+                data,
+                offset: 0,
+                clock,
+                step,
+            }
+        }
+    }
+
+    impl Read for SlowReader {
+        fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+            self.clock.advance(self.step);
+            if self.offset >= self.data.len() || output.is_empty() {
+                return Ok(0);
+            }
+            output[0] = self.data[self.offset];
+            self.offset += 1;
+            Ok(1)
+        }
+    }
+
+    struct InterruptReader {
+        clock: FakeClock,
+        step: Duration,
+    }
+
+    impl InterruptReader {
+        fn new(clock: FakeClock, step: Duration) -> Self {
+            Self { clock, step }
+        }
+    }
+
+    impl Read for InterruptReader {
+        fn read(&mut self, _output: &mut [u8]) -> std::io::Result<usize> {
+            self.clock.advance(self.step);
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "deterministic interruption",
+            ))
+        }
     }
 
     struct SplitReader {

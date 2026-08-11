@@ -6,6 +6,7 @@ mod server;
 use std::env;
 use std::process::ExitCode;
 
+use zana_core::auth;
 use zana_core::db::Database;
 use zana_core::platform;
 use zana_core::CORE_VERSION;
@@ -37,13 +38,10 @@ fn main() -> ExitCode {
         }
     };
 
-    let token = cli
-        .token
-        .or_else(|| env::var("ZANA_CORE_TOKEN").ok())
-        .filter(|value| !value.is_empty());
+    let token = resolve_launch_token(cli.token.clone(), env::var("ZANA_CORE_TOKEN").ok());
     let Some(token) = token else {
         eprintln!(
-            "error: A non-empty launch token is required.\nProvide it via --token or the ZANA_CORE_TOKEN environment variable."
+            "error: The launch token must be non-empty, contain no whitespace, and be within the accepted size bound."
         );
         return ExitCode::FAILURE;
     };
@@ -83,6 +81,13 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Resolve and validate the launch token before any filesystem or server
+/// work. The predicate is the same one used for request authentication.
+fn resolve_launch_token(cli_token: Option<String>, env_token: Option<String>) -> Option<String> {
+    let token = cli_token.or(env_token)?;
+    auth::valid_launch_token(&token).then_some(token)
 }
 
 fn parse_cli(args: &[String]) -> Result<CliArgs, String> {
@@ -197,5 +202,22 @@ mod tests {
             "--token"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn resolve_launch_token_accepts_only_valid_tokens() {
+        assert_eq!(
+            resolve_launch_token(Some("secret".to_owned()), None).as_deref(),
+            Some("secret")
+        );
+        assert!(resolve_launch_token(None, None).is_none());
+        assert!(resolve_launch_token(Some(String::new()), None).is_none());
+        assert!(resolve_launch_token(Some("has space".to_owned()), None).is_none());
+        assert!(resolve_launch_token(None, Some(" leading".to_owned())).is_none());
+        assert!(resolve_launch_token(Some("a".repeat(auth::MAX_TOKEN_BYTES + 1)), None).is_none());
+        assert_eq!(
+            resolve_launch_token(Some("cli".to_owned()), Some("env".to_owned())).as_deref(),
+            Some("cli")
+        );
     }
 }

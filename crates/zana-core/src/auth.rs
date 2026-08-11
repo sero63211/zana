@@ -15,6 +15,15 @@ pub fn extract_bearer_token(authorization: Option<&str>) -> Option<&str> {
     Some(token)
 }
 
+/// Validate a launch token before it reaches verification or startup.
+///
+/// The same predicate guards startup and every authenticated request so the
+/// two paths cannot drift: empty, oversized, or whitespace-containing tokens
+/// are rejected before any filesystem work or comparison.
+pub fn valid_launch_token(token: &str) -> bool {
+    !token.is_empty() && token.len() <= MAX_TOKEN_BYTES && !token.chars().any(char::is_whitespace)
+}
+
 /// Compare two tokens without an early length exit.
 ///
 /// Both inputs are bounded to `MAX_TOKEN_BYTES`; the loop always walks the
@@ -40,13 +49,12 @@ pub fn constant_time_eq(left: &str, right: &str) -> bool {
 }
 
 pub fn verify_token(expected: &str, authorization: Option<&str>) -> bool {
+    if !valid_launch_token(expected) {
+        return false;
+    }
     match extract_bearer_token(authorization) {
-        Some(provided)
-            if expected.len() <= MAX_TOKEN_BYTES && provided.len() <= MAX_TOKEN_BYTES =>
-        {
-            constant_time_eq(expected, provided)
-        }
-        Some(_) | None => false,
+        Some(provided) => valid_launch_token(provided) && constant_time_eq(expected, provided),
+        None => false,
     }
 }
 
@@ -87,5 +95,27 @@ mod tests {
         let huge = "a".repeat(MAX_TOKEN_BYTES + 1);
         assert!(!constant_time_eq(&huge, &huge));
         assert!(!verify_token("secret", Some(&format!("Bearer {huge}"))));
+    }
+
+    #[test]
+    fn valid_launch_token_rejects_empty_whitespace_and_oversized() {
+        assert!(valid_launch_token("secret-token"));
+        assert!(!valid_launch_token(""));
+        assert!(!valid_launch_token("has space"));
+        assert!(!valid_launch_token(" leading"));
+        assert!(!valid_launch_token("trailing "));
+        assert!(!valid_launch_token("tab\tseparated"));
+        let huge = "a".repeat(MAX_TOKEN_BYTES + 1);
+        assert!(!valid_launch_token(&huge));
+    }
+
+    #[test]
+    fn verify_token_rejects_invalid_expected_token() {
+        assert!(!verify_token("", Some("Bearer ")));
+        assert!(!verify_token("has space", Some("Bearer has space")));
+        assert!(!verify_token(
+            &"a".repeat(MAX_TOKEN_BYTES + 1),
+            Some(&format!("Bearer {}", "a".repeat(MAX_TOKEN_BYTES + 1)))
+        ));
     }
 }
