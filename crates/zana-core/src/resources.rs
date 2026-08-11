@@ -385,6 +385,15 @@ pub fn capture_host_snapshot(workspace: &str, revision: i64) -> ResourceSnapshot
     }
 }
 
+/// Convert free plus inactive page counts to bytes with fully checked
+/// arithmetic. macOS `vm_statistics64` counts are page counts; multiplication
+/// and addition must never wrap or panic.
+pub fn pages_to_bytes(free_pages: i64, inactive_pages: i64, page_size: i64) -> Option<i64> {
+    free_pages
+        .checked_add(inactive_pages)?
+        .checked_mul(page_size)
+}
+
 #[cfg(unix)]
 fn memory_probe() -> (Option<i64>, Option<i64>, Option<String>) {
     #[cfg(target_os = "macos")]
@@ -442,6 +451,13 @@ fn parse_kb(line: &str) -> Option<i64> {
 #[cfg(target_os = "macos")]
 #[allow(deprecated)] // libc exposes the required mach port API; no new dependency is permitted.
 fn macos_memory() -> (Option<i64>, Option<i64>, Option<String>) {
+    unsafe extern "C" {
+        fn mach_port_deallocate(
+            task: libc::mach_port_t,
+            name: libc::mach_port_t,
+        ) -> libc::kern_return_t;
+    }
+
     let total = unsafe {
         let mut size = 8usize;
         let mut value: u64 = 0;
@@ -469,13 +485,18 @@ fn macos_memory() -> (Option<i64>, Option<i64>, Option<String>) {
             (&mut info as *mut libc::vm_statistics64).cast(),
             &mut count,
         );
+        // mach_host_self() returns a send right; deallocate it on every
+        // result path so snapshots never leak Mach ports.
+        let _ = mach_port_deallocate(libc::mach_task_self(), host);
         if result != libc::KERN_SUCCESS {
             None
         } else {
             let page_size = libc::vm_page_size as i64;
-            let free = i64::from(info.free_count);
-            let inactive = i64::from(info.inactive_count);
-            free.checked_add(inactive * page_size)
+            pages_to_bytes(
+                i64::from(info.free_count),
+                i64::from(info.inactive_count),
+                page_size,
+            )
         }
     };
     if total.is_none() || available.is_none() {
@@ -1318,6 +1339,15 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pages_to_bytes_uses_checked_arithmetic() {
+        assert_eq!(pages_to_bytes(2, 3, 4096), Some(20_480));
+        assert_eq!(pages_to_bytes(0, 0, 0), Some(0));
+        assert_eq!(pages_to_bytes(i64::MAX, 1, 1), None);
+        assert_eq!(pages_to_bytes(1, 1, i64::MAX), None);
+        assert_eq!(pages_to_bytes(i64::MAX / 2, i64::MAX / 2, 2), None);
+    }
 
     struct FakeSnapshot;
 
