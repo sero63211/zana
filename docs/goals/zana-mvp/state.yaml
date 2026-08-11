@@ -1457,7 +1457,9 @@ tasks:
         reasoning_effort: max
         status: active
         branch: agent/t921-rust-operational-core
-        base: b244ba586bb67da69feb19959b6b8d8217b8f445
+        base: 8c11ac4f53993e826323418d69e7f9e4675fcd22
+        thread: 019ff17c-9aad-7af1-8e9c-c330b19a4275
+        worktree: /Users/sero/.codex/worktrees/1668/zana
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: T920-rust-core-foundation
         owns: "Next exclusive shared-Rust writer after a visible task is recorded: root Cargo.toml/Cargo.lock; crates/zana-core/**; crates/zana-core-server/**; exact focused Rust tests; .agent-work/handoffs/T921-rust-operational-core.md. Excludes Python, TypeScript, Tauri/package/supervisor, Android, GoalBuddy state/ledger, capability/build/evaluation/Image/Instance/knowledge/portability product logic, generated binaries/caches and unrelated paths."
@@ -1465,7 +1467,7 @@ tasks:
         output_contract: "One dependency-complete Python-free Rust operational control plane: compatible SQLite schema/repositories; bounded persistent jobs/events/cancellation; resource governor and doctor; local runtime/model discovery; approved model-acquisition execution boundary; settings/security and observability/audit; and authenticated compatibility API routes with real bounded JSON/SSE behavior. Desktop package cutover remains forbidden in this task."
         gates: "Focused Rust unit/integration/static gates with injected filesystem/process/HTTP clocks only; exact migration/transaction/restart/cancellation/SSE/bounds/redaction/error tests; cargo fmt/check/clippy with warnings denied; direct readability/security/failure review; focused commits and clean worktree. No live runtime/model/provider/network, download, inference, training, app/browser/device, bundle, broad/load test or dependency install."
         stop_if: "Stop before changing a stable T920 interface, touching capability lifecycle ownership, exposing secrets/host paths, executing unapproved processes or network, switching desktop packaging, or needing a DB/API contract change not already supported by accepted evidence; escalate the exact interface delta first."
-        verification: "Canonical main and origin/main are clean and identical at b244ba5 after accepted T920 integration. One visible Flash-Max worktree task is authorized; exact thread/worktree receipt is pending creation before product writes."
+        verification: "Canonical reservation commit 8c11ac4 was pushed cleanly after accepted T920 integration. Visible Flash-Max task 019ff17c-9aad-7af1-8e9c-c330b19a4275 started in local isolated worktree /Users/sero/.codex/worktrees/1668/zana from exact clean 8c11ac4; detached setup was detected and the worker was explicitly required to create/switch agent/t921-rust-operational-core before product writes."
       - id: T922-rust-capability-lifecycle
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
