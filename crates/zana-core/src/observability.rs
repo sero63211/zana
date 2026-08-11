@@ -546,7 +546,7 @@ fn valid_timestamp(value: &str) -> bool {
     let hour = parse_digits(&bytes[11..13]);
     let minute = parse_digits(&bytes[14..16]);
     let second = parse_digits(&bytes[17..19]);
-    if hour > 23 || minute > 59 || second > 60 || !(1..=12).contains(&month) || day < 1 {
+    if hour > 23 || minute > 59 || second > 59 || !(1..=12).contains(&month) || day < 1 {
         return false;
     }
     let days = match month {
