@@ -125,6 +125,7 @@ dependency install ran.
 - `ddc1aeb` fix: enforce acquisition bounds, FIFO, admission, close, and payload truth
 - `993e3aa` feat: add bounded observability audit and SSE primitives
 - `5ac4273` fix: harden T921 FIFO proof, identifiers, retention, cursors, and SSE framing
+- `7825d13` fix: structurally valid cursors, bounded SSE payloads, and observability validation
 
 ## Hardening correction addendum (lead review)
 
@@ -150,6 +151,34 @@ defects were fixed in `5ac4273`:
 6. SSE wire events emit one canonical JSON value per complete block; error
    JSON and the terminal `[DONE]` sentinel are separate blocks consumable by
    standard fetch/EventSource parsers, with caps covering all emitted bytes.
+
+## Second hardening correction addendum
+
+`7825d13` closes the four remaining fail-closed defects:
+
+1. `EventCursor` fields are private with validated `new`/accessors; invalid
+   construction is structurally impossible through the public API and
+   `to_header` never synthesizes a valid-looking cursor. The full non-negative
+   `i64` DB-id range is accepted with `i64::MAX` round-trip and negative
+   expected-sequence tests.
+2. SSE caps and security apply to every emitted payload: Python-compatible
+   error bounds (code 64, message 500, recovery_action 300), full C0/DEL
+   control rejection, and `max_data_bytes`/`max_event_bytes` checks for
+   primary/error/[DONE] before `total_bytes` changes. Hostile oversized
+   error/control-id tests prove a failed encode leaves the counter unchanged
+   for a subsequent valid encode.
+3. Observability fails closed before serialization/registry/audit mutation on
+   `schema_version != 1`, non-finite/out-of-range progress, negative duration,
+   and invalid/beyond-bound timestamp/message/context structure. Adversarial
+   registry and SQLite audit rejection tests prove no retained row/event and
+   exact failure counters.
+4. Production registry/audit paths validate `RedactionLimits`; zero or
+   nonsensical limits are rejected so a structured event is never retained as
+   a scalar `"***"` while reporting success. Standalone `redact_value`
+   remains harmless.
+
+Sanitization happens once per outward path from one sanitized snapshot in
+`serialize_event`/registry/audit.
 
 ## Security delta
 
