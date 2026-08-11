@@ -1672,16 +1672,32 @@ mod tests {
             1
         );
 
+        // Many individually valid short JSONL lines split into chunks that
+        // never violate the per-line cap; only the cumulative total budget is
+        // exceeded.
+        let line = br#"{"status":null}
+"#;
+        let mut cumulative_chunks = Vec::new();
+        let mut chunk = Vec::new();
+        let mut total = 0usize;
+        while total <= MAX_TOTAL_EVENT_BYTES {
+            if chunk.len() >= MAX_LINE_BYTES - line.len() {
+                cumulative_chunks.push(std::mem::take(&mut chunk));
+            }
+            chunk.extend_from_slice(line);
+            total += line.len();
+        }
+        if !chunk.is_empty() {
+            cumulative_chunks.push(chunk);
+        }
+        let close_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let cumulative = FakeTransport {
-            chunks: vec![
-                vec![b'{'; MAX_TOTAL_EVENT_BYTES / 2],
-                vec![b'}'; MAX_TOTAL_EVENT_BYTES / 2 + 1],
-            ],
-            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            chunks: cumulative_chunks,
+            close_calls: Arc::clone(&close_calls),
             close_error: false,
         };
         let result = NativeAcquisitionAdapter {
-            max_event_count: MAX_EVENT_COUNT,
+            max_event_count: 100_000,
             max_retained_events: MAX_RETAINED_EVENTS,
             max_line_bytes: MAX_LINE_BYTES,
             max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
@@ -1695,6 +1711,7 @@ mod tests {
         );
         assert_eq!(result.state, AcquisitionState::Failed);
         assert_eq!(result.error_code.as_deref(), Some("STREAM_OVER_BUDGET"));
+        assert_eq!(close_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
 
         let many_statusless = FakeTransport {
             chunks: vec![(0..4000)
@@ -1894,7 +1911,24 @@ mod tests {
         supervisor.dispatch(ids[0]).expect("first");
         supervisor.dispatch(ids[1]).expect("second");
         supervisor.drain_once().expect("first drains");
-        assert_eq!(supervisor.pending_count(), 1, "second job remains queued");
+        let conn = database.connect().expect("connects");
+        assert_eq!(
+            Jobs::get(&conn, ids[0])
+                .expect("reads")
+                .expect("exists")
+                .status,
+            JobStatus::Succeeded,
+            "first queued job completes first"
+        );
+        assert_eq!(
+            Jobs::get(&conn, ids[1])
+                .expect("reads")
+                .expect("exists")
+                .status,
+            JobStatus::Pending,
+            "second job remains pending after first drain"
+        );
+        drop(conn);
         supervisor.drain_once().expect("second drains");
         assert_eq!(supervisor.pending_count(), 0);
         drop(database);

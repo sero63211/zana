@@ -422,8 +422,108 @@ fn bounded_identifier(value: &str, max: usize) -> Result<String, String> {
     Ok(value.to_owned())
 }
 
+fn sensitive_lookalike(value: &str) -> bool {
+    let normalized: String = value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect();
+    [
+        "bearer",
+        "bearertoken",
+        "token",
+        "tokens",
+        "secret",
+        "secrets",
+        "password",
+        "apikey",
+        "accesstoken",
+        "authorization",
+        "credential",
+        "credentials",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+/// Return a bounded nonsecret identifier or a stable salted reference.
+///
+/// Path-like, control-bearing, syntax-invalid, sensitive-lookalike, and
+/// overlong values never pass through; raw values are replaced with a stable
+/// salted digest before serialization, retention, audit, or event IDs.
+pub fn safe_public_identifier(value: &str) -> String {
+    if value.is_empty() {
+        return String::new();
+    }
+    let invalid = value.len() > MAX_IDENTIFIER_LENGTH
+        || value.bytes().any(|b| b < 0x20 || b == 0x7f)
+        || value.contains('/')
+        || value.contains('\\')
+        || sensitive_lookalike(value)
+        || !valid_identifier_syntax(value);
+    if invalid {
+        identifier_reference(value)
+    } else {
+        value.to_owned()
+    }
+}
+
+fn valid_identifier_syntax(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | ':' | '@' | '-'))
+}
+
+fn identifier_reference(value: &str) -> String {
+    let digest = crate::sha256::sha256_hex(format!("zana-event-identifier-v1{value}").as_bytes());
+    format!("redacted-{}", &digest[..16])
+}
+
+/// Build one consistent sanitized snapshot used by every outward path.
+pub fn sanitize_event(event: &Event) -> Event {
+    let operation_id = safe_public_identifier(&event.operation_id);
+    let job_id = safe_public_identifier(&event.job_id);
+    let phase = safe_public_identifier(&event.phase);
+    let recovery_code = event.recovery_code.as_deref().map(safe_public_identifier);
+    Event {
+        schema_version: event.schema_version,
+        kind: event.kind,
+        severity: event.severity,
+        message: event.message.clone(),
+        timestamp: event.timestamp.clone(),
+        context: EventContext {
+            operation_id: safe_public_identifier(&event.context.operation_id),
+            job_id: safe_public_identifier(&event.context.job_id),
+            phase: safe_public_identifier(&event.context.phase),
+            instance_id: event
+                .context
+                .instance_id
+                .as_deref()
+                .map(safe_public_identifier),
+            image_digest: event
+                .context
+                .image_digest
+                .as_deref()
+                .map(safe_public_identifier),
+        },
+        operation_id,
+        job_id,
+        phase,
+        progress_0_1: event.progress_0_1,
+        duration_ms: event.duration_ms,
+        recovery_code,
+        payload: event.payload.clone(),
+    }
+}
+
 /// Canonical compact JSON plus a trailing newline, bounded by the encoded cap.
 pub fn serialize_event(event: &Event, limits: &RedactionLimits) -> Result<String, String> {
+    let event = sanitize_event(event);
     let raw = serde_json::json!({
         "schema_version": event.schema_version,
         "kind": event.kind.as_str(),
@@ -560,7 +660,8 @@ impl ObservabilityRegistry {
     }
 
     pub fn write(&self, event: &Event) -> WriteResult {
-        let line = match serialize_event(event, &self.limits) {
+        let event = sanitize_event(event);
+        let line = match serialize_event(&event, &self.limits) {
             Ok(line) => line,
             Err(_) => {
                 let mut state = lock(&self.state);
@@ -573,7 +674,7 @@ impl ObservabilityRegistry {
                 };
             }
         };
-        let event_id = safe_public_identifier(&event.operation_id);
+        let event_id = event.operation_id.clone();
         let bytes = line.len();
         let received_at = now_iso();
         let mut state = lock(&self.state);
@@ -596,6 +697,7 @@ impl ObservabilityRegistry {
             received_at,
         });
         state.retained_bytes += bytes;
+        let mut dropped = false;
         while state.records.len() > self.max_retained_events
             || state.retained_bytes > self.max_retained_bytes
         {
@@ -603,6 +705,7 @@ impl ObservabilityRegistry {
                 state.retained_bytes = state.retained_bytes.saturating_sub(removed.bytes);
                 state.retention_dropped += 1;
                 state.retention_dropped_bytes += removed.bytes as i64;
+                dropped = removed.sequence == sequence;
             } else {
                 break;
             }
@@ -610,7 +713,7 @@ impl ObservabilityRegistry {
         WriteResult {
             ok: true,
             event_id,
-            dropped: false,
+            dropped,
             error: None,
         }
     }
@@ -673,19 +776,6 @@ impl ObservabilityRegistry {
     }
 }
 
-fn safe_public_identifier(value: &str) -> String {
-    if value.is_empty()
-        || value.len() > MAX_IDENTIFIER_LENGTH
-        || value.bytes().any(|b| b < 0x20 || b == 0x7f)
-    {
-        let digest =
-            crate::sha256::sha256_hex(format!("zana-event-identifier-v1{value}").as_bytes());
-        format!("redacted-{}", &digest[..16])
-    } else {
-        value.to_owned()
-    }
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -699,8 +789,9 @@ pub struct AuditService;
 impl AuditService {
     pub fn write(conn: &rusqlite::Connection, event: &Event) -> Result<String, String> {
         let limits = RedactionLimits::default();
-        let line = serialize_event(event, &limits)?;
-        let event_id = safe_public_identifier(&event.operation_id);
+        let event = sanitize_event(event);
+        let line = serialize_event(&event, &limits)?;
+        let event_id = event.operation_id.clone();
         AuditEvents::insert(conn, &event_id, &line, line.len() as i64)
             .map_err(|_| "audit event could not be persisted".to_owned())?;
         Ok(event_id)
@@ -788,5 +879,120 @@ mod tests {
         drop(conn);
         database.close();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sanitize_event_references_all_hostile_identifiers() {
+        let raw = Event {
+            schema_version: 1,
+            kind: EventKind::Job,
+            severity: Severity::Info,
+            message: "m".to_owned(),
+            timestamp: now_iso(),
+            context: EventContext {
+                operation_id: "/Users/zana/op".to_owned(),
+                job_id: "job\x01".to_owned(),
+                phase: "phase".repeat(200),
+                instance_id: Some("token-secret".to_owned()),
+                image_digest: Some("sha256:abc/def".to_owned()),
+            },
+            operation_id: "op/secret".to_owned(),
+            job_id: "a b".to_owned(),
+            phase: "p".repeat(200),
+            progress_0_1: None,
+            duration_ms: None,
+            recovery_code: Some("authorization".to_owned()),
+            payload: serde_json::json!({}),
+        };
+        let sanitized = sanitize_event(&raw);
+        for value in [
+            &sanitized.operation_id,
+            &sanitized.job_id,
+            &sanitized.phase,
+            &sanitized.context.operation_id,
+            &sanitized.context.job_id,
+            &sanitized.context.phase,
+            sanitized.context.instance_id.as_deref().unwrap_or(""),
+            sanitized.context.image_digest.as_deref().unwrap_or(""),
+            sanitized.recovery_code.as_deref().unwrap_or(""),
+        ] {
+            assert!(
+                !value.contains('/') && !value.contains("secret") && !value.contains("token"),
+                "raw identifier leaked: {value}"
+            );
+            assert!(value.is_empty() || value.starts_with("redacted-"));
+        }
+
+        let line = serialize_event(&raw, &RedactionLimits::default()).expect("serializes");
+        assert!(!line.contains("/Users/zana"));
+        assert!(!line.contains("op/secret"));
+        assert!(!line.contains("job\x01"));
+        assert!(!line.contains("token-secret"));
+        assert!(!line.contains("sha256:abc/def"));
+    }
+
+    #[test]
+    fn retained_and_audit_lines_never_contain_raw_identifiers() {
+        let registry =
+            ObservabilityRegistry::new(10, 1 << 20, RedactionLimits::default()).expect("registry");
+        let raw = Event {
+            schema_version: 1,
+            kind: EventKind::Runtime,
+            severity: Severity::Warning,
+            message: "m".to_owned(),
+            timestamp: now_iso(),
+            context: EventContext {
+                operation_id: "op".to_owned(),
+                job_id: "job".to_owned(),
+                phase: "phase".to_owned(),
+                instance_id: Some("/host/path".to_owned()),
+                image_digest: None,
+            },
+            operation_id: "secret-token".to_owned(),
+            job_id: "job".to_owned(),
+            phase: "phase".to_owned(),
+            progress_0_1: None,
+            duration_ms: None,
+            recovery_code: None,
+            payload: serde_json::json!({}),
+        };
+        let result = registry.write(&raw);
+        assert!(result.ok);
+        assert!(result.event_id.starts_with("redacted-"));
+        let page = registry.events(10, None).expect("pages");
+        assert!(!page.items[0].line.contains("secret-token"));
+        assert!(!page.items[0].line.contains("/host/path"));
+
+        let dir =
+            std::env::temp_dir().join(format!("zana-audit-adversarial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("db").join("zana.sqlite3");
+        let database = crate::db::Database::open(path.clone()).expect("opens");
+        database.migrate().expect("migrates");
+        let conn = database.connect().expect("connects");
+        AuditService::write(&conn, &raw).expect("writes");
+        let rows = AuditService::page(&conn, 10, None).expect("pages");
+        assert!(!rows[0].line.contains("secret-token"));
+        assert!(!rows[0].line.contains("/host/path"));
+        assert!(rows[0].event_id.starts_with("redacted-"));
+        drop(conn);
+        database.close();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn self_evicting_record_reports_dropped_truthfully() {
+        let registry =
+            ObservabilityRegistry::new(5, 16, RedactionLimits::default()).expect("registry");
+        let result = registry.write(&event());
+        assert!(
+            !result.ok || result.dropped,
+            "self-evicting write reports dropped"
+        );
+        let health = registry.health();
+        assert_eq!(health.retained_events, 0);
+        assert_eq!(health.retained_bytes, 0);
+        assert_eq!(health.retention_dropped, 1);
+        assert!(health.retention_dropped_bytes > 0);
     }
 }
