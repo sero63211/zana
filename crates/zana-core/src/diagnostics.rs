@@ -1,5 +1,6 @@
 //! Bounded sequential System Doctor probes and deterministic reports.
 
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -611,12 +612,12 @@ impl DiagnosticProbe for OptionalFeatureProbe {
             .iter()
             .take(feature_cap)
             .map(|feature| FeatureReadiness {
-                feature: truncate_text(feature.feature.clone(), 128, budget.max_output_chars),
+                feature: truncate_str(feature.feature.as_str(), 128, budget.max_output_chars),
                 ready: feature.ready,
                 blocks_core_start: feature.blocks_core_start,
                 blocks_feature_only: feature.blocks_feature_only,
-                missing_reason: truncate_text(
-                    feature.missing_reason.clone(),
+                missing_reason: truncate_str(
+                    feature.missing_reason.as_str(),
                     256,
                     budget.max_output_chars,
                 ),
@@ -624,8 +625,20 @@ impl DiagnosticProbe for OptionalFeatureProbe {
             .collect();
         let ready_count = features.iter().filter(|feature| feature.ready).count();
         let missing = features.iter().filter(|feature| !feature.ready).count();
-        let all_ready = missing == 0;
-        let issues = if all_ready {
+        let truncated = self.features.len() > feature_cap;
+        let all_ready = missing == 0 && !truncated;
+        let issues = if truncated {
+            vec![DiagnosticIssue {
+                code: "FEATURE_LIST_TRUNCATED".to_owned(),
+                severity: Severity::Warn,
+                message: "The optional feature list exceeded the probe cap.".to_owned(),
+                recovery_actions: vec![RecoveryAction {
+                    code: "REDUCE_FEATURES".to_owned(),
+                    message: "Configure fewer optional features.".to_owned(),
+                    optional: true,
+                }],
+            }]
+        } else if all_ready {
             Vec::new()
         } else {
             vec![DiagnosticIssue {
@@ -645,6 +658,8 @@ impl DiagnosticProbe for OptionalFeatureProbe {
             name: self.name().to_owned(),
             status: if all_ready {
                 CheckStatus::Pass
+            } else if truncated {
+                CheckStatus::Unavailable
             } else {
                 CheckStatus::Warn
             },
@@ -1075,105 +1090,148 @@ fn bound_check(mut check: DiagnosticCheck, budget: &ProbeBudget) -> DiagnosticCh
     if !check.duration_seconds.is_finite() || check.duration_seconds < 0.0 {
         check.duration_seconds = 0.0;
     }
-    check.check_id = truncate_text(check.check_id, 64, budget.max_output_chars);
-    check.name = truncate_text(check.name, 128, budget.max_output_chars);
-    check.observed_source = truncate_text(check.observed_source, 128, budget.max_output_chars);
-    check.observed_at_iso = truncate_text(check.observed_at_iso, 64, budget.max_output_chars);
-    check.evidence.observed_source =
-        truncate_text(check.evidence.observed_source, 128, budget.max_output_chars);
+    let mut budget_remaining = budget.max_output_chars;
+    let consume = |value: String, max: usize, remaining: &mut usize| -> String {
+        let text = truncate_text(value, max, *remaining);
+        *remaining = remaining.saturating_sub(text.len());
+        text
+    };
+    check.check_id = consume(
+        std::mem::take(&mut check.check_id),
+        64,
+        &mut budget_remaining,
+    );
+    check.name = consume(std::mem::take(&mut check.name), 128, &mut budget_remaining);
+    check.observed_source = consume(
+        std::mem::take(&mut check.observed_source),
+        128,
+        &mut budget_remaining,
+    );
+    check.observed_at_iso = consume(
+        std::mem::take(&mut check.observed_at_iso),
+        64,
+        &mut budget_remaining,
+    );
+    check.evidence.observed_source = consume(
+        std::mem::take(&mut check.evidence.observed_source),
+        128,
+        &mut budget_remaining,
+    );
     check.evidence.value = check
         .evidence
         .value
-        .map(|value| bound_json_value(value, budget.max_output_chars));
+        .map(|value| bound_json_value(value, budget_remaining));
     check.evidence.basename = check
         .evidence
         .basename
-        .map(|value| truncate_text(value, 128, budget.max_output_chars));
+        .map(|value| consume(value, 128, &mut budget_remaining));
     check.evidence.digest_prefix = check
         .evidence
         .digest_prefix
-        .map(|value| truncate_text(value, 32, budget.max_output_chars));
-    check.evidence.notes = check
-        .evidence
-        .notes
-        .into_iter()
-        .take(8)
-        .map(|value| truncate_text(value, 256, budget.max_output_chars))
-        .collect();
-    check.issues.truncate(budget.max_error_count);
-    for issue in &mut check.issues {
-        issue.code = truncate_text(issue.code.clone(), 64, budget.max_output_chars);
-        issue.message = truncate_text(issue.message.clone(), 512, budget.max_output_chars);
-        issue.recovery_actions = issue
-            .recovery_actions
-            .iter()
-            .take(8)
-            .map(|action| RecoveryAction {
-                code: truncate_text(action.code.clone(), 64, budget.max_output_chars),
-                message: truncate_text(action.message.clone(), 512, budget.max_output_chars),
-                optional: action.optional,
-            })
-            .collect();
+        .map(|value| consume(value, 32, &mut budget_remaining));
+    let mut notes = Vec::new();
+    for value in check.evidence.notes.into_iter().take(8) {
+        if budget_remaining == 0 {
+            break;
+        }
+        notes.push(consume(value, 256, &mut budget_remaining));
     }
-    check.feature_readiness = check
-        .feature_readiness
-        .into_iter()
-        .take(8)
-        .map(|readiness| FeatureReadiness {
-            feature: truncate_text(readiness.feature, 128, budget.max_output_chars),
-            ready: readiness.ready,
-            blocks_core_start: readiness.blocks_core_start,
-            blocks_feature_only: readiness.blocks_feature_only,
-            missing_reason: truncate_text(readiness.missing_reason, 256, budget.max_output_chars),
-        })
-        .collect();
+    check.evidence.notes = notes;
+    let mut issues = Vec::new();
+    for mut issue in check.issues.into_iter().take(budget.max_error_count) {
+        if budget_remaining == 0 {
+            break;
+        }
+        issue.code = consume(std::mem::take(&mut issue.code), 64, &mut budget_remaining);
+        issue.message = consume(
+            std::mem::take(&mut issue.message),
+            512,
+            &mut budget_remaining,
+        );
+        let mut actions = Vec::new();
+        for action in issue.recovery_actions.into_iter().take(8) {
+            if budget_remaining == 0 {
+                break;
+            }
+            actions.push(RecoveryAction {
+                code: consume(action.code, 64, &mut budget_remaining),
+                message: consume(action.message, 512, &mut budget_remaining),
+                optional: action.optional,
+            });
+        }
+        issue.recovery_actions = actions;
+        issues.push(issue);
+    }
+    check.issues = issues;
+    let mut readiness = Vec::new();
+    for item in check.feature_readiness.into_iter().take(8) {
+        if budget_remaining == 0 {
+            break;
+        }
+        readiness.push(FeatureReadiness {
+            feature: consume(item.feature, 128, &mut budget_remaining),
+            ready: item.ready,
+            blocks_core_start: item.blocks_core_start,
+            blocks_feature_only: item.blocks_feature_only,
+            missing_reason: consume(item.missing_reason, 256, &mut budget_remaining),
+        });
+    }
+    check.feature_readiness = readiness;
     check
 }
 
 fn bound_json_value(value: Value, max_output: usize) -> Value {
-    if value_size_within(value.clone(), 0, max_output) {
+    if !json_tree_within(&value, 0, max_output) {
+        return Value::String("...[truncated]".to_owned());
+    }
+    let mut writer = LimitWriter {
+        remaining: max_output,
+    };
+    if serde_json::to_writer(&mut writer, &value).is_ok() {
         value
     } else {
         Value::String("...[truncated]".to_owned())
     }
 }
 
-/// Bounded non-allocating size/depth walk that stops at `limit + 1`.
-fn value_size_within(value: Value, depth: usize, limit: usize) -> bool {
+/// Cheap by-reference pre-walk that bounds depth and approximate tree size
+/// before serde's exact serializer runs, avoiding deep recursion and
+/// unbounded transient work.
+fn json_tree_within(value: &Value, depth: usize, limit: usize) -> bool {
     if depth > 24 {
         return false;
     }
-    let mut size = 0usize;
-    let mut stack = vec![value];
-    while let Some(item) = stack.pop() {
-        size += 1;
-        if size > limit {
+    let mut visited = 0usize;
+    let mut stack = vec![(value, depth)];
+    while let Some((item, current_depth)) = stack.pop() {
+        visited += 1;
+        if visited > limit {
             return false;
         }
         match item {
             Value::Object(map) => {
-                if depth >= 24 {
+                if current_depth > 24 {
                     return false;
                 }
                 for (key, child) in map {
-                    size += key.len();
-                    if size > limit {
+                    visited += key.len();
+                    if visited > limit {
                         return false;
                     }
-                    stack.push(child);
+                    stack.push((child, current_depth + 1));
                 }
             }
             Value::Array(items) => {
-                if depth >= 24 {
+                if current_depth > 24 {
                     return false;
                 }
                 for child in items {
-                    stack.push(child);
+                    stack.push((child, current_depth + 1));
                 }
             }
             Value::String(text) => {
-                size += text.len();
-                if size > limit {
+                visited += text.len();
+                if visited > limit {
                     return false;
                 }
             }
@@ -1181,6 +1239,27 @@ fn value_size_within(value: Value, depth: usize, limit: usize) -> bool {
         }
     }
     true
+}
+
+struct LimitWriter {
+    remaining: usize,
+}
+
+impl Write for LimitWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer.len() > self.remaining {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "output limit exceeded",
+            ));
+        }
+        self.remaining -= buffer.len();
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn truncate_text(value: String, max_chars: usize, max_output_chars: usize) -> String {
@@ -1200,6 +1279,10 @@ fn truncate_text(value: String, max_chars: usize, max_output_chars: usize) -> St
     result.push_str(&value[..end]);
     result.push_str(marker);
     result
+}
+
+fn truncate_str(value: &str, max_chars: usize, max_output_chars: usize) -> String {
+    truncate_text(value.to_owned(), max_chars, max_output_chars)
 }
 
 #[cfg(test)]
@@ -1594,5 +1677,52 @@ mod tests {
         }
         assert!(check.evidence.notes.iter().all(|note| note.len() <= 512));
         assert!(check.issues.iter().all(|issue| issue.message.len() <= 512));
+    }
+
+    #[test]
+    fn bound_json_value_handles_escaping_and_deep_nesting() {
+        let limit = 1024;
+        let quote_heavy = serde_json::json!({
+            "value": "\"\\\u{0001}\u{001f}".repeat(2000)
+        });
+        let bounded = bound_json_value(quote_heavy, limit);
+        assert_eq!(bounded, Value::String("...[truncated]".to_owned()));
+
+        let deep = serde_json::json!({ "nested": { "a": [true, [true, [true]]] } });
+        let mut deep = deep;
+        for _ in 0..200 {
+            deep = serde_json::json!([deep]);
+        }
+        let bounded = bound_json_value(deep, 64);
+        assert_eq!(bounded, Value::String("...[truncated]".to_owned()));
+    }
+
+    #[test]
+    fn optional_feature_probe_truncation_never_reports_all_ready() {
+        let probe = OptionalFeatureProbe {
+            features: (0..100)
+                .map(|index| FeatureReadiness {
+                    feature: format!("feature-{index}"),
+                    ready: index < 20,
+                    blocks_core_start: false,
+                    blocks_feature_only: true,
+                    missing_reason: String::new(),
+                })
+                .collect(),
+        };
+        let check = probe.run(&ProbeBudget::default());
+        assert_eq!(check.status, CheckStatus::Unavailable);
+        assert_eq!(check.evidence.boolean_presence, Some(false));
+        assert!(check
+            .issues
+            .iter()
+            .any(|issue| issue.code == "FEATURE_LIST_TRUNCATED"));
+        assert!(
+            check
+                .feature_readiness
+                .iter()
+                .all(|readiness| readiness.ready),
+            "all capped entries are ready; only omitted entries are not"
+        );
     }
 }
