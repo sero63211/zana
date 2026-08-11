@@ -1472,11 +1472,12 @@ tasks:
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
         status: queued
-        depends_on: T920-rust-core-foundation
-        owns: "To be reserved after T920 stabilizes shared Rust contracts: Rust capability/source/knowledge/build/evaluation/Image/Instance/memory/portability services and exact compatibility routes/tests."
-        output_contract: "One platform-neutral Rust lifecycle for Android agents, medical assistants, Kurdish tutors and other knowledge capabilities, preserving exact identity, provenance, evaluation, permission and portability semantics."
-        gates: "Focused Rust unit/integration/static gates with fake/in-memory boundaries where appropriate; no live model/training/provider/device/app or broad/load run; focused commits and clean worktree."
-        stop_if: "Stop before hard-coding Android into ZANA Images, weakening immutable/mutable boundaries, or silently selecting a model, embedding provider or tool permission."
+        depends_on: T921-rust-operational-core
+        owns: "To be reserved after T921 stabilizes the shared Rust persistence/job/API contracts: Rust capability/source/knowledge/build/evaluation/benchmark/Image/Instance/memory/portability services and exact compatibility routes/tests; docs/goals/zana-mvp/notes/T922-evaluation-benchmark-policy.md is controlling input, not worker ownership."
+        input_contract: "Preserve accepted platform-neutral capability and knowledge provenance, exact model/runtime identity, build/evaluation/Image/Instance boundaries and portability behavior. Implement the pinned, license-gated, contamination-resistant paired baseline-versus-candidate contract in T922-evaluation-benchmark-policy.md; support source-backed math/medical registry metadata plus custom held-out suites without bundling unapproved dataset bytes."
+        output_contract: "One platform-neutral Rust lifecycle for Android agents, medical assistants, Kurdish tutors and other knowledge capabilities, with real before/after benchmark runs, paired deltas, regression gates, resource measurements and immutable evidence before Image eligibility. No phone or deployment target is required to extend or run a local desktop model."
+        gates: "Focused Rust unit/integration/static gates with fake/in-memory external boundaries; exact benchmark revision/digest/license, train-test contamination, deterministic scoring, paired comparison, cancelled/partial failure, general-regression, medical-disclaimer and Image-promotion tests; no live model/training/provider/device/app or broad/load run; focused commits and clean worktree."
+        stop_if: "Stop before hard-coding Android into ZANA Images, weakening immutable/mutable or benchmark/build boundaries, silently selecting a model/embedding/provider/tool permission, bundling or downloading a dataset without exact license/consent/digest, leaking held-out items into build inputs, or presenting medical benchmark results as clinical safety."
       - id: T923-android-agent-runtime
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
