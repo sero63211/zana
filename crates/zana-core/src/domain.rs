@@ -235,7 +235,7 @@ impl PlatformLabel {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum OperationCategory {
     Tiny,
     Metadata,

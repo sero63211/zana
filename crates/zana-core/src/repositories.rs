@@ -84,6 +84,21 @@ pub struct AuditEventRow {
     pub received_at: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResourceSnapshotRow {
+    pub revision: i64,
+    pub captured_at: String,
+    pub platform: String,
+    pub os_name: String,
+    pub arch: String,
+    pub logical_cores: Option<i64>,
+    pub memory_total_bytes: Option<i64>,
+    pub memory_available_bytes: Option<i64>,
+    pub disk_free_bytes: Option<i64>,
+    pub probe_error_code: Option<String>,
+    pub probe_status: String,
+}
+
 fn parse_value(text: &str) -> Value {
     serde_json::from_str(text).unwrap_or(Value::Null)
 }
@@ -742,6 +757,86 @@ impl AuditEvents {
             [],
             |row| row.get(0),
         )
+        .map_err(|_| CoreError::database())
+    }
+}
+
+pub struct ResourceSnapshots;
+
+impl ResourceSnapshots {
+    #[allow(clippy::too_many_arguments)]
+    pub fn save(
+        conn: &Connection,
+        revision: i64,
+        captured_at: &str,
+        platform: &str,
+        os_name: &str,
+        arch: &str,
+        logical_cores: Option<i64>,
+        memory_total_bytes: Option<i64>,
+        memory_available_bytes: Option<i64>,
+        disk_free_bytes: Option<i64>,
+        probe_error_code: Option<&str>,
+        probe_status: &str,
+    ) -> Result<(), CoreError> {
+        conn.execute(
+            "INSERT INTO resource_snapshots (revision, captured_at, platform, os_name, arch,
+                                             logical_cores, memory_total_bytes, memory_available_bytes,
+                                             disk_free_bytes, probe_error_code, probe_status)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(revision) DO UPDATE SET
+                captured_at = excluded.captured_at,
+                platform = excluded.platform,
+                os_name = excluded.os_name,
+                arch = excluded.arch,
+                logical_cores = excluded.logical_cores,
+                memory_total_bytes = excluded.memory_total_bytes,
+                memory_available_bytes = excluded.memory_available_bytes,
+                disk_free_bytes = excluded.disk_free_bytes,
+                probe_error_code = excluded.probe_error_code,
+                probe_status = excluded.probe_status",
+            params![
+                revision,
+                captured_at,
+                platform,
+                os_name,
+                arch,
+                logical_cores,
+                memory_total_bytes,
+                memory_available_bytes,
+                disk_free_bytes,
+                probe_error_code,
+                probe_status
+            ],
+        )
+        .map_err(|_| CoreError::database())?;
+        Ok(())
+    }
+
+    pub fn latest(conn: &Connection) -> Result<Option<ResourceSnapshotRow>, CoreError> {
+        conn.query_row(
+            "SELECT revision, captured_at, platform, os_name, arch, logical_cores,
+                    memory_total_bytes, memory_available_bytes, disk_free_bytes,
+                    probe_error_code, probe_status
+             FROM resource_snapshots ORDER BY revision DESC LIMIT 1",
+            [],
+            |row| {
+                Ok(ResourceSnapshotRow {
+                    revision: row.get(0)?,
+                    captured_at: row.get(1)?,
+                    platform: row.get(2)?,
+                    os_name: row.get(3)?,
+                    arch: row.get(4)?,
+                    logical_cores: row.get(5)?,
+                    memory_total_bytes: row.get(6)?,
+                    memory_available_bytes: row.get(7)?,
+                    disk_free_bytes: row.get(8)?,
+                    probe_error_code: row.get(9)?,
+                    probe_status: row.get(10)?,
+                })
+            },
+        )
+        .optional()
         .map_err(|_| CoreError::database())
     }
 }
