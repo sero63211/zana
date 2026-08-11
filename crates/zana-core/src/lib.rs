@@ -9,6 +9,7 @@ pub mod jobs;
 pub mod platform;
 pub mod repositories;
 pub mod resources;
+pub mod runtimes;
 pub mod settings;
 pub mod sha256;
 pub mod time;
