@@ -97,7 +97,7 @@ impl ProbeBudget {
             || !(0.05..=5.0).contains(&self.per_check_timeout_seconds)
             || !self.total_budget_seconds.is_finite()
             || !(0.05..=30.0).contains(&self.total_budget_seconds)
-            || !(256..=8192).contains(&self.max_output_chars)
+            || !(1..=8192).contains(&self.max_output_chars)
             || !(1..=64).contains(&self.max_path_count)
             || !(1..=128).contains(&self.max_error_count)
         {
@@ -915,18 +915,34 @@ impl DoctorService {
         let mut checks = Vec::new();
         let executor = executor();
         let mut worker_busy = false;
+        let mut any_failure = false;
+        let mut any_limited = false;
         for probe in probes {
             let remaining = self.budget.total_budget_seconds - started.elapsed().as_secs_f64();
             if remaining <= 0.0 {
-                checks.push(self.budget_check("total time budget exceeded"));
+                let check = self.budget_check("total time budget exceeded");
+                classify_and_bound(
+                    check,
+                    &mut checks,
+                    &self.budget,
+                    &mut any_failure,
+                    &mut any_limited,
+                );
                 break;
             }
             if worker_busy {
-                checks.push(self.probe_failure(
+                let check = self.probe_failure(
                     probe.as_ref(),
                     0.0,
                     "probe worker pool was still busy from an earlier timeout",
-                ));
+                );
+                classify_and_bound(
+                    check,
+                    &mut checks,
+                    &self.budget,
+                    &mut any_failure,
+                    &mut any_limited,
+                );
                 continue;
             }
             let per_check = self.budget.per_check_timeout_seconds.min(remaining);
@@ -956,7 +972,13 @@ impl DoctorService {
                     self.probe_failure_named(&probe_id, &probe_name, per_check, &error)
                 }
             };
-            checks.push(bound_check(check, &self.budget));
+            classify_and_bound(
+                check,
+                &mut checks,
+                &self.budget,
+                &mut any_failure,
+                &mut any_limited,
+            );
         }
         let total = started.elapsed().as_secs_f64();
         let error_count = checks
@@ -972,29 +994,9 @@ impl DoctorService {
                 )
             })
             .count();
-        let mandatory_failure = checks.iter().any(|check| {
-            check.status == CheckStatus::Fail
-                || check
-                    .issues
-                    .iter()
-                    .any(|issue| issue.severity == Severity::Error)
-                || check
-                    .feature_readiness
-                    .iter()
-                    .any(|readiness| !readiness.ready && readiness.blocks_core_start)
-        });
-        let limited = checks.iter().any(|check| {
-            matches!(
-                check.status,
-                CheckStatus::Warn | CheckStatus::Unavailable | CheckStatus::Skipped
-            ) || check
-                .feature_readiness
-                .iter()
-                .any(|readiness| !readiness.ready)
-        });
-        let aggregate = if mandatory_failure {
+        let aggregate = if any_failure {
             AggregateHealth::Failed
-        } else if limited {
+        } else if any_limited {
             AggregateHealth::PassWithLimitedFeatures
         } else {
             AggregateHealth::Healthy
@@ -1188,6 +1190,33 @@ fn bound_check(mut check: DiagnosticCheck, budget: &ProbeBudget) -> DiagnosticCh
     }
     check.feature_readiness = readiness;
     check
+}
+
+fn classify_and_bound(
+    check: DiagnosticCheck,
+    checks: &mut Vec<DiagnosticCheck>,
+    budget: &ProbeBudget,
+    any_failure: &mut bool,
+    any_limited: &mut bool,
+) {
+    *any_failure |= check.status == CheckStatus::Fail
+        || check.severity == Severity::Error
+        || check
+            .issues
+            .iter()
+            .any(|issue| issue.severity == Severity::Error)
+        || check
+            .feature_readiness
+            .iter()
+            .any(|readiness| !readiness.ready && readiness.blocks_core_start);
+    *any_limited |= matches!(
+        check.status,
+        CheckStatus::Warn | CheckStatus::Unavailable | CheckStatus::Skipped
+    ) || check
+        .feature_readiness
+        .iter()
+        .any(|readiness| !readiness.ready);
+    checks.push(bound_check(check, budget));
 }
 
 fn bound_json_value(value: Value, max_output: usize) -> Option<Value> {
@@ -1420,7 +1449,9 @@ mod tests {
 
     #[test]
     fn doctor_aggregates_failures_and_isolates_panics() {
-        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let doctor = DoctorService {
             budget: ProbeBudget::default(),
         };
@@ -1443,7 +1474,9 @@ mod tests {
 
     #[test]
     fn doctor_respects_check_budget() {
-        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let doctor = DoctorService {
             budget: ProbeBudget {
                 max_checks: 1,
@@ -1464,7 +1497,9 @@ mod tests {
 
     #[test]
     fn doctor_timeout_keeps_worker_permit_until_finished_and_bounds_run() {
-        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let doctor = DoctorService {
             budget: ProbeBudget {
                 per_check_timeout_seconds: 0.05,
@@ -1548,7 +1583,9 @@ mod tests {
 
     #[test]
     fn doctor_aggregates_limited_for_unavailable_and_readiness() {
-        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let doctor = DoctorService {
             budget: ProbeBudget::default(),
         };
@@ -1589,7 +1626,9 @@ mod tests {
 
     #[test]
     fn aggregate_fails_closed_for_bare_fail_error_and_core_readiness() {
-        let _guard = DOCTOR_TEST_LOCK.lock().expect("locks doctor tests");
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let doctor = DoctorService {
             budget: ProbeBudget::default(),
         };
@@ -1824,5 +1863,54 @@ mod tests {
         assert!(empty.is_empty());
         let partial = truncate_str("abcdef", 100, 3);
         assert!(partial.len() <= 3);
+    }
+
+    #[test]
+    fn aggregate_health_survives_output_trimming() {
+        let _guard = DOCTOR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let doctor = DoctorService {
+            budget: ProbeBudget {
+                max_output_chars: 32,
+                ..ProbeBudget::default()
+            },
+        };
+        let check = DiagnosticCheck {
+            check_id: "core".to_owned(),
+            name: "Core".to_owned(),
+            status: CheckStatus::Pass,
+            severity: Severity::Info,
+            duration_seconds: 0.0,
+            observed_source: "test".to_owned(),
+            observed_at_iso: now_iso(),
+            evidence: Evidence {
+                observed_source: "test".to_owned(),
+                value: Some(serde_json::json!({ "huge": "x".repeat(10_000) })),
+                basename: None,
+                digest_prefix: None,
+                boolean_presence: Some(true),
+                notes: Vec::new(),
+            },
+            issues: vec![DiagnosticIssue {
+                code: "CORE_BLOCKED".to_owned(),
+                severity: Severity::Error,
+                message: "core prerequisite missing".to_owned(),
+                recovery_actions: Vec::new(),
+            }],
+            feature_readiness: vec![FeatureReadiness {
+                feature: "core".to_owned(),
+                ready: false,
+                blocks_core_start: true,
+                blocks_feature_only: false,
+                missing_reason: "core prerequisite missing".to_owned(),
+            }],
+        };
+        let report = doctor
+            .run(vec![Box::new(StaticProbe(check))])
+            .expect("runs");
+        assert_eq!(report.aggregate_health, AggregateHealth::Failed);
+        assert!(report.checks[0].evidence.value.is_none());
+        assert!(report.checks[0].issues.is_empty());
     }
 }
