@@ -124,6 +124,32 @@ dependency install ran.
 - `8ce2b77` feat: add bounded model acquisition planning, execution, and supervisor
 - `ddc1aeb` fix: enforce acquisition bounds, FIFO, admission, close, and payload truth
 - `993e3aa` feat: add bounded observability audit and SSE primitives
+- `5ac4273` fix: harden T921 FIFO proof, identifiers, retention, cursors, and SSE framing
+
+## Hardening correction addendum (lead review)
+
+Reopened for one dependency-complete hardening correction; all six concrete
+defects were fixed in `5ac4273`:
+
+1. Acquisition FIFO proof now asserts persisted repository truth after the
+   first drain (`ids[0]` SUCCEEDED, `ids[1]` PENDING) before the second drain.
+2. The cumulative stream-budget test uses many individually valid short
+   JSONL lines split into chunks under the per-line cap, so only the total
+   event-byte budget is violated; it asserts `STREAM_OVER_BUDGET` and exactly
+   one close.
+3. Observability builds one consistent sanitized identifier snapshot for every
+   outward path; path-like, control-bearing, syntax-invalid,
+   sensitive-lookalike, and overlong identifiers are replaced with a stable
+   salted digest before serialization, retention, audit, page projections, and
+   returned event IDs. Adversarial tests prove raw values never leak.
+4. Retention truth: a successfully serialized record that immediately
+   self-evicts reports `dropped=true` with exact counters/bytes.
+5. SSE cursors are bounded and injection-safe, preserve plain numeric plus
+   `jobs:<n>` compatibility, expose explicit `source_matches`, and support
+   `allow_ahead=false` (`Invalid` instead of dead `Ahead` semantics).
+6. SSE wire events emit one canonical JSON value per complete block; error
+   JSON and the terminal `[DONE]` sentinel are separate blocks consumable by
+   standard fetch/EventSource parsers, with caps covering all emitted bytes.
 
 ## Security delta
 
@@ -160,7 +186,7 @@ transitional Python sidecar until T925.
 
 ## Clean proof
 
-`git status --porcelain` is empty after the final commit.
+`git status --porcelain` is empty after the final handoff receipt commit.
 
 ## Remote state and push blocker
 
