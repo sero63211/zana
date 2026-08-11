@@ -1506,6 +1506,18 @@ tasks:
         output_contract: "A standalone lean Rust benchmark engine covering pinned registry metadata, license/consent/digest gates, held-out contamination blocking, deterministic item scoring, baseline/candidate comparability, paired deltas, target and general-regression thresholds, resource evidence, incomplete/cancelled/judge-based truth, medical non-certification labels and Image-eligibility decisions."
         gates: "Focused standalone Rust unit/static gates for exact policy invariants, cargo fmt/check/clippy with warnings denied via the crate manifest, direct readability/security/failure review, one focused commit and clean worktree; no dataset/model download, network/provider, inference/training, app/device/browser, root-workspace edit or broad/live test."
         stop_if: "Stop before editing any existing product code or shared manifest, defining DB/API/job/UI integration, bundling benchmark bytes, treating registry metadata as download authority, allowing train/held-out collisions, hiding general regressions, or representing medical scores as clinical safety."
+      - id: T922B-rust-artifact-domain
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: reserved
+        branch: agent/t922b-rust-artifact-domain
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        depends_on: "T920-rust-core-foundation and accepted Python capability/build/Image/Instance/portability contracts; parallel-safe pure-domain subtask for later T922 integration"
+        owns: "Only new files under crates/zana-artifacts/** and .agent-work/handoffs/T922B-rust-artifact-domain.md. Root Cargo files, zana-core, zana-core-server, zana-evaluation, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
+        input_contract: "Treat the accepted platform-neutral CapabilitySource, capability version, build evidence, evaluation reference, immutable ZANA Image, mutable Instance and portability contracts as migration evidence. Preserve exact provenance, digests, model/runtime compatibility, tool permission declarations, resource budgets and import safety without hard-coding Android or inventing persistence/API/UI state."
+        output_contract: "One lean standalone Rust domain crate for bounded validated source manifests and provenance, immutable capability/build/Image identities, mutable Instance creation boundaries, exact artifact inventory/digests and fail-closed export/import compatibility decisions. Medical, Kurdish/language and Android-agent capabilities must all fit the same platform-neutral contracts."
+        gates: "Focused standalone Rust unit/static gates with tiny synthetic values only; exact identity/digest/provenance, immutable-vs-mutable, path traversal/symlink-declaration, inventory/count/byte, model requirement, permission/resource and compatibility failure tests; cargo fmt/check/clippy warnings denied; direct readability/security/failure review; focused commits and clean worktree. No filesystem archive extraction, model/dataset/network/provider, inference/training, app/device/browser, root-workspace edit or broad/live test."
+        stop_if: "Stop before editing any existing/shared path, creating persistence/API/job/UI contracts, hard-coding Android into Images, weakening immutable Image vs mutable Instance state, accepting absolute/parent/NUL paths or unpinned bytes, executing/extracting an archive, silently resolving a model/runtime/tool permission, or adding speculative abstractions and dependency fan-out."
       - id: T923-android-agent-runtime
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
