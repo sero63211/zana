@@ -1478,6 +1478,19 @@ tasks:
         output_contract: "One platform-neutral Rust lifecycle for Android agents, medical assistants, Kurdish tutors and other knowledge capabilities, with real before/after benchmark runs, paired deltas, regression gates, resource measurements and immutable evidence before Image eligibility. No phone or deployment target is required to extend or run a local desktop model."
         gates: "Focused Rust unit/integration/static gates with fake/in-memory external boundaries; exact benchmark revision/digest/license, train-test contamination, deterministic scoring, paired comparison, cancelled/partial failure, general-regression, medical-disclaimer and Image-promotion tests; no live model/training/provider/device/app or broad/load run; focused commits and clean worktree."
         stop_if: "Stop before hard-coding Android into ZANA Images, weakening immutable/mutable or benchmark/build boundaries, silently selecting a model/embedding/provider/tool permission, bundling or downloading a dataset without exact license/consent/digest, leaking held-out items into build inputs, or presenting medical benchmark results as clinical safety."
+      - id: T922A-rust-benchmark-engine
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: queued
+        branch: agent/t922a-rust-benchmark-engine
+        worktree: "pending visible local Codex task"
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        depends_on: "T920-rust-core-foundation and docs/goals/zana-mvp/notes/T922-evaluation-benchmark-policy.md; parallel-safe pure-domain subtask for later T922 integration"
+        owns: "Only new files under crates/zana-evaluation/** and .agent-work/handoffs/T922A-rust-benchmark-engine.md. Root Cargo files, zana-core, zana-core-server, Python, TypeScript, Tauri, Android, GoalBuddy state/ledger and every existing product-code path are excluded."
+        input_contract: "Implement only the source-backed paired benchmark policy already fixed in T922-evaluation-benchmark-policy.md. Use immutable pure Rust domain records and injected artifact/scorer boundaries; do not invent persistence, API, job or UI contracts owned by T921/T922 integration."
+        output_contract: "A standalone lean Rust benchmark engine covering pinned registry metadata, license/consent/digest gates, held-out contamination blocking, deterministic item scoring, baseline/candidate comparability, paired deltas, target and general-regression thresholds, resource evidence, incomplete/cancelled/judge-based truth, medical non-certification labels and Image-eligibility decisions."
+        gates: "Focused standalone Rust unit/static gates for exact policy invariants, cargo fmt/check/clippy with warnings denied via the crate manifest, direct readability/security/failure review, one focused commit and clean worktree; no dataset/model download, network/provider, inference/training, app/device/browser, root-workspace edit or broad/live test."
+        stop_if: "Stop before editing any existing product code or shared manifest, defining DB/API/job/UI integration, bundling benchmark bytes, treating registry metadata as download authority, allowing train/held-out collisions, hiding general regressions, or representing medical scores as clinical safety."
       - id: T923-android-agent-runtime
         agent: router_opencode_go_deepseek_v4_flash
         reasoning_effort: max
