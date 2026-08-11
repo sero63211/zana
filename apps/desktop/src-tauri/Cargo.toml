@@ -6,6 +6,10 @@ authors = ["ZANA contributors"]
 edition = "2021"
 rust-version = "1.85"
 
+[workspace]
+# The desktop app stays outside the shared Rust workspace so Tauri's native
+# build graph remains independent of the zana-core workspace.
+
 [lib]
 name = "zana_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

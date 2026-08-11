@@ -1,0 +1,16 @@
+[package]
+name = "zana-core-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Loopback-authenticated ZANA Core server binary"
+
+[[bin]]
+name = "zana-core"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+signal-hook = { workspace = true }
+zana-core = { path = "../zana-core" }
