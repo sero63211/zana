@@ -50,6 +50,13 @@ dataset bytes require a separate license, digest, disk and consent gate.
   official archived OpenAI repository. GitHub exposes no repository license at
   the inspected revision, so ZANA must not bundle or auto-download its data
   without an explicit legal/license decision.
+- [HealthBench](https://github.com/openai/simple-evals/blob/652c89d0ca9df547706735883097e9537d40dc47/healthbench_eval.py),
+  official OpenAI rubric-based medical evaluation protocol, including the
+  standard, consensus and hard source-artifact identifiers. It is an optional
+  judge-based suite, not a deterministic default: ZANA must pin the grader
+  identity and rubric protocol, disclose grader cost/resource use and
+  variance, and separately approve the dataset artifact terms and digest
+  before download.
 - [OpenAI simple-evals](https://github.com/openai/simple-evals/tree/652c89d0ca9df547706735883097e9537d40dc47)
   is an MIT reference for evaluation protocols only; the final ZANA product
   implements its evaluation authority in Rust and does not ship a Python eval
