@@ -35,10 +35,11 @@ Android, GoalBuddy, ledger, migration, or unrelated file was written.
   bounded HTTP server, exact `GET /api/v1/health`, sanitized canonical JSON
   error envelope, CORS, graceful signal shutdown, and deterministic child
   cleanup.
-- `scripts/package-core.sh`: switched from uv/PyInstaller to `cargo build
-  --release --locked --target "$HOST_TRIPLE" -p zana-core-server` and atomic
-  publication under `apps/desktop/src-tauri/binaries/`, preserving the stable
-  `zana-core-<triple>` sidecar name and executable mode.
+- `scripts/package-core.sh`: restored exactly to the accepted base
+  Python/PyInstaller transitional packaging. T920 introduces no Rust
+  packaging cutover; the canonical sidecar remains Python-only rollback
+  evidence until T925 performs the real Python-free cutover after T921/T922
+  route parity.
 - `apps/desktop/src-tauri/Cargo.toml`: minimal empty `[workspace]` table so
   the desktop package is isolated from the new root workspace. No dependency
   or lockfile change was required.
@@ -65,7 +66,7 @@ bundle gate today.
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace` | PASS, 18 lib + 19 server tests |
+| `cargo test --workspace` | PASS, 21 lib + 19 server tests |
 | `bash -n scripts/package-core.sh` | PASS |
 | `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
 | `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
@@ -105,6 +106,10 @@ bundle gate today.
 - The Rust server currently exposes only the health surface, as scoped;
   product routes, migrations, and parity with the Python Core remain later
   T920 lanes.
+- The canonical desktop sidecar is intentionally still built by the accepted
+  Python/PyInstaller `scripts/package-core.sh` as transitional rollback
+  evidence. The final MVP Python-free packaging cutover is mandatory but not
+  part of this milestone.
 - The std-only HTTP parser handles HTTP/1.1 requests with `Content-Length`
   or identity transfer encoding only and rejects other encodings. No live
   server/browser/native bundle or release package ran under host safety.
@@ -121,11 +126,12 @@ None.
 ## Merge instructions
 
 Merge the accepted commit stack (`8e8b119` product, `fb2306c` correction,
-plus this receipt) onto the canonical lane at base
+`5708d06` second correction, plus this receipt) onto the canonical lane at base
 `ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
-The desktop supervisor and `tauri.conf.json` need no merge-side change; the
-Rust binary uses the same `zana-core` sidecar name, `serve --host
-127.0.0.1 --port <n>` arguments, and `ZANA_CORE_TOKEN` environment variable.
+The desktop supervisor and `tauri.conf.json` need no merge-side change;
+`scripts/package-core.sh` must remain the accepted Python/PyInstaller version.
+The Rust `zana-core` binary remains an available runnable foundation, not the
+shipped product switch.
 After integration, rerun the focused Rust workspace gates; the release
 package/native bundle gate remains deferred by host safety.
 
@@ -176,13 +182,59 @@ The socket integration test is local and deterministic; live Tauri/native
 bundle and release-package behavior remain deferred. The sidecar port
 reservation race remains as documented.
 
+## Second correction addendum
+
+Independent Codex review found the T920 tree must not switch the canonical
+sidecar packaging to the health-only Rust server while the desktop still
+consumes product routes. Second correction commit `5708d06` repairs both
+findings in the same exclusive scope:
+
+1. `scripts/package-core.sh` was restored byte-for-byte to the accepted base
+   behavior (`git diff ce806b5 -- scripts/package-core.sh` is empty). No
+   dual-mode flag, second versioned script, placeholder route, or conditional
+   abstraction was added, and no Cargo target-directory assumption remains.
+   T925 owns the one real Python-free packaging cutover after T921/T922 route
+   parity.
+2. Linux `XDG_DATA_HOME` empty or whitespace-only values now fall back to
+   `HOME/.local/share` exactly like the accepted `platformdirs` contract.
+   Exact pure unit tests cover empty, whitespace, and non-empty absolute
+   XDG values; macOS/Windows derivations and fail-closed root validation are
+   unchanged.
+
+### Second correction gates
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace` (escalated for loopback sockets) | PASS, 21 lib + 19 server tests |
+| `bash -n scripts/package-core.sh` | PASS |
+| `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
+| `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
+| `git diff --check` before and after correction commit | PASS |
+| `git diff ce806b5 -- scripts/package-core.sh` | empty (exact restore) |
+
+### Second correction security delta
+
+No new attack surface: packaging reverts to the accepted transitional
+Python/PyInstaller path, and XDG whitespace handling avoids an invalid
+data-root base while preserving fail-closed root validation.
+
+### Second correction residual risk
+
+The Rust foundation is available but the shipped sidecar remains Python-only
+until T925; desktop product routes remain Python-backed until T921/T922
+parity.
+
 ## Accepted commit stack and clean proof
 
 - Product commit: `8e8b119aea63caeade6f6e56f9bab08394901d32`
 - Correction commit: `fb2306c16a97d84b9bf6df6b3985d88ab4afe87e`
+- Second correction commit: `5708d06256f7056c8b49d0919826074fd746d131`
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`)
 - Branch: `agent/t920-rust-core-foundation`
 - Remote: `origin https://github.com/sero63211/zana.git`; no push attempted
   (explicit T920 no-push policy).
-- Clean proof after correction commit: `git status --porcelain` empty and
-  `git diff --check` clean; the handoff commit adds only this file.
+- Clean proof after second correction commit: `git status --porcelain` empty
+  and `git diff --check` clean; the handoff commit adds only this file.
