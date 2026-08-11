@@ -65,7 +65,7 @@ bundle gate today.
 | `cargo fmt --all --check` | PASS |
 | `cargo check --workspace` | PASS |
 | `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
-| `cargo test --workspace` | PASS, 15 lib + 18 server tests |
+| `cargo test --workspace` | PASS, 18 lib + 19 server tests |
 | `bash -n scripts/package-core.sh` | PASS |
 | `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
 | `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
@@ -89,6 +89,14 @@ bundle gate today.
 - SQLite opens with WAL, foreign keys, and 30 s busy timeout, refuses
   symlinked/corrupt files, and does not fake migration state: the existing
   `alembic_version` table is never claimed by the Rust bootstrap.
+- Accepted streams are explicitly restored to blocking mode with bounded 5 s
+  read/write timeouts before workers or busy responses use them; a stream
+  that cannot be made blocking is dropped/closed safely.
+- Windows data-root resolution matches the accepted Python on-disk contract
+  (`%LOCALAPPDATA%\zana\zana`) instead of creating a second sibling database.
+- SQLite metadata handling fails closed: only `NotFound` may proceed, symlinks
+  are rejected, and every other metadata error rejects before parent creation
+  or database open.
 - Canonical errors are sanitized and fixed; raw paths, OS errors, tokens, and
   environment details are never exposed.
 
@@ -102,6 +110,9 @@ bundle gate today.
   server/browser/native bundle or release package ran under host safety.
 - The sidecar port reservation race documented by T900 remains unchanged:
   the shell plugin cannot pass a pre-bound socket.
+- The delayed-client socket integration test binds real loopback sockets and
+  therefore ran with the focused test approval outside the filesystem
+  sandbox; no live app, browser, native bundle, or release package ran.
 
 ## Blockers
 
@@ -109,20 +120,69 @@ None.
 
 ## Merge instructions
 
-Merge the single product commit `8e8b119aea63caeade6f6e56f9bab08394901d32`
-onto the canonical lane at base `ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
+Merge the accepted commit stack (`8e8b119` product, `fb2306c` correction,
+plus this receipt) onto the canonical lane at base
+`ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
 The desktop supervisor and `tauri.conf.json` need no merge-side change; the
 Rust binary uses the same `zana-core` sidecar name, `serve --host
 127.0.0.1 --port <n>` arguments, and `ZANA_CORE_TOKEN` environment variable.
 After integration, rerun the focused Rust workspace gates; the release
 package/native bundle gate remains deferred by host safety.
 
-## Accepted commit and clean proof
+## Correction addendum
+
+Independent lead review found three defects in product commit `8e8b119`, all
+repaired in the same exclusive scope by correction commit `fb2306c`:
+
+1. Accepted `TcpStream` could inherit nonblocking mode from the nonblocking
+   listener. `prepare_accepted_stream` now calls `set_nonblocking(false)`
+   before bounded read/write timeouts, and a failed transition drops/closes
+   the stream before any handler or busy response sees it. A deterministic
+   delayed-client integration test connects first, waits 150 ms, sends the
+   authenticated health request, and receives `HTTP/1.1 200 OK`.
+2. Windows data-root derivation now matches
+   `platformdirs.user_data_dir("zana")` exactly:
+   `%LOCALAPPDATA%\zana\zana`. The derivation was refactored into a pure
+   `data_root_for_platform(PlatformKind, ...)` helper with an exact Windows
+   parity test runnable on this macOS host; macOS and Linux paths are
+   unchanged.
+3. `Database::open` now treats `symlink_metadata` failures fail-closed: only
+   `NotFound` proceeds, a symlink rejects, and every other metadata error
+   rejects before parent creation or database open. Focused tests inspect
+   every helper branch and prove a path under a regular file creates nothing.
+
+### Correction gates
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace` (escalated for loopback sockets) | PASS, 18 lib + 19 server tests |
+| `bash -n scripts/package-core.sh` | PASS |
+| `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
+| `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
+| `git diff --check` before and after correction commit | PASS |
+
+### Correction security delta
+
+Streams are blocking with bounded timeouts before I/O, Windows parity avoids
+silent dual-database migration, and metadata errors fail closed before
+filesystem mutation. The original security delta remains unchanged.
+
+### Correction residual risk
+
+The socket integration test is local and deterministic; live Tauri/native
+bundle and release-package behavior remain deferred. The sidecar port
+reservation race remains as documented.
+
+## Accepted commit stack and clean proof
 
 - Product commit: `8e8b119aea63caeade6f6e56f9bab08394901d32`
+- Correction commit: `fb2306c16a97d84b9bf6df6b3985d88ab4afe87e`
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`)
 - Branch: `agent/t920-rust-core-foundation`
 - Remote: `origin https://github.com/sero63211/zana.git`; no push attempted
   (explicit T920 no-push policy).
-- Clean proof after product commit: `git status --porcelain` empty and
+- Clean proof after correction commit: `git status --porcelain` empty and
   `git diff --check` clean; the handoff commit adds only this file.
