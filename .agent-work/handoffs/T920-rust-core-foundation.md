@@ -126,12 +126,17 @@ None.
 ## Merge instructions
 
 Merge the accepted commit stack (`8e8b119` product, `fb2306c` correction,
-`5708d06` second correction, `57ee166` third correction, plus this receipt)
-onto the canonical lane at base `ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
+`5708d06` second correction, `57ee166` third correction, `e69dbe2` fourth
+correction, plus this receipt) onto the canonical lane at base
+`ce806b5bddbc82a5361092d199ed2a4553bf6b66`.
 The desktop supervisor and `tauri.conf.json` need no merge-side change;
 `scripts/package-core.sh` must remain the accepted Python/PyInstaller version.
 The Rust `zana-core` binary remains an available runnable foundation, not the
 shipped product switch.
+Canonical main commit `8c0387b1adaf27f6522beaf6223ae891e41b48a8` (pushed,
+`origin/main` exact same SHA) formally reconciles T920 as a standalone Rust M0
+and keeps the functional Python desktop package/supervisor until T921+T922
+route parity; T925 owns the atomic package cutover and Python removal.
 After integration, rerun the focused Rust workspace gates; the release
 package/native bundle gate remains deferred by host safety.
 
@@ -285,15 +290,81 @@ live Tauri/native bundle and release-package behavior remain deferred. The
 sidecar port reservation race and Python-only transitional packaging remain
 as documented.
 
+## Fourth correction addendum
+
+Independent review accepted P2: the parser checked the monotonic deadline
+before each read, but a real `TcpStream` retained a fixed 5 s read timeout, so
+a peer sending a byte just before the deadline could make the next read block
+almost another 5 s. Fourth correction commit `e69dbe2` fixes this at the
+production socket boundary:
+
+1. A small `ReadWithTimeout` boundary is used for every parse read. The
+   production `TcpStream` implementation calls `set_read_timeout(Some(remaining))`
+   before each blocking read, where `remaining` is the one total monotonic
+   deadline minus the current clock.
+2. Expiry is checked before and after every successful read, so a single read
+   that crosses the total budget returns `ParseError::Timeout`/408 and releases
+   the worker slot. `Interrupted` still cannot extend the budget, and buffers,
+   caps, the 8-connection limit, and shutdown behavior are unchanged.
+3. Deterministic fake-clock tests prove (a) one read crossing the budget
+   fails after the read and (b) the remaining per-read timeout strictly
+   decreases across reads, without multi-second sleeps or a new framework.
+
+### P1 canonical reconciliation
+
+Independent P1 (premature health-only Rust cutover over real Python routes)
+was resolved by canonical board reconciliation, not by pretending the cutover
+occurred. Canonical main commit/push
+`8c0387b1adaf27f6522beaf6223ae891e41b48a8` (exact same SHA on `origin/main`,
+clean) formally changes T920 to a standalone Rust M0 and preserves the
+functional Python desktop package/supervisor until T921+T922 route parity;
+T925 owns atomic package cutover/Python removal. The founder directive now
+explicitly forbids wiring the foundation-only Rust server over the functional
+Core. This worktree intentionally does not contain PM-owned board state and
+did not modify it; the earlier stale `a83a296` note is superseded by the
+canonical `8c0387b` reconciliation.
+
+### Fourth correction gates
+
+| Check | Result |
+| --- | --- |
+| `cargo fmt --all --check` | PASS |
+| `cargo check --workspace` | PASS |
+| `cargo clippy --workspace --all-targets -- -D warnings` | PASS |
+| `cargo test --workspace` (escalated for loopback sockets) | PASS, 23 lib + 25 server tests |
+| `bash -n scripts/package-core.sh` | PASS |
+| `jq empty apps/desktop/src-tauri/tauri.conf.json` | PASS |
+| `cargo metadata` from root and `apps/desktop/src-tauri` | PASS |
+| `git diff --check` before and after fourth correction commit | PASS |
+
+### Fourth correction security delta
+
+Every blocking socket read is now bounded by the remaining total request
+deadline rather than a fixed per-read idle timeout, so slow-drip peers cannot
+occupy worker slots beyond the total budget; post-read deadline checks prevent
+a single crossing read from succeeding.
+
+### Fourth correction residual risk
+
+Live Tauri/native bundle and release-package behavior remain deferred; the
+canonical sidecar remains Python-only until T921/T922 parity and T925 cutover.
+The sidecar port reservation race remains as documented.
+
+### Final review status
+
+Pending lead rerun after the fourth-correction code commit and this truthful
+receipt.
+
 ## Accepted commit stack and clean proof
 
 - Product commit: `8e8b119aea63caeade6f6e56f9bab08394901d32`
 - Correction commit: `fb2306c16a97d84b9bf6df6b3985d88ab4afe87e`
 - Second correction commit: `5708d06256f7056c8b49d0919826074fd746d131`
 - Third correction commit: `57ee166cd854e5fad6b7cd388f71f2ccf55cba7c`
+- Fourth correction commit: `e69dbe23d0efefe9276fd4af714f26ebec92378c`
 - Receipt commit: this handoff commit (resolve with `git rev-parse HEAD`)
 - Branch: `agent/t920-rust-core-foundation`
 - Remote: `origin https://github.com/sero63211/zana.git`; no push attempted
   (explicit T920 no-push policy).
-- Clean proof after third correction commit: `git status --porcelain` empty
+- Clean proof after fourth correction commit: `git status --porcelain` empty
   and `git diff --check` clean; the handoff commit adds only this file.
