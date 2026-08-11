@@ -608,11 +608,22 @@ impl NativeAcquisitionAdapter {
             match parse_progress_line(&line, *consumed + 1) {
                 Ok(Some(progress)) => {
                     *consumed += 1;
+                    if progress.error.is_some() {
+                        return Ok(Some(AcquisitionResult {
+                            state: AcquisitionState::Failed,
+                            events_consumed: *consumed,
+                            retained_events: std::mem::take(retained),
+                            error_code: Some("NATIVE_ERROR".to_owned()),
+                            error_message: Some(
+                                "Native runtime reported an acquisition error.".to_owned(),
+                            ),
+                        }));
+                    }
                     retained.push(progress.clone());
                     if retained.len() > self.max_retained_events {
                         retained.remove(0);
                     }
-                    if progress.status == "success" {
+                    if progress.status == "success" || progress.status == "completed" {
                         return Ok(Some(AcquisitionResult {
                             state: AcquisitionState::Succeeded,
                             events_consumed: *consumed,
@@ -644,7 +655,7 @@ fn parse_progress_line(line: &str, sequence: i64) -> Result<Option<NativeProgres
     let Some(status) = object.get("status").and_then(serde_json::Value::as_str) else {
         return Ok(None);
     };
-    let status = bounded_text(status, 256);
+    let status = sanitize_metadata_text(status);
     let total = object.get("total").and_then(serde_json::Value::as_i64);
     let completed = object.get("completed").and_then(serde_json::Value::as_i64);
     if total.is_some_and(|value| !(0..=MAX_PROGRESS_VALUE).contains(&value))
@@ -665,15 +676,33 @@ fn parse_progress_line(line: &str, sequence: i64) -> Result<Option<NativeProgres
         digest: object
             .get("digest")
             .and_then(serde_json::Value::as_str)
-            .map(|value| bounded_text(value, 256)),
+            .map(sanitize_metadata_text),
         total,
         completed,
         progress_0_1,
         error: object
             .get("error")
-            .and_then(serde_json::Value::as_str)
-            .map(|value| bounded_text(value, 256)),
+            .map(|_| "Native runtime reported an acquisition error.".to_owned()),
     }))
+}
+
+fn sanitize_metadata_text(value: &str) -> String {
+    if value == "success" || value == "completed" {
+        return value.to_owned();
+    }
+    if value.is_empty()
+        || value.len() > 256
+        || value.bytes().any(|byte| byte < 0x20 || byte == 0x7f)
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains("token")
+        || value.contains("secret")
+        || value.contains("password")
+        || value.contains("credential")
+    {
+        return "unsafe-metadata".to_owned();
+    }
+    bounded_text(value, 256)
 }
 
 pub fn bounded_text(value: &str, max_bytes: usize) -> String {
@@ -804,6 +833,9 @@ impl AcquisitionSupervisor {
     }
 
     pub fn dispatch(&self, job_id: i64) -> Result<(), String> {
+        if job_id <= 0 {
+            return Err("job_id must be a positive int".to_owned());
+        }
         if self.stop.load(Ordering::SeqCst) {
             return Err("acquisition supervisor is shutting down".to_owned());
         }
@@ -850,6 +882,17 @@ impl AcquisitionSupervisor {
         let Some(job_id) = job_id else {
             return Ok(());
         };
+        let outcome = self.run_queued(job_id);
+        // Dequeue capacity on every exit after the token was dequeued, even
+        // when the DB, token lookup, execute, or failure persistence fails.
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.remove(&job_id);
+        }
+        outcome?;
+        Ok(())
+    }
+
+    fn run_queued(&self, job_id: i64) -> Result<(), String> {
         let token = self
             .tokens
             .lock()
@@ -875,9 +918,6 @@ impl AcquisitionSupervisor {
             )
             .map_err(|_| "acquisition failure could not be persisted".to_owned())?;
         }
-        if let Ok(mut tokens) = self.tokens.lock() {
-            tokens.remove(&job_id);
-        }
         Ok(())
     }
 
@@ -902,6 +942,7 @@ impl AcquisitionSupervisor {
         }
         let mut conn = crate::db::open_connection(&self.db_path)
             .map_err(|_| "acquisition database could not be opened".to_owned())?;
+        let mut cleanup_failure = false;
         for job_id in queued {
             let error = serde_json::json!({
                 "code": "INTERRUPTED_ON_SHUTDOWN",
@@ -909,7 +950,7 @@ impl AcquisitionSupervisor {
                 "recoverable": true,
                 "actions": ["retry_pull"],
             });
-            JobService::transition_job(
+            if JobService::transition_job(
                 &mut conn,
                 job_id,
                 JobStatus::Failed,
@@ -918,8 +959,14 @@ impl AcquisitionSupervisor {
                 None,
                 Some(&error),
             )
-            .map_err(|_| "interrupted-job persistence failed".to_owned())?;
+            .is_err()
+            {
+                cleanup_failure = true;
+            }
             tokens.remove(&job_id);
+        }
+        if cleanup_failure {
+            return Err("interrupted-job persistence failed".to_owned());
         }
         Ok(())
     }
@@ -1196,6 +1243,9 @@ fn is_hex64(value: &str) -> bool {
 mod tests {
     use super::*;
     use crate::domain::RuntimeSource;
+    use crate::observability::{
+        Event, EventKind, ObservabilityRegistry, RedactionLimits, Severity,
+    };
     use crate::repositories::JobEvents;
 
     struct FakeChunks {
@@ -1986,5 +2036,191 @@ mod tests {
             "not-hex",
         )
         .is_err());
+    }
+
+    #[test]
+    fn native_error_never_overridden_by_success() {
+        let transport = FakeTransport {
+            chunks: vec![
+                br#"{"status":"downloading","error":"boom"}
+"#
+                .to_vec(),
+                br#"{"status":"success"}
+"#
+                .to_vec(),
+            ],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let admitted = AdmissionResult {
+            allowed: true,
+            reason: "ADMITTED".to_owned(),
+            conservative_reserve_bytes: 0,
+            explicit_user_approval: true,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &transport,
+            &admitted,
+            &Arc::new(AtomicUsize::new(0)),
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Failed);
+        assert_eq!(result.error_code.as_deref(), Some("NATIVE_ERROR"));
+        assert_eq!(
+            result.error_message.as_deref(),
+            Some("Native runtime reported an acquisition error.")
+        );
+
+        let completed = FakeTransport {
+            chunks: vec![br#"{"status":"completed"}
+"#
+            .to_vec()],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &completed,
+            &admitted,
+            &Arc::new(AtomicUsize::new(0)),
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Succeeded);
+    }
+
+    #[test]
+    fn hostile_metadata_is_sanitized_and_not_persisted() {
+        let transport = FakeTransport {
+            chunks: vec![
+                br#"{"status":"/Users/zana/secret","digest":"token-abc"}
+"#
+                .to_vec(),
+                br#"{"status":"completed"}
+"#
+                .to_vec(),
+            ],
+            close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            close_error: false,
+        };
+        let admitted = AdmissionResult {
+            allowed: true,
+            reason: "ADMITTED".to_owned(),
+            conservative_reserve_bytes: 0,
+            explicit_user_approval: true,
+        };
+        let result = NativeAcquisitionAdapter {
+            max_event_count: MAX_EVENT_COUNT,
+            max_retained_events: MAX_RETAINED_EVENTS,
+            max_line_bytes: MAX_LINE_BYTES,
+            max_total_event_bytes: MAX_TOTAL_EVENT_BYTES,
+        }
+        .run(
+            &request(true),
+            &transport,
+            &admitted,
+            &Arc::new(AtomicUsize::new(0)),
+            Instant::now() + Duration::from_secs(30),
+        );
+        assert_eq!(result.state, AcquisitionState::Succeeded);
+        for progress in &result.retained_events {
+            assert!(!progress.status.contains("/Users/zana"));
+            assert!(!progress.status.contains("secret"));
+            assert!(progress
+                .digest
+                .as_deref()
+                .is_none_or(|value| !value.contains("token-abc")));
+        }
+    }
+
+    #[test]
+    fn supervisor_cleans_token_on_all_drain_failures() {
+        let (database, dir) = db("drain-failures");
+        let missing_path = dir.join("missing").join("zana.sqlite3");
+        let supervisor = AcquisitionSupervisor::new(
+            missing_path,
+            Arc::new(FakeTransport {
+                chunks: vec![],
+                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                close_error: false,
+            }),
+            Arc::new(ConfigurableAdmission {
+                reserve_bytes: 0,
+                headroom_unknown: false,
+                headroom_bytes: Some(1 << 30),
+            }),
+            2,
+        )
+        .expect("supervisor");
+        supervisor.dispatch(7).expect("dispatches");
+        assert!(supervisor.drain_once().is_err(), "db open fails");
+        supervisor.dispatch(8).expect("next dispatch is admitted");
+        assert_eq!(supervisor.pending_count(), 1);
+
+        // Nonexistent job: execute fails, mark-failed persistence succeeds,
+        // and capacity is still released.
+        let supervisor = AcquisitionSupervisor::new(
+            database.path.clone(),
+            Arc::new(FakeTransport {
+                chunks: vec![],
+                close_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                close_error: false,
+            }),
+            Arc::new(ConfigurableAdmission {
+                reserve_bytes: 0,
+                headroom_unknown: false,
+                headroom_bytes: Some(1 << 30),
+            }),
+            2,
+        )
+        .expect("supervisor");
+        supervisor.dispatch(999).expect("dispatches");
+        let _ = supervisor.drain_once();
+        supervisor
+            .dispatch(1000)
+            .expect("next dispatch is admitted");
+        assert_eq!(supervisor.pending_count(), 1);
+        drop(database);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exact_timestamp_rejects_hostile_same_length_dates() {
+        for bad in [
+            "2024-13-01T00:00:00.000000+00:00",
+            "2024-02-30T00:00:00.000000+00:00",
+            "2023-02-29T00:00:00.000000+00:00",
+            "2024-01-01T24:00:00.000000+00:00",
+            "2024-01-01T00:60:00.000000+00:00",
+            "2024-01-01T00:00:61.000000+00:00",
+            "2024-01-01T00:00:00.00000X+00:00",
+            "2024-01-01T00:00:00.000000+0000",
+        ] {
+            let registry = ObservabilityRegistry::new(10, 1 << 20, RedactionLimits::default())
+                .expect("registry");
+            let mut event = Event::new(
+                EventKind::Job,
+                Severity::Info,
+                "m".to_owned(),
+                "op".to_owned(),
+            )
+            .expect("event");
+            event.timestamp = bad.to_owned();
+            assert!(!registry.write(&event).ok);
+            assert_eq!(registry.health().failures, 1);
+            assert_eq!(registry.events(10, None).expect("pages").items.len(), 0);
+        }
     }
 }

@@ -514,13 +514,64 @@ fn validate_event_structure(event: &Event) -> Result<(), String> {
 }
 
 fn valid_timestamp(value: &str) -> bool {
-    if value.len() > 64 || value.bytes().any(is_control_byte) {
+    if value.len() != 32 || value.bytes().any(is_control_byte) {
         return false;
     }
-    value.len() == 32
-        && value.ends_with("+00:00")
-        && value.as_bytes().get(10) == Some(&b'T')
-        && value.as_bytes().get(19) == Some(&b'.')
+    let bytes = value.as_bytes();
+    for index in [
+        0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18, 20, 21, 22, 23, 24, 25,
+    ] {
+        if !bytes[index].is_ascii_digit() {
+            return false;
+        }
+    }
+    if bytes[4] != b'-'
+        || bytes[7] != b'-'
+        || bytes[10] != b'T'
+        || bytes[13] != b':'
+        || bytes[16] != b':'
+        || bytes[19] != b'.'
+        || bytes[26] != b'+'
+        || bytes[27] != b'0'
+        || bytes[28] != b'0'
+        || bytes[29] != b':'
+        || bytes[30] != b'0'
+        || bytes[31] != b'0'
+    {
+        return false;
+    }
+    let year = parse_digits(&bytes[0..4]);
+    let month = parse_digits(&bytes[5..7]);
+    let day = parse_digits(&bytes[8..10]);
+    let hour = parse_digits(&bytes[11..13]);
+    let minute = parse_digits(&bytes[14..16]);
+    let second = parse_digits(&bytes[17..19]);
+    if hour > 23 || minute > 59 || second > 60 || !(1..=12).contains(&month) || day < 1 {
+        return false;
+    }
+    let days = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    };
+    day <= days
+}
+
+fn parse_digits(slice: &[u8]) -> u32 {
+    slice
+        .iter()
+        .fold(0u32, |acc, byte| acc * 10 + u32::from(*byte - b'0'))
+}
+
+fn leap_year(year: u32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
 fn validate_context(context: &EventContext) -> Result<(), String> {
