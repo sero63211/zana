@@ -24,14 +24,15 @@ impl RuntimeKind {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "ollama" => Self::Ollama,
-            "lm-studio" => Self::LmStudio,
-            "llama.cpp" => Self::LlamaCpp,
-            "mlx-lm" => Self::MlxLm,
-            "openai-compatible" => Self::OpenAiCompatible,
-            _ => Self::Unknown,
+            "ollama" => Some(Self::Ollama),
+            "lm-studio" => Some(Self::LmStudio),
+            "llama.cpp" => Some(Self::LlamaCpp),
+            "mlx-lm" => Some(Self::MlxLm),
+            "openai-compatible" => Some(Self::OpenAiCompatible),
+            "unknown" => Some(Self::Unknown),
+            _ => None,
         }
     }
 }
@@ -77,12 +78,13 @@ impl RuntimeStatus {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "online" => Self::Online,
-            "offline" => Self::Offline,
-            "error" => Self::Error,
-            _ => Self::Unknown,
+            "unknown" => Some(Self::Unknown),
+            "online" => Some(Self::Online),
+            "offline" => Some(Self::Offline),
+            "error" => Some(Self::Error),
+            _ => None,
         }
     }
 }
@@ -105,12 +107,13 @@ impl ModelIdentityStrength {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "exact_digest" => Self::ExactDigest,
-            "runtime_model_id" => Self::RuntimeModelId,
-            "display_name_only" => Self::DisplayNameOnly,
-            _ => Self::Unknown,
+            "unknown" => Some(Self::Unknown),
+            "exact_digest" => Some(Self::ExactDigest),
+            "runtime_model_id" => Some(Self::RuntimeModelId),
+            "display_name_only" => Some(Self::DisplayNameOnly),
+            _ => None,
         }
     }
 }
@@ -137,15 +140,15 @@ impl JobKind {
         }
     }
 
-    pub fn parse(value: &str) -> Self {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
-            "runtime_refresh" => Self::RuntimeRefresh,
-            "model_pull" => Self::ModelPull,
-            "build_analysis" => Self::BuildAnalysis,
-            "build" => Self::Build,
-            "image_export" => Self::ImageExport,
-            "image_import" => Self::ImageImport,
-            _ => Self::BuildAnalysis,
+            "runtime_refresh" => Some(Self::RuntimeRefresh),
+            "model_pull" => Some(Self::ModelPull),
+            "build_analysis" => Some(Self::BuildAnalysis),
+            "build" => Some(Self::Build),
+            "image_export" => Some(Self::ImageExport),
+            "image_import" => Some(Self::ImageImport),
+            _ => None,
         }
     }
 }

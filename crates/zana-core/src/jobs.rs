@@ -5,10 +5,16 @@ use serde_json::Value;
 
 use crate::domain::{JobEventKind, JobKind, JobStatus};
 use crate::error::CoreError;
-use crate::repositories::{JobEventStreamRow, JobEvents, JobRow, Jobs, MAX_EVENT_PAGE_SIZE};
+use crate::repositories::{
+    JobEventStreamRow, JobEvents, JobRow, Jobs, MAX_EVENT_PAGE_SIZE,
+    MAX_RETAINED_EVENTS_PER_JOB as MAX_RETAINED_EVENTS,
+};
 
-pub const MAX_RETAINED_EVENTS_PER_JOB: i64 = 2000;
 pub const DEFAULT_EVENT_PAGE_SIZE: usize = 50;
+pub const MAX_MESSAGE_BYTES: usize = 1024;
+pub const MAX_PHASE_BYTES: usize = 96;
+pub const MAX_ERROR_BYTES: usize = 1024;
+pub const MAX_RETAINED_EVENTS_PER_JOB: i64 = MAX_RETAINED_EVENTS;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InvalidJobTransition {
@@ -64,6 +70,7 @@ impl JobService {
         phase: &str,
         message: &str,
     ) -> Result<JobRow, JobError> {
+        validate_service_text(phase, message, None)?;
         let transaction = conn.transaction().map_err(|_| JobError::storage())?;
         let id =
             Jobs::insert(&transaction, kind, phase, message).map_err(|_| JobError::storage())?;
@@ -99,20 +106,31 @@ impl JobService {
         progress_0_1: Option<f64>,
         error: Option<&Value>,
     ) -> Result<JobRow, JobError> {
-        let job = Self::get_job(conn, job_id)?;
-        require_transition(job.status, target).map_err(JobError::InvalidTransition)?;
-        let phase = phase.unwrap_or(&job.phase);
-        let message = message.unwrap_or(&job.message);
-        let progress = progress_0_1.map(clamp_progress).unwrap_or(job.progress_0_1);
+        validate_service_text(phase.unwrap_or(""), message.unwrap_or(""), error)?;
+        // Read the current status inside the write transaction and update
+        // with an exact status predicate so two writers cannot both transition
+        // from the same old state into conflicting terminal states.
+        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
+        let current = Jobs::get(&transaction, job_id)
+            .map_err(|_| JobError::storage())?
+            .ok_or(JobError::NotFound)?;
+        require_transition(current.status, target).map_err(JobError::InvalidTransition)?;
+        let phase = phase.unwrap_or(&current.phase);
+        let message = message.unwrap_or(&current.message);
+        let progress = progress_0_1
+            .map(validate_progress)
+            .transpose()
+            .map_err(|_| JobError::InvalidArgument)?
+            .unwrap_or(current.progress_0_1);
         let kind = if error.is_some() {
             JobEventKind::Error.as_str()
         } else {
             JobEventKind::StatusChanged.as_str()
         };
-        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
         Jobs::update(
             &transaction,
             job_id,
+            current.status,
             target,
             phase,
             message,
@@ -131,7 +149,11 @@ impl JobService {
         job_id: i64,
         reason: &str,
     ) -> Result<JobRow, JobError> {
-        let job = Self::get_job(conn, job_id)?;
+        validate_service_text("", reason, None)?;
+        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
+        let job = Jobs::get(&transaction, job_id)
+            .map_err(|_| JobError::storage())?
+            .ok_or(JobError::NotFound)?;
         if job.status.is_terminal() {
             return Err(JobError::InvalidTransition(InvalidJobTransition {
                 current: job.status,
@@ -143,10 +165,10 @@ impl JobService {
         } else {
             reason.to_owned()
         };
-        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
         Jobs::update(
             &transaction,
             job_id,
+            job.status,
             JobStatus::Cancelled,
             &job.phase,
             &message,
@@ -175,23 +197,27 @@ impl JobService {
         phase: &str,
         message: &str,
     ) -> Result<JobRow, JobError> {
-        let job = Self::get_job(conn, job_id)?;
+        validate_service_text(phase, message, None)?;
+        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
+        let job = Jobs::get(&transaction, job_id)
+            .map_err(|_| JobError::storage())?
+            .ok_or(JobError::NotFound)?;
         if job.status.is_terminal() {
             return Err(JobError::InvalidTransition(InvalidJobTransition {
                 current: job.status,
                 target: job.status,
             }));
         }
-        let progress = clamp_progress(progress_0_1);
+        let progress = validate_progress(progress_0_1).map_err(|_| JobError::InvalidArgument)?;
         let message = if message.is_empty() {
             job.message.clone()
         } else {
             message.to_owned()
         };
-        let transaction = conn.transaction().map_err(|_| JobError::storage())?;
         Jobs::update(
             &transaction,
             job_id,
+            job.status,
             job.status,
             phase,
             &message,
@@ -285,12 +311,31 @@ impl JobService {
     }
 }
 
-pub fn clamp_progress(value: f64) -> f64 {
+fn validate_progress(value: f64) -> Result<f64, ()> {
     if !value.is_finite() {
-        0.0
-    } else {
-        value.clamp(0.0, 1.0)
+        return Err(());
     }
+    Ok(value.clamp(0.0, 1.0))
+}
+
+fn validate_service_text(
+    phase: &str,
+    message: &str,
+    error: Option<&Value>,
+) -> Result<(), JobError> {
+    if phase.len() > MAX_PHASE_BYTES {
+        return Err(JobError::InvalidArgument);
+    }
+    if message.len() > MAX_MESSAGE_BYTES {
+        return Err(JobError::InvalidArgument);
+    }
+    if let Some(error) = error {
+        let encoded = serde_json::to_vec(error).map_err(|_| JobError::InvalidArgument)?;
+        if encoded.len() > MAX_ERROR_BYTES {
+            return Err(JobError::InvalidArgument);
+        }
+    }
+    Ok(())
 }
 
 fn event_count(conn: &Connection, job_id: i64) -> Result<i64, CoreError> {

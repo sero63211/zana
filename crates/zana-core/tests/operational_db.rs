@@ -5,7 +5,10 @@ use rusqlite::Connection;
 use zana_core::db::Database;
 use zana_core::domain::{JobEventKind, JobKind, JobStatus};
 use zana_core::jobs::{JobError, JobService};
-use zana_core::repositories::{AuditEvents, JobEvents, Jobs, Settings as SettingsRepo};
+use zana_core::repositories::{
+    AuditEvents, JobEvents, Jobs, Runtimes, Settings as SettingsRepo, MAX_EVENT_PAGE_SIZE,
+    MAX_RETAINED_EVENTS_PER_JOB,
+};
 use zana_core::settings::{SettingsError, SettingsService};
 
 fn test_db(name: &str) -> (Database, std::path::PathBuf) {
@@ -317,6 +320,204 @@ fn settings_and_audit_repositories_are_bounded() {
     assert!(AuditEvents::page(&conn, 10, None)
         .expect("pages")
         .is_empty());
+    drop(conn);
+    database.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn two_writer_transitions_never_produce_conflicting_terminal_states() {
+    let (database, dir) = test_db("atomic-transition");
+    let path = database.path.clone();
+    let mut setup = open_conn(&database);
+    let job =
+        JobService::create_job(&mut setup, JobKind::ModelPull, "queued", "").expect("creates");
+    JobService::transition_job(
+        &mut setup,
+        job.id,
+        JobStatus::Running,
+        Some("downloading"),
+        None,
+        None,
+        None,
+    )
+    .expect("starts");
+    drop(setup);
+    drop(database);
+
+    let writer_a = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut conn = Connection::open(&path).expect("opens writer a");
+            JobService::transition_job(
+                &mut conn,
+                job.id,
+                JobStatus::Succeeded,
+                Some("complete"),
+                None,
+                None,
+                None,
+            )
+        }
+    });
+    let writer_b = std::thread::spawn({
+        let path = path.clone();
+        move || {
+            let mut conn = Connection::open(&path).expect("opens writer b");
+            JobService::transition_job(
+                &mut conn,
+                job.id,
+                JobStatus::Failed,
+                Some("failed"),
+                None,
+                None,
+                None,
+            )
+        }
+    });
+    let results = [
+        writer_a.join().expect("joins"),
+        writer_b.join().expect("joins"),
+    ];
+    let succeeded = results.iter().filter(|result| result.is_ok()).count();
+    assert_eq!(succeeded, 1, "exactly one writer wins the transition");
+    let final_conn = Connection::open(&path).expect("opens final");
+    let final_row = Jobs::get(&final_conn, job.id)
+        .expect("reads")
+        .expect("exists");
+    assert!(final_row.status.is_terminal());
+    drop(final_conn);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn unknown_db_enums_fail_closed_instead_of_guessing() {
+    let (database, dir) = test_db("decoding");
+    let conn = open_conn(&database);
+    conn.execute(
+        "INSERT INTO runtimes (kind, endpoint, source, status) VALUES ('unknown', 'http://127.0.0.1:1', 'auto', 'unknown')",
+        [],
+    )
+    .expect("inserts exact unknown runtime");
+    let unknown_row = Runtimes::list(&conn).expect("lists exact unknown runtime");
+    assert_eq!(unknown_row[0].kind, zana_core::domain::RuntimeKind::Unknown);
+    conn.execute(
+        "INSERT INTO jobs (kind, status, phase, message) VALUES ('corrupt-kind', 'RUNNING', '', '')",
+        [],
+    )
+    .expect("inserts corrupt kind");
+    assert!(Jobs::get(&conn, 1).is_err());
+    conn.execute(
+        "UPDATE runtimes SET status = 'corrupt-status' WHERE id = 1",
+        [],
+    )
+    .expect("corrupts runtime status");
+    assert!(Runtimes::list(&conn).is_err());
+    conn.execute("UPDATE runtimes SET status = 'unknown' WHERE id = 1", [])
+        .expect("restores runtime status");
+    conn.execute(
+        "INSERT INTO runtimes (kind, endpoint, source, status) VALUES ('ollama', 'http://127.0.0.1:1', 'corrupt-source', 'unknown')",
+        [],
+    )
+    .expect("inserts corrupt source");
+    assert!(Runtimes::list(&conn).is_err());
+    drop(conn);
+    database.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn non_finite_progress_and_oversized_text_are_rejected() {
+    let (database, dir) = test_db("bounds");
+    let mut conn = open_conn(&database);
+    let job = JobService::create_job(&mut conn, JobKind::RuntimeRefresh, "", "").expect("creates");
+    assert!(matches!(
+        JobService::record_progress(&mut conn, job.id, f64::NAN, "phase", ""),
+        Err(JobError::InvalidArgument)
+    ));
+    assert!(matches!(
+        JobService::record_progress(&mut conn, job.id, 0.5, &"p".repeat(97), ""),
+        Err(JobError::InvalidArgument)
+    ));
+    assert!(matches!(
+        JobService::create_job(&mut conn, JobKind::RuntimeRefresh, "", &"m".repeat(1025)),
+        Err(JobError::InvalidArgument)
+    ));
+    drop(conn);
+    database.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn normal_inserts_auto_enforce_bounded_event_retention() {
+    let (database, dir) = test_db("auto-retention");
+    let mut conn = open_conn(&database);
+    let job = JobService::create_job(&mut conn, JobKind::RuntimeRefresh, "", "").expect("creates");
+    let mut previous_id = 0i64;
+    for index in 0..(MAX_RETAINED_EVENTS_PER_JOB + 7) {
+        let id = JobEvents::insert(
+            &conn,
+            job.id,
+            "PROGRESS",
+            "phase",
+            &format!("event-{index}"),
+            0.1,
+            None,
+        )
+        .expect("inserts");
+        assert!(
+            id > previous_id,
+            "insert returns a strictly increasing real id"
+        );
+        previous_id = id;
+    }
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM job_events WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .expect("counts retained events");
+    assert_eq!(count, MAX_RETAINED_EVENTS_PER_JOB);
+    let oldest: i64 = conn
+        .query_row(
+            "SELECT MIN(id) FROM job_events WHERE job_id = ?1",
+            [job.id],
+            |row| row.get(0),
+        )
+        .expect("reads oldest id");
+    assert!(
+        oldest > 2,
+        "oldest event advanced past the created+retained window"
+    );
+    let rows =
+        JobEvents::list_for_job_stream(&conn, job.id, 0, MAX_EVENT_PAGE_SIZE).expect("stream rows");
+    assert_eq!(rows.len(), MAX_EVENT_PAGE_SIZE);
+    drop(conn);
+    database.close();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stream_error_sentinel_uses_byte_cap_not_character_cap() {
+    let (database, dir) = test_db("multibyte-error");
+    let mut conn = open_conn(&database);
+    let job = JobService::create_job(&mut conn, JobKind::ModelPull, "", "").expect("creates");
+    // 300 four-byte characters encode to 1200 bytes, above the 1024-byte cap
+    // even though the character count (314) is below it.
+    let error = serde_json::json!({ "message": "😀".repeat(300) });
+    JobEvents::insert(&conn, job.id, "ERROR", "", "", 0.0, Some(&error))
+        .expect("inserts multibyte error");
+    let rows = JobEvents::list_for_job_stream(&conn, job.id, 0, 50).expect("rows");
+    let projected: serde_json::Value = serde_json::from_str(
+        rows.last()
+            .expect("row")
+            .error_json
+            .as_deref()
+            .expect("error"),
+    )
+    .expect("json");
+    assert_eq!(projected["code"], "REDACTED_ERROR");
     drop(conn);
     database.close();
     let _ = std::fs::remove_dir_all(&dir);

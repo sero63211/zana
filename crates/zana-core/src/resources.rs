@@ -3,7 +3,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::ffi::CString;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -27,6 +26,10 @@ pub const HEAVY_CATEGORIES: [OperationCategory; 6] = [
     OperationCategory::Export,
     OperationCategory::Portability,
 ];
+
+pub const MAX_REQUEST_ID_CHARS: usize = 100;
+pub const MAX_REQUEST_NAME_CHARS: usize = 200;
+pub const MAX_TTL_SECONDS: i64 = 1 << 40;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum AdmissionOutcome {
@@ -388,7 +391,7 @@ pub fn capture_host_snapshot(workspace: &str, revision: i64) -> ResourceSnapshot
 /// Convert free plus inactive page counts to bytes with fully checked
 /// arithmetic. macOS `vm_statistics64` counts are page counts; multiplication
 /// and addition must never wrap or panic.
-pub fn pages_to_bytes(free_pages: i64, inactive_pages: i64, page_size: i64) -> Option<i64> {
+fn pages_to_bytes(free_pages: i64, inactive_pages: i64, page_size: i64) -> Option<i64> {
     free_pages
         .checked_add(inactive_pages)?
         .checked_mul(page_size)
@@ -584,11 +587,18 @@ pub struct ResourceGovernor {
     category_bytes: HashMap<OperationCategory, i64>,
     category_files: HashMap<OperationCategory, i64>,
     snapshot_revision: i64,
+    snapshot_captured_at_millis: i64,
     snapshot: ResourceSnapshot,
 }
 
 impl ResourceGovernor {
-    pub fn new(policy: ResourcePolicy, provider: Box<dyn SnapshotProvider>, now: Box<Now>) -> Self {
+    pub fn new(
+        policy: ResourcePolicy,
+        provider: Box<dyn SnapshotProvider>,
+        now: Box<Now>,
+    ) -> Result<Self, String> {
+        validate_policy(&policy)?;
+        let captured_at = (now)();
         let mut governor = Self {
             policy,
             provider,
@@ -614,14 +624,16 @@ impl ResourceGovernor {
             category_bytes: HashMap::new(),
             category_files: HashMap::new(),
             snapshot_revision: 0,
+            snapshot_captured_at_millis: captured_at,
             snapshot: ResourceSnapshot::unavailable(0, "no snapshot captured yet"),
         };
         let captured = governor.provider.capture();
+        governor.snapshot_captured_at_millis = (governor.now)();
         governor.snapshot = ResourceSnapshot {
             revision: 0,
             ..captured
         };
-        governor
+        Ok(governor)
     }
 
     pub fn policy(&self) -> &ResourcePolicy {
@@ -634,55 +646,89 @@ impl ResourceGovernor {
 
     pub fn refresh(&mut self) {
         self.reap_expired();
-        self.snapshot_revision += 1;
+        self.snapshot_revision = self.snapshot_revision.saturating_add(1);
         let mut captured = self.provider.capture();
         captured.revision = self.snapshot_revision;
+        self.snapshot_captured_at_millis = (self.now)();
         self.snapshot = captured;
     }
 
-    pub fn configure_usage_history(&mut self, limit: usize, max_bytes: usize) {
+    pub fn snapshot_is_fresh(&self, stale_after_millis: i64) -> bool {
+        if self.snapshot_captured_at_millis <= 0 {
+            return false;
+        }
+        match (self.now)().checked_sub(self.snapshot_captured_at_millis) {
+            Some(age) if age >= 0 => age <= stale_after_millis,
+            // Clock regression is fail-closed stale, never fresh.
+            _ => false,
+        }
+    }
+
+    /// Snapshot age in seconds derived from the same injected monotonic clock
+    /// used by admission freshness. Clock regression or missing capture is
+    /// represented as `None` (fail-closed).
+    pub fn snapshot_age_seconds(&self) -> Option<f64> {
+        if self.snapshot_captured_at_millis <= 0 {
+            return None;
+        }
+        (self.now)()
+            .checked_sub(self.snapshot_captured_at_millis)
+            .and_then(|age| (age >= 0).then_some(age as f64 / 1000.0))
+    }
+
+    pub fn configure_usage_history(
+        &mut self,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<(), String> {
+        if !(1..=MAX_USAGE_HISTORY_LIMIT).contains(&limit)
+            || !(1..=MAX_USAGE_HISTORY_BYTES).contains(&max_bytes)
+        {
+            return Err("usage history bounds must be within the hard caps".to_owned());
+        }
         self.usage_history_limit = limit;
         self.usage_history_max_bytes = max_bytes;
         self.trim_usage_history();
+        Ok(())
     }
 
-    pub fn admit(&mut self, request: &OperationRequest) -> AdmissionDecision {
+    fn admit(&mut self, request: &OperationRequest) -> AdmissionDecision {
         self.reap_expired();
-        let limit = self.policy.category_limit(request.category);
-        if let Some(open_files) = request.open_files {
-            if open_files > 0
-                && self
-                    .policy
-                    .max_open_files
-                    .is_some_and(|cap| open_files > cap)
-            {
-                return self.block(
-                    request,
-                    DenialReason::FileLimit,
-                    RecoveryAction::ReduceBatch,
-                    format!(
-                        "requested open_files {open_files} exceeds policy cap {}",
-                        self.policy.max_open_files.unwrap_or(0)
-                    ),
-                );
-            }
+        if let Some(decision) =
+            validate_operation_request(request, &self.policy, self.snapshot_revision)
+        {
+            return decision;
         }
-        if let Some(depth) = request.recursion_depth {
-            if self
-                .policy
+        let limit = self.policy.category_limit(request.category);
+        if request.open_files.is_some_and(|value| {
+            value > 0 && self.policy.max_open_files.is_some_and(|cap| value > cap)
+        }) {
+            return self.block(
+                request,
+                DenialReason::FileLimit,
+                RecoveryAction::ReduceBatch,
+                format!(
+                    "requested open_files {} exceeds policy cap {}",
+                    request.open_files.unwrap_or(0),
+                    self.policy.max_open_files.unwrap_or(0)
+                ),
+            );
+        }
+        if request.recursion_depth.is_some_and(|value| {
+            self.policy
                 .max_recursion_depth
-                .is_some_and(|cap| depth > cap)
-            {
-                return self.block(
-                    request,
-                    DenialReason::RecursionLimit,
-                    RecoveryAction::ReduceBatch,
-                    format!(
-                        "requested recursion_depth {depth} exceeds policy cap {}",
-                        self.policy.max_recursion_depth.unwrap_or(0)
-                    ),
-                );
-            }
+                .is_some_and(|cap| value > cap)
+        }) {
+            return self.block(
+                request,
+                DenialReason::RecursionLimit,
+                RecoveryAction::ReduceBatch,
+                format!(
+                    "requested recursion_depth {} exceeds policy cap {}",
+                    request.recursion_depth.unwrap_or(0),
+                    self.policy.max_recursion_depth.unwrap_or(0)
+                ),
+            );
         }
 
         let workers = request.requested_workers.unwrap_or(limit.max_workers);
@@ -726,10 +772,15 @@ impl ResourceGovernor {
                 .get(&request.category)
                 .copied()
                 .unwrap_or(0);
-            if limit
-                .max_items
-                .is_some_and(|cap| items + active_items > cap)
-            {
+            let Some(sum) = items.checked_add(active_items) else {
+                return self.block(
+                    request,
+                    DenialReason::Overflow,
+                    RecoveryAction::ReduceBatch,
+                    "item accounting overflowed".to_owned(),
+                );
+            };
+            if limit.max_items.is_some_and(|cap| sum > cap) {
                 return self.block(
                     request,
                     DenialReason::ItemLimit,
@@ -747,10 +798,15 @@ impl ResourceGovernor {
                 .get(&request.category)
                 .copied()
                 .unwrap_or(0);
-            if limit
-                .max_bytes
-                .is_some_and(|cap| bytes + active_bytes > cap)
-            {
+            let Some(sum) = bytes.checked_add(active_bytes) else {
+                return self.block(
+                    request,
+                    DenialReason::Overflow,
+                    RecoveryAction::ReduceBatch,
+                    "byte accounting overflowed".to_owned(),
+                );
+            };
+            if limit.max_bytes.is_some_and(|cap| sum > cap) {
                 return self.block(
                     request,
                     DenialReason::ByteLimit,
@@ -770,14 +826,160 @@ impl ResourceGovernor {
             return decision;
         }
 
-        let memory_bytes = request.required_memory_bytes.unwrap_or(0);
-        let disk_bytes = self.disk_requirement(request);
+        let Some(memory_bytes) = self.checked_memory_bytes(request) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ProvideEstimate,
+                "memory accounting overflowed".to_owned(),
+            );
+        };
+        let Some(disk_bytes) = self.checked_disk_requirement(request) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ProvideEstimate,
+                "disk accounting overflowed".to_owned(),
+            );
+        };
         let items = request.items_count.unwrap_or(0);
         let byte_count = request.byte_count.unwrap_or(0);
         let open_files = request.open_files.unwrap_or(0);
 
-        self.token_counter += 1;
-        let token = format!("L-{:06}", self.token_counter);
+        let Some(token_number) = self.token_counter.checked_add(1) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::CheckSnapshot,
+                "lease token counter overflowed".to_owned(),
+            );
+        };
+        let token = format!("L-{token_number:06}");
+        let Some(active_memory) = self.active_memory.checked_add(memory_bytes) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::CheckSnapshot,
+                "active memory accounting overflowed".to_owned(),
+            );
+        };
+        let Some(active_disk) = self.active_disk.checked_add(disk_bytes) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::CheckSnapshot,
+                "active disk accounting overflowed".to_owned(),
+            );
+        };
+        let Some(active_items) = self.active_items.checked_add(items) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "active item accounting overflowed".to_owned(),
+            );
+        };
+        let Some(active_bytes) = self.active_bytes.checked_add(byte_count) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "active byte accounting overflowed".to_owned(),
+            );
+        };
+        let Some(active_files) = self.active_files.checked_add(i64::from(open_files)) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "active file accounting overflowed".to_owned(),
+            );
+        };
+        let Some(active_workers) = self.active_workers.checked_add(i64::from(workers)) else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceWorkers,
+                "active worker accounting overflowed".to_owned(),
+            );
+        };
+        let Some(category_count) = self
+            .category_counts
+            .get(&request.category)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(1)
+        else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::RetryAfterRelease,
+                "category count overflowed".to_owned(),
+            );
+        };
+        let Some(category_items) = self
+            .category_items
+            .get(&request.category)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(items)
+        else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "category item accounting overflowed".to_owned(),
+            );
+        };
+        let Some(category_bytes) = self
+            .category_bytes
+            .get(&request.category)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(byte_count)
+        else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "category byte accounting overflowed".to_owned(),
+            );
+        };
+        let Some(category_files) = self
+            .category_files
+            .get(&request.category)
+            .copied()
+            .unwrap_or(0)
+            .checked_add(i64::from(open_files))
+        else {
+            return self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ReduceBatch,
+                "category file accounting overflowed".to_owned(),
+            );
+        };
+        let deadline = if let Some(ttl) = request.ttl_seconds {
+            let Some(ttl_millis) = ttl.checked_mul(1000) else {
+                return self.block(
+                    request,
+                    DenialReason::Overflow,
+                    RecoveryAction::CheckSnapshot,
+                    "lease deadline overflowed".to_owned(),
+                );
+            };
+            let Some(deadline) = (self.now)().checked_add(ttl_millis) else {
+                return self.block(
+                    request,
+                    DenialReason::Overflow,
+                    RecoveryAction::CheckSnapshot,
+                    "lease deadline overflowed".to_owned(),
+                );
+            };
+            Some(deadline)
+        } else {
+            None
+        };
         let lease = ResourceLease {
             token: token.clone(),
             request_id: request.id.clone(),
@@ -792,20 +994,25 @@ impl ResourceGovernor {
             open_files,
             active: true,
         };
+
+        // All checked accounting succeeded; commit the whole admission
+        // atomically so a denied request can never leave ghost state.
+        self.token_counter = token_number;
         self.leases.insert(token.clone(), lease.clone());
-        if let Some(ttl) = request.ttl_seconds {
-            self.expiry.insert(token.clone(), (self.now)() + ttl * 1000);
+        if let Some(deadline) = deadline {
+            self.expiry.insert(token.clone(), deadline);
         }
-        self.active_memory += memory_bytes;
-        self.active_disk += disk_bytes;
-        self.active_items += items;
-        self.active_bytes += byte_count;
-        self.active_files += i64::from(open_files);
-        self.active_workers += i64::from(workers);
-        *self.category_counts.entry(request.category).or_insert(0) += 1;
-        *self.category_items.entry(request.category).or_insert(0) += items;
-        *self.category_bytes.entry(request.category).or_insert(0) += byte_count;
-        *self.category_files.entry(request.category).or_insert(0) += i64::from(open_files);
+        self.active_memory = active_memory;
+        self.active_disk = active_disk;
+        self.active_items = active_items;
+        self.active_bytes = active_bytes;
+        self.active_files = active_files;
+        self.active_workers = active_workers;
+        self.category_counts
+            .insert(request.category, category_count);
+        self.category_items.insert(request.category, category_items);
+        self.category_bytes.insert(request.category, category_bytes);
+        self.category_files.insert(request.category, category_files);
         self.append_record(&lease, false);
         AdmissionDecision {
             request_id: request.id.clone(),
@@ -867,7 +1074,15 @@ impl ResourceGovernor {
                 lease: None,
             });
         }
-        if required + self.active_memory > budget.unwrap_or(0) {
+        let Some(sum) = required.checked_add(self.active_memory) else {
+            return Some(self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::CheckSnapshot,
+                "memory accounting overflowed".to_owned(),
+            ));
+        };
+        if sum > budget.unwrap_or(0) {
             return Some(self.block(
                 request,
                 DenialReason::MemoryInsufficient,
@@ -903,7 +1118,14 @@ impl ResourceGovernor {
                 lease: None,
             });
         };
-        let requirement = self.disk_requirement(request);
+        let Some(requirement) = self.checked_disk_requirement(request) else {
+            return Some(self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::ProvideEstimate,
+                "disk accounting overflowed".to_owned(),
+            ));
+        };
         if limit.max_disk_bytes.is_some_and(|cap| requirement > cap) {
             return Some(self.block(
                 request,
@@ -931,7 +1153,15 @@ impl ResourceGovernor {
                 lease: None,
             });
         }
-        if requirement + self.active_disk > budget.unwrap_or(0) {
+        let Some(sum) = requirement.checked_add(self.active_disk) else {
+            return Some(self.block(
+                request,
+                DenialReason::Overflow,
+                RecoveryAction::CheckSnapshot,
+                "disk accounting overflowed".to_owned(),
+            ));
+        };
+        if sum > budget.unwrap_or(0) {
             return Some(self.block(
                 request,
                 DenialReason::DiskInsufficient,
@@ -946,22 +1176,35 @@ impl ResourceGovernor {
         None
     }
 
-    fn disk_requirement(&self, request: &OperationRequest) -> i64 {
+    fn checked_disk_requirement(&self, request: &OperationRequest) -> Option<i64> {
         let Some(required) = request.required_disk_bytes else {
-            return 0;
+            return Some(0);
         };
-        (required as f64 * (1.0 + self.policy.disk_overhead_fraction)) as i64
+        let numerator = fraction_numerator(self.policy.disk_overhead_fraction)?;
+        let denominator = fraction_denominator();
+        let overhead = required.checked_mul(numerator)?.checked_div(denominator)?;
+        required.checked_add(overhead)
+    }
+
+    fn checked_memory_bytes(&self, request: &OperationRequest) -> Option<i64> {
+        request.required_memory_bytes.or(Some(0))
     }
 
     fn memory_budget(&self) -> Option<i64> {
         let available = self.snapshot.memory_available_bytes?;
         let total = self.snapshot.memory_total_bytes?;
-        let safety = (total as f64 * self.policy.safety_reserve_fraction) as i64;
-        Some((available - self.policy.memory_reserve_bytes - safety).max(0))
+        let safety = fraction_mul_checked(total, self.policy.safety_reserve_fraction)?;
+        available
+            .checked_sub(self.policy.memory_reserve_bytes)?
+            .checked_sub(safety)
+            .map(|value| value.max(0))
     }
 
     fn disk_budget(&self) -> Option<i64> {
-        Some((self.snapshot.disk_free_bytes? - self.policy.disk_reserve_bytes).max(0))
+        self.snapshot
+            .disk_free_bytes?
+            .checked_sub(self.policy.disk_reserve_bytes)
+            .map(|value| value.max(0))
     }
 
     fn effective_concurrency(&self, limit: &CategoryLimit) -> u32 {
@@ -1004,7 +1247,10 @@ impl ResourceGovernor {
     }
 
     pub fn release(&mut self, token: &str) -> Result<UsageRecord, String> {
-        self.reap_expired();
+        self.release_inner(token, false)
+    }
+
+    fn release_inner(&mut self, token: &str, _expired: bool) -> Result<UsageRecord, String> {
         let lease = self
             .leases
             .remove(token)
@@ -1022,8 +1268,7 @@ impl ResourceGovernor {
         self.expiry.remove(token);
         let mut released = lease;
         released.active = false;
-        let record = self.append_record(&released, true);
-        Ok(record)
+        Ok(self.append_record(&released, true))
     }
 
     pub fn reap_expired(&mut self) {
@@ -1035,7 +1280,7 @@ impl ResourceGovernor {
             .map(|(token, _)| token.clone())
             .collect();
         for token in expired {
-            let _ = self.release(&token);
+            let _ = self.release_inner(&token, true);
         }
     }
 
@@ -1057,7 +1302,30 @@ impl ResourceGovernor {
     }
 
     fn append_record(&mut self, lease: &ResourceLease, released: bool) -> UsageRecord {
-        self.record_counter += 1;
+        let Some(sequence) = self.record_counter.checked_add(1) else {
+            // Sequence exhaustion is an internal invariant failure; the
+            // governor remains usable for reads but stops minting records.
+            self.history_dropped_count += 1;
+            self.history_dropped_bytes = self
+                .history_dropped_bytes
+                .saturating_add(record_size_lease(lease));
+            return UsageRecord {
+                token: lease.token.clone(),
+                request_id: lease.request_id.clone(),
+                category: lease.category,
+                policy_revision: lease.policy_revision,
+                snapshot_revision: lease.snapshot_revision,
+                memory_bytes: lease.memory_bytes,
+                disk_bytes: lease.disk_bytes,
+                workers: lease.workers,
+                items: lease.items,
+                bytes_accounted: lease.bytes_accounted,
+                open_files: lease.open_files,
+                released,
+                sequence: self.record_counter,
+            };
+        };
+        self.record_counter = sequence;
         let record = UsageRecord {
             token: lease.token.clone(),
             request_id: lease.request_id.clone(),
@@ -1071,11 +1339,11 @@ impl ResourceGovernor {
             bytes_accounted: lease.bytes_accounted,
             open_files: lease.open_files,
             released,
-            sequence: self.record_counter,
+            sequence,
         };
         let size = record_size(&record);
         self.records.push_back(record.clone());
-        self.records_bytes += size;
+        self.records_bytes = self.records_bytes.saturating_add(size);
         self.trim_usage_history();
         record
     }
@@ -1103,6 +1371,184 @@ fn record_size(record: &UsageRecord) -> i64 {
     let mut size = record.token.len() + record.request_id.len();
     size += 96;
     i64::try_from(size).unwrap_or(i64::MAX)
+}
+
+fn record_size_lease(lease: &ResourceLease) -> i64 {
+    let mut size = lease.token.len() + lease.request_id.len();
+    size += 96;
+    i64::try_from(size).unwrap_or(i64::MAX)
+}
+
+fn validate_policy(policy: &ResourcePolicy) -> Result<(), String> {
+    if policy.memory_reserve_bytes < 0 || policy.memory_reserve_bytes > MAX_SAFE_BYTES {
+        return Err("memory_reserve_bytes is out of range".to_owned());
+    }
+    if policy.disk_reserve_bytes < 0 || policy.disk_reserve_bytes > MAX_SAFE_BYTES {
+        return Err("disk_reserve_bytes is out of range".to_owned());
+    }
+    if !policy.safety_reserve_fraction.is_finite()
+        || !(0.0..1.0).contains(&policy.safety_reserve_fraction)
+    {
+        return Err("safety_reserve_fraction must be finite in [0,1)".to_owned());
+    }
+    if !policy.disk_overhead_fraction.is_finite()
+        || !(0.0..10.0).contains(&policy.disk_overhead_fraction)
+    {
+        return Err("disk_overhead_fraction must be finite in [0,10)".to_owned());
+    }
+    if policy
+        .max_open_files
+        .is_some_and(|value| !(1..=(1 << 20)).contains(&value))
+        || policy
+            .max_recursion_depth
+            .is_some_and(|value| !(1..=(1 << 20)).contains(&value))
+        || !(1..=8).contains(&policy.max_heavy_concurrency)
+        || policy.large_host_min_memory_bytes < 0
+        || policy.large_host_min_memory_bytes > MAX_SAFE_BYTES
+        || policy.large_host_min_cores < 1
+    {
+        return Err("a policy bound is out of range".to_owned());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for limit in &policy.categories {
+        if !seen.insert(limit.category) {
+            return Err("policy contains a duplicate category limit".to_owned());
+        }
+        if limit.max_concurrency < 1
+            || limit.max_concurrency > 64
+            || limit.max_workers < 1
+            || limit.max_workers > 64
+        {
+            return Err("category concurrency or workers is out of range".to_owned());
+        }
+        for value in [
+            limit.max_memory_bytes,
+            limit.max_disk_bytes,
+            limit.max_items,
+            limit.max_bytes,
+        ] {
+            if value.is_some_and(|item| !(0..=MAX_SAFE_BYTES).contains(&item)) {
+                return Err("a category size/count bound is out of range".to_owned());
+            }
+        }
+        if limit.max_open_files.is_some_and(|value| value > (1 << 20))
+            || limit
+                .max_recursion_depth
+                .is_some_and(|value| value > (1 << 20))
+        {
+            return Err("a category file/recursion bound is out of range".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn validate_operation_request(
+    request: &OperationRequest,
+    _policy: &ResourcePolicy,
+    snapshot_revision: i64,
+) -> Option<AdmissionDecision> {
+    let invalid =
+        |reason: DenialReason, recovery: RecoveryAction, detail: String| AdmissionDecision {
+            request_id: request.id.clone(),
+            category: request.category,
+            outcome: AdmissionOutcome::Block,
+            reason,
+            recovery,
+            detail,
+            snapshot_revision,
+            lease: None,
+        };
+    if request.id.is_empty() || request.id.len() > MAX_REQUEST_ID_CHARS {
+        return Some(invalid(
+            DenialReason::InvalidRequest,
+            RecoveryAction::ReduceBatch,
+            "request id must be non-empty and bounded".to_owned(),
+        ));
+    }
+    if request.name.is_empty() || request.name.len() > MAX_REQUEST_NAME_CHARS {
+        return Some(invalid(
+            DenialReason::InvalidRequest,
+            RecoveryAction::ReduceBatch,
+            "request name must be non-empty and bounded".to_owned(),
+        ));
+    }
+    if request
+        .required_memory_bytes
+        .is_some_and(|value| !(0..=MAX_SAFE_BYTES).contains(&value))
+        || request
+            .required_disk_bytes
+            .is_some_and(|value| !(0..=MAX_SAFE_BYTES).contains(&value))
+        || request
+            .items_count
+            .is_some_and(|value| !(0..=MAX_SAFE_BYTES).contains(&value))
+        || request
+            .byte_count
+            .is_some_and(|value| !(0..=MAX_SAFE_BYTES).contains(&value))
+    {
+        return Some(invalid(
+            DenialReason::InvalidRequest,
+            RecoveryAction::ProvideEstimate,
+            "request counts and sizes must be non-negative and bounded".to_owned(),
+        ));
+    }
+    if request
+        .requested_workers
+        .is_some_and(|value| !(1..=64).contains(&value))
+    {
+        return Some(invalid(
+            DenialReason::WorkerLimit,
+            RecoveryAction::ReduceWorkers,
+            "requested workers must be within [1,64]".to_owned(),
+        ));
+    }
+    if request
+        .ttl_seconds
+        .is_some_and(|value| !(0..=MAX_TTL_SECONDS).contains(&value))
+    {
+        return Some(invalid(
+            DenialReason::InvalidRequest,
+            RecoveryAction::CheckSnapshot,
+            "ttl_seconds must be within the bounded range".to_owned(),
+        ));
+    }
+    if request.open_files.is_some_and(|value| value > (1 << 20))
+        || request
+            .recursion_depth
+            .is_some_and(|value| value > (1 << 20))
+    {
+        return Some(invalid(
+            DenialReason::InvalidRequest,
+            RecoveryAction::ReduceBatch,
+            "open_files or recursion_depth exceeds the hard bound".to_owned(),
+        ));
+    }
+    None
+}
+
+fn fraction_mul_checked(value: i64, fraction: f64) -> Option<i64> {
+    if !fraction.is_finite() || !(0.0..1.0).contains(&fraction) {
+        return None;
+    }
+    let denominator = 1_000_000i64;
+    let numerator = (fraction * denominator as f64) as i64;
+    value
+        .checked_mul(numerator)
+        .and_then(|product| product.checked_div(denominator))
+}
+
+fn fraction_numerator(fraction: f64) -> Option<i64> {
+    if !fraction.is_finite() || !(0.0..10.0).contains(&fraction) {
+        return None;
+    }
+    let scaled = fraction * fraction_denominator() as f64;
+    if !scaled.is_finite() {
+        return None;
+    }
+    Some(scaled as i64)
+}
+
+fn fraction_denominator() -> i64 {
+    1_000_000
 }
 
 pub struct SnapshotView {
@@ -1138,7 +1584,6 @@ pub struct UsagePageView {
 
 pub struct ResourceService {
     governor: Mutex<ResourceGovernor>,
-    captured_at: Mutex<i64>,
     captured_at_iso: Mutex<String>,
     stale_after_millis: i64,
     usage_history_limit: usize,
@@ -1146,17 +1591,19 @@ pub struct ResourceService {
 }
 
 impl ResourceService {
-    pub fn new(governor: ResourceGovernor, stale_after_seconds: f64) -> Self {
-        let millis = (stale_after_seconds.max(0.0) * 1000.0) as i64;
-        let now = unix_millis();
-        Self {
+    pub fn new(governor: ResourceGovernor, stale_after_seconds: f64) -> Result<Self, String> {
+        if !stale_after_seconds.is_finite() || !(0.0..=86_400.0).contains(&stale_after_seconds) {
+            return Err("stale_after_seconds must be finite in [0,86400]".to_owned());
+        }
+        let millis = (stale_after_seconds * 1000.0) as i64;
+        let captured_at_iso = crate::time::now_iso();
+        Ok(Self {
             governor: Mutex::new(governor),
-            captured_at: Mutex::new(now),
-            captured_at_iso: Mutex::new(crate::time::now_iso()),
+            captured_at_iso: Mutex::new(captured_at_iso),
             stale_after_millis: millis,
             usage_history_limit: DEFAULT_USAGE_HISTORY_LIMIT,
             usage_history_max_bytes: DEFAULT_USAGE_HISTORY_BYTES,
-        }
+        })
     }
 
     pub fn snapshot(&self) -> SnapshotView {
@@ -1168,7 +1615,6 @@ impl ResourceService {
     pub fn refresh(&self) -> SnapshotView {
         let mut governor = lock(&self.governor);
         governor.refresh();
-        *lock(&self.captured_at) = unix_millis();
         *lock(&self.captured_at_iso) = crate::time::now_iso();
         self.view(&governor)
     }
@@ -1184,7 +1630,22 @@ impl ResourceService {
     }
 
     pub fn admit(&self, request: &OperationRequest) -> AdmissionDecision {
-        lock(&self.governor).admit(request)
+        let mut governor = lock(&self.governor);
+        if HEAVY_CATEGORIES.contains(&request.category)
+            && !governor.snapshot_is_fresh(self.stale_after_millis)
+        {
+            return AdmissionDecision {
+                request_id: request.id.clone(),
+                category: request.category,
+                outcome: AdmissionOutcome::Ask,
+                reason: DenialReason::StaleSnapshot,
+                recovery: RecoveryAction::CheckSnapshot,
+                detail: "resource snapshot is stale; refresh before heavy admission".to_owned(),
+                snapshot_revision: governor.snapshot().revision,
+                lease: None,
+            };
+        }
+        governor.admit(request)
     }
 
     pub fn release(&self, token: &str) -> Result<UsageRecord, String> {
@@ -1235,14 +1696,13 @@ impl ResourceService {
 
     fn view(&self, governor: &ResourceGovernor) -> SnapshotView {
         let snapshot = governor.snapshot();
-        let now = unix_millis();
-        let captured = *lock(&self.captured_at);
-        let age = ((now - captured).max(0) as f64) / 1000.0;
+        let age = governor.snapshot_age_seconds().unwrap_or(f64::INFINITY);
+        let fresh = governor.snapshot_is_fresh(self.stale_after_millis);
         SnapshotView {
             revision: snapshot.revision,
             captured_at_iso: lock(&self.captured_at_iso).clone(),
             age_seconds: (age * 1000.0).round() / 1000.0,
-            fresh: age <= self.stale_after_millis as f64,
+            fresh,
             platform: snapshot.platform,
             os_name: snapshot.os_name.clone(),
             arch: snapshot.arch.clone(),
@@ -1320,15 +1780,6 @@ pub fn public_request_ref(request_id: &str) -> String {
     format!("request-{}", &digest[..16])
 }
 
-fn unix_millis() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(i64::MAX)
-}
-
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     match mutex.lock() {
         Ok(guard) => guard,
@@ -1375,6 +1826,7 @@ mod tests {
             Box::new(FakeSnapshot),
             Box::new(|| 1_000_000_000_000),
         )
+        .expect("governor builds")
     }
 
     fn request(category: OperationCategory) -> OperationRequest {
@@ -1395,48 +1847,48 @@ mod tests {
 
     #[test]
     fn admits_releases_and_rejects_unknown_headroom() {
-        let mut governor = governor();
-        let decision = governor.admit(&request(OperationCategory::Inference));
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
+        let decision = service.admit(&request(OperationCategory::Inference));
         assert_eq!(decision.outcome, AdmissionOutcome::Allow);
         let token = decision.lease.expect("lease").token;
-        assert!(governor.release(&token).is_ok());
-        assert!(governor.release(&token).is_err(), "double release fails");
+        assert!(service.release(&token).is_ok());
+        assert!(service.release(&token).is_err(), "double release fails");
 
         let unknown = OperationRequest {
             required_memory_bytes: None,
             required_disk_bytes: None,
             ..request(OperationCategory::Inference)
         };
-        let decision = governor.admit(&unknown);
+        let decision = service.admit(&unknown);
         assert_eq!(decision.outcome, AdmissionOutcome::Ask);
         assert_eq!(decision.reason, DenialReason::UnknownSize);
     }
 
     #[test]
     fn concurrency_and_disk_budgets_are_enforced() {
-        let mut governor = governor();
-        let first = governor.admit(&request(OperationCategory::Build));
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
+        let first = service.admit(&request(OperationCategory::Build));
         assert_eq!(first.outcome, AdmissionOutcome::Allow);
-        let second = governor.admit(&request(OperationCategory::Build));
+        let second = service.admit(&request(OperationCategory::Build));
         assert_eq!(second.outcome, AdmissionOutcome::Block);
         assert_eq!(second.reason, DenialReason::ConcurrencyLimit);
-        governor
+        service
             .release(&first.lease.expect("lease").token)
             .expect("releases");
-        let third = governor.admit(&request(OperationCategory::Build));
+        let third = service.admit(&request(OperationCategory::Build));
         assert_eq!(third.outcome, AdmissionOutcome::Allow);
 
         let huge_disk = OperationRequest {
             required_disk_bytes: Some(200 << 30),
             ..request(OperationCategory::Inference)
         };
-        let blocked = governor.admit(&huge_disk);
+        let blocked = service.admit(&huge_disk);
         assert_eq!(blocked.reason, DenialReason::DiskInsufficient);
     }
 
     #[test]
     fn service_pages_usage_newest_first() {
-        let service = ResourceService::new(governor(), 30.0);
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
         for index in 0..3 {
             let decision = service.admit(&OperationRequest {
                 id: format!("req-{index}"),
@@ -1470,18 +1922,182 @@ mod tests {
     #[test]
     fn usage_history_is_bounded() {
         let mut governor = governor();
-        governor.configure_usage_history(4, 1 << 10);
+        governor
+            .configure_usage_history(4, 1 << 10)
+            .expect("configures history");
+        let service = ResourceService::new(governor, 30.0).expect("service builds");
         for index in 0..8 {
-            let decision = governor.admit(&OperationRequest {
+            let decision = service.admit(&OperationRequest {
                 id: format!("req-{index}"),
                 ..request(OperationCategory::Tiny)
             });
-            governor
+            service
                 .release(&decision.lease.expect("lease").token)
                 .expect("releases");
         }
-        let (retained, _, dropped, _) = governor.usage_history_stats();
+        let lock = service.governor.lock().expect("locks");
+        let (retained, _, dropped, _) = lock.usage_history_stats();
         assert_eq!(retained, 4);
         assert_eq!(dropped, 12);
+    }
+
+    #[test]
+    fn block_decision_does_not_mutate_state() {
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
+        let invalid = OperationRequest {
+            id: String::new(),
+            ..request(OperationCategory::Tiny)
+        };
+        let decision = service.admit(&invalid);
+        assert_eq!(decision.outcome, AdmissionOutcome::Block);
+        assert_eq!(decision.reason, DenialReason::InvalidRequest);
+        let governor = service.governor.lock().expect("locks");
+        assert_eq!(governor.leases.len(), 0);
+        assert_eq!(governor.active_memory, 0);
+        assert_eq!(governor.active_disk, 0);
+        assert_eq!(governor.active_items, 0);
+        assert_eq!(governor.active_bytes, 0);
+        assert_eq!(governor.records.len(), 0);
+    }
+
+    #[test]
+    fn admit_and_release_restore_all_accounting() {
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
+        let decision = service.admit(&request(OperationCategory::Tiny));
+        assert_eq!(decision.outcome, AdmissionOutcome::Allow);
+        {
+            let governor = service.governor.lock().expect("locks");
+            assert_eq!(governor.active_memory, 1 << 20);
+            assert_eq!(governor.active_disk, (1 << 20) * 3 / 2);
+            assert_eq!(governor.active_items, 1);
+            assert_eq!(governor.active_bytes, 16);
+            assert_eq!(governor.active_workers, 1);
+            assert_eq!(
+                governor.category_counts.get(&OperationCategory::Tiny),
+                Some(&1)
+            );
+            assert_eq!(governor.records.len(), 1);
+        }
+        service
+            .release(&decision.lease.expect("lease").token)
+            .expect("releases");
+        let governor = service.governor.lock().expect("locks");
+        assert_eq!(governor.active_memory, 0);
+        assert_eq!(governor.active_disk, 0);
+        assert_eq!(governor.active_items, 0);
+        assert_eq!(governor.active_bytes, 0);
+        assert_eq!(governor.active_workers, 0);
+        assert_eq!(
+            governor.category_counts.get(&OperationCategory::Tiny),
+            Some(&0)
+        );
+        assert_eq!(governor.records.len(), 2);
+    }
+
+    #[test]
+    fn tiny_unknown_size_and_disk_overhead_are_correct() {
+        let service = ResourceService::new(governor(), 30.0).expect("service builds");
+        let unknown = OperationRequest {
+            required_memory_bytes: None,
+            required_disk_bytes: None,
+            ..request(OperationCategory::Tiny)
+        };
+        let decision = service.admit(&unknown);
+        assert_eq!(decision.outcome, AdmissionOutcome::Allow);
+        assert_eq!(decision.lease.expect("lease").disk_bytes, 0);
+
+        let sized = OperationRequest {
+            required_disk_bytes: Some(1000),
+            ..request(OperationCategory::Tiny)
+        };
+        let decision = service.admit(&sized);
+        assert_eq!(decision.lease.expect("lease").disk_bytes, 1500);
+    }
+
+    #[test]
+    fn invalid_policy_and_configuration_do_not_panic() {
+        let policy = ResourcePolicy {
+            safety_reserve_fraction: 1.0,
+            ..ResourcePolicy::default()
+        };
+        assert!(ResourceGovernor::new(policy, Box::new(FakeSnapshot), Box::new(|| 0)).is_err());
+
+        let mut configured = governor();
+        assert!(configured.configure_usage_history(0, 100).is_err());
+        assert!(configured
+            .configure_usage_history(10, MAX_USAGE_HISTORY_BYTES + 1)
+            .is_err());
+        assert!(ResourceService::new(configured, f64::NAN).is_err());
+        assert!(ResourceService::new(governor(), -1.0).is_err());
+        assert!(ResourceService::new(governor(), 86_401.0).is_err());
+    }
+
+    #[test]
+    fn expired_lease_records_bounded_release_history() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let now = std::sync::Arc::new(AtomicI64::new(1_000_000));
+        let now_clone = std::sync::Arc::clone(&now);
+        let governor = ResourceGovernor::new(
+            ResourcePolicy::default(),
+            Box::new(FakeSnapshot),
+            Box::new(move || now_clone.load(Ordering::SeqCst)),
+        )
+        .expect("governor builds");
+        let service = ResourceService::new(governor, 30.0).expect("service builds");
+        let decision = service.admit(&OperationRequest {
+            ttl_seconds: Some(1),
+            ..request(OperationCategory::Tiny)
+        });
+        assert_eq!(decision.outcome, AdmissionOutcome::Allow);
+        now.store(1_000_000 + 2_000, Ordering::SeqCst);
+        let _ = service.active_leases();
+        let governor = service.governor.lock().expect("locks");
+        let records = governor.usage_records();
+        assert_eq!(records.len(), 2);
+        assert!(records[1].released);
+        assert_eq!(governor.leases.len(), 0);
+    }
+
+    #[test]
+    fn view_and_admission_share_freshness_clock() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let now = std::sync::Arc::new(AtomicI64::new(1_000_000));
+        let now_clone = std::sync::Arc::clone(&now);
+        let governor = ResourceGovernor::new(
+            ResourcePolicy::default(),
+            Box::new(FakeSnapshot),
+            Box::new(move || now_clone.load(Ordering::SeqCst)),
+        )
+        .expect("governor builds");
+        let service = ResourceService::new(governor, 30.0).expect("service builds");
+        assert!(service.snapshot().fresh);
+        now.store(1_000_000 + 31_000, Ordering::SeqCst);
+        assert!(!service.snapshot().fresh);
+        let blocked = service.admit(&request(OperationCategory::Inference));
+        assert_eq!(blocked.reason, DenialReason::StaleSnapshot);
+        let refreshed = service.refresh();
+        assert!(refreshed.fresh);
+        let admitted = service.admit(&request(OperationCategory::Inference));
+        assert_eq!(admitted.outcome, AdmissionOutcome::Allow);
+    }
+
+    #[test]
+    fn clock_regression_is_fail_closed_stale() {
+        use std::sync::atomic::{AtomicI64, Ordering};
+        let now = std::sync::Arc::new(AtomicI64::new(1_000_000));
+        let now_clone = std::sync::Arc::clone(&now);
+        let governor = ResourceGovernor::new(
+            ResourcePolicy::default(),
+            Box::new(FakeSnapshot),
+            Box::new(move || now_clone.load(Ordering::SeqCst)),
+        )
+        .expect("governor builds");
+        let service = ResourceService::new(governor, 30.0).expect("service builds");
+        now.store(999_000, Ordering::SeqCst);
+        let view = service.snapshot();
+        assert!(!view.fresh);
+        assert!(!view.age_seconds.is_finite());
+        let blocked = service.admit(&request(OperationCategory::Inference));
+        assert_eq!(blocked.reason, DenialReason::StaleSnapshot);
     }
 }

@@ -14,6 +14,7 @@ pub const STREAM_MAX_PHASE_CHARS: usize = 24;
 pub const STREAM_MAX_KIND_CHARS: usize = 32;
 pub const STREAM_MAX_ERROR_BYTES: usize = 1024;
 pub const MAX_EVENT_PAGE_SIZE: usize = 100;
+pub const MAX_RETAINED_EVENTS_PER_JOB: i64 = 2000;
 
 #[derive(Debug, Clone)]
 pub struct RuntimeRow {
@@ -243,12 +244,33 @@ fn runtime_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeRow> {
     let source: String = row.get(3)?;
     let status: String = row.get(4)?;
     let metadata: String = row.get(5)?;
+    let kind = RuntimeKind::parse(&kind).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            "unknown runtime kind".into(),
+        )
+    })?;
+    let source = RuntimeSource::parse(&source).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            3,
+            rusqlite::types::Type::Text,
+            "unknown runtime source".into(),
+        )
+    })?;
+    let status = RuntimeStatus::parse(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            "unknown runtime status".into(),
+        )
+    })?;
     Ok(RuntimeRow {
         id: row.get(0)?,
-        kind: RuntimeKind::parse(&kind),
+        kind,
         endpoint: row.get(2)?,
-        source: RuntimeSource::parse(&source).unwrap_or(RuntimeSource::Auto),
-        status: RuntimeStatus::parse(&status),
+        source,
+        status,
         metadata_json: parse_value(&metadata),
         last_seen_at: row.get(6)?,
     })
@@ -401,7 +423,13 @@ fn model_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ModelRow> {
         size_bytes: row.get(8)?,
         context_length: row.get(9)?,
         capabilities_json: parse_capabilities(&capabilities),
-        identity_strength: ModelIdentityStrength::parse(&strength),
+        identity_strength: ModelIdentityStrength::parse(&strength).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                11,
+                rusqlite::types::Type::Text,
+                "unknown model identity strength".into(),
+            )
+        })?,
         metadata_json: parse_value(&metadata),
         last_seen_at: row.get(13)?,
     })
@@ -469,6 +497,7 @@ impl Jobs {
     pub fn update(
         conn: &Connection,
         id: i64,
+        expected_status: JobStatus,
         status: JobStatus,
         phase: &str,
         message: &str,
@@ -477,7 +506,7 @@ impl Jobs {
     ) -> Result<(), CoreError> {
         conn.execute(
             "UPDATE jobs SET status = ?1, phase = ?2, message = ?3, progress_0_1 = ?4,
-             error_json = ?5 WHERE id = ?6",
+             error_json = ?5 WHERE id = ?6 AND status = ?7",
             params![
                 status.as_str(),
                 phase,
@@ -485,11 +514,18 @@ impl Jobs {
                 progress_0_1,
                 error_json
                     .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "{}".to_owned())),
-                id
+                id,
+                expected_status.as_str(),
             ],
         )
-        .map_err(|_| CoreError::database())?;
-        Ok(())
+        .map_err(|_| CoreError::database())
+        .map(|affected| {
+            if affected == 1 {
+                Ok(())
+            } else {
+                Err(CoreError::database())
+            }
+        })?
     }
 }
 
@@ -497,10 +533,24 @@ fn job_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRow> {
     let kind: String = row.get(1)?;
     let status: String = row.get(2)?;
     let error: Option<String> = row.get(6)?;
+    let kind = JobKind::parse(&kind).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Text,
+            "unknown job kind".into(),
+        )
+    })?;
+    let status = JobStatus::parse(&status).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Text,
+            "unknown job status".into(),
+        )
+    })?;
     Ok(JobRow {
         id: row.get(0)?,
-        kind: JobKind::parse(&kind),
-        status: JobStatus::parse(&status).unwrap_or(JobStatus::Pending),
+        kind,
+        status,
         progress_0_1: row.get(3)?,
         phase: row.get(4)?,
         message: row.get(5)?,
@@ -536,7 +586,18 @@ impl JobEvents {
             ],
         )
         .map_err(|_| CoreError::database())?;
-        Ok(conn.last_insert_rowid())
+        let id = conn.last_insert_rowid();
+        // Enforce bounded per-job retention on every normal insert so the
+        // store can never grow without bound even if callers never invoke a
+        // manual pruning helper.
+        conn.execute(
+            "DELETE FROM job_events WHERE job_id = ?1 AND id < (
+                SELECT id FROM job_events WHERE job_id = ?1
+                ORDER BY id DESC LIMIT 1 OFFSET ?2)",
+            params![job_id, MAX_RETAINED_EVENTS_PER_JOB - 1],
+        )
+        .map_err(|_| CoreError::database())?;
+        Ok(id)
     }
 
     /// Read one bounded ascending page with SQL-side truncation and an error
@@ -561,7 +622,9 @@ impl JobEvents {
                     progress_0_1,
                     CASE
                         WHEN error_json IS NULL THEN NULL
-                        WHEN length(error_json) > {error} THEN '{{\"code\":\"REDACTED_ERROR\",\"message\":\"[truncated]\"}}'
+                        WHEN length(CAST(error_json AS BLOB)) > {error}
+                             OR length(error_json) > {error}
+                        THEN '{{\"code\":\"REDACTED_ERROR\",\"message\":\"[truncated]\"}}'
                         ELSE error_json
                     END,
                     created_at
