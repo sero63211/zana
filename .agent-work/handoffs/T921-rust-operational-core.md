@@ -127,6 +127,7 @@ dependency install ran.
 - `5ac4273` fix: harden T921 FIFO proof, identifiers, retention, cursors, and SSE framing
 - `7825d13` fix: structurally valid cursors, bounded SSE payloads, and observability validation
 - `1a209ae` fix: exact UTC timestamps, native error truth, and supervisor cleanup
+- `1cb0e6e` fix: exact native error truth, digest sanitization, and shutdown cleanup
 
 ## Hardening correction addendum (lead review)
 
@@ -205,6 +206,35 @@ Sanitization happens once per outward path from one sanitized snapshot in
    one persistence transition fails and reports failure honestly after
    cleanup. Injected DB-path and nonexistent-job tests prove the next dispatch
    is admitted and pending/token state is clean.
+
+## Final lead-verdict addendum
+
+`1cb0e6e` closes the remaining production-contract defects:
+
+1. Native error truth now matches the accepted adapter exactly: only a
+   non-empty string `error` is an error; missing, null, non-string, or
+   empty-string errors are `None` and never fail a success/completed event.
+   Retained/output error text remains one generic message. Tests cover
+   null/empty/non-string and nonempty error+success.
+2. Progress metadata fails closed without breaking ordinary Ollama status.
+   Terminal statuses remain exact; arbitrary status is retained only as
+   bounded printable non-sensitive metadata with case-insensitive
+   sensitive-marker detection (token/secret/password/credential/bearer/apikey)
+   and control/path rejection. Digest is retained only as canonical lowercase
+   `sha256:<64 lowercase hex>`; otherwise it is replaced with a non-secret
+   `invalid-digest` marker. Fixtures were updated away from `sha256:abc`.
+   Tests prove uppercase markers, bearer-like text, POSIX/Windows paths,
+   controls, and malformed digests never survive.
+3. Shutdown clears internal queue/token state on every exit, including
+   failure to open the DB. It drains/cancels the bounded internal state before
+   persistence attempts, attempts every queued transition when the DB is
+   available, and returns one generic error after cleanup if DB open or any
+   transition fails. An injected nonexistent-DB-path test proves queue and
+   token capacity are clean after shutdown.
+4. `valid_timestamp` rejects second=60; the exact `now_iso` producer range is
+   `00..59`. Calendar/leap-year behavior is preserved and tested.
+
+Handoff claims/counts were corrected to match the final code and gates.
 
 ## Security delta
 
