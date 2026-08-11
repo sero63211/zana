@@ -60,6 +60,8 @@ this directive.
 
 - preserve accepted error, redaction, path, digest, transaction, cancellation,
   job/event, permission, and resource semantics;
+- never wire a foundation-only Rust server over the functional desktop Core;
+  switch packaging atomically only after Rust route parity is proven;
 - no big-bang deletion of Python before Rust parity and rollback evidence;
 - no new Python product features;
 - no UI-owned authority or duplicated Android permission truth;
