@@ -9,17 +9,22 @@ reproduced.
 
 ## Current implementation status
 
-The repository has a working authenticated Core/Tauri foundation:
+The repository has a working authenticated Core/Tauri foundation and an
+accepted Rust Core foundation:
 
 - a loopback-only Python Core sidecar exposes a real authenticated health
-  endpoint;
+  endpoint and remains the temporary desktop compatibility runtime;
+- the new Rust workspace provides the bounded authenticated server, safe
+  platform data-root handling, and SQLite bootstrap used by the ongoing
+  operational migration;
 - a Tauri 2 desktop shell starts the sidecar with an ephemeral per-launch
   token and stops it on clean exit;
 - the React UI has a responsive seven-view navigation surface for Home,
   Runtimes & Models, Capabilities, Build & Evaluation, Images, Instances &
   Chat, and Settings & Doctor.
 
-Only Core health is currently connected to live product data. The remaining
+The desktop has not switched to the Rust Core yet, and only Core health is
+currently connected to live product data. The remaining
 views deliberately show unavailable or empty states: runtime discovery,
 capability editing, builds, evaluations, images, instances, chat, and
 export/import are not implemented yet. ZANA does not claim synthetic records,
@@ -45,7 +50,8 @@ model results, or verification outcomes.
 2. Create a Capability Source with behavior, local knowledge, optional
    examples, permissions, and evaluations.
 3. Choose a Base Model and review the hardware-aware Build Plan.
-4. Run the local baseline, build, and candidate evaluation jobs.
+4. Run a paired local baseline, build, and candidate evaluation under the same
+   model, runtime, settings, hardware class, and resource budget.
 5. Promote only a passing candidate to a verified immutable ZANA Image.
 6. Start a mutable ZANA Instance, chat with it, and inspect answer provenance.
 7. Export an OCI-layout image; on import, validate its digests and report any
@@ -61,13 +67,17 @@ to be available or successful.
 React UI (TypeScript) inside Tauri 2 desktop shell
         | typed loopback client + per-launch bearer token
         v
-ZANA Core sidecar (Python / FastAPI, bound to 127.0.0.1)
+ZANA Core sidecar (authoritative Rust target, bound to loopback only)
         |-- SQLite metadata and persisted job/event state
         |-- immutable artifact store and knowledge snapshots
         |-- runtime adapters and model catalog
         |-- build planner, evaluation, image, and instance services
         `-- isolated worker subprocesses for training and inference work
 ```
+
+The packaged desktop still uses the Python compatibility sidecar while Rust
+route parity is being completed. The cutover is atomic: Python is removed from
+the shipped runtime only after operational and capability parity is proven.
 
 React is the UI and Tauri 2 is the desktop shell. Training and inference belong
 to isolated Core workers or external local runtimes, never to a UI process.
@@ -92,6 +102,8 @@ held only in frontend state.
 
 ```text
 apps/desktop/       React UI and Tauri 2 desktop shell
+crates/zana-core/   Shared authoritative Rust domain and service core
+crates/zana-core-server/  Bounded authenticated Rust sidecar
 core/               Python FastAPI Core sidecar and tests
 docs/product/       Durable product boundaries and naming conventions
 docs/goals/         Goal and delivery coordination records
@@ -141,8 +153,12 @@ That historical evidence does not verify the newer UI surface.
 
 ## Roadmap
 
-The next implementation work settles typed domain, SQLite, job/event, and API
-foundations. That unlocks real runtime discovery, capability persistence,
-knowledge processing, build/evaluation, immutable images, instances, and
-OCI-compatible export/import in subsequent verified slices. The end-to-end MVP
-is not yet complete.
+The active Rust migration is completing SQLite repositories, bounded jobs and
+events, resource admission, System Doctor, runtime/model discovery,
+acquisition, observability, and compatibility APIs. The next Rust milestone
+implements capability and knowledge builds plus paired before/after benchmark
+evidence for official math/medical registries and user-supplied held-out suites.
+Only candidates that pass target and general-regression gates can become ZANA
+Images. Android delivery, desktop cutover, and OCI-compatible export/import
+follow those shared platform-neutral contracts. The end-to-end MVP is not yet
+complete.
