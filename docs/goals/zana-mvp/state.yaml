@@ -1626,6 +1626,19 @@ tasks:
         gates: "Read-only source/code inspection; current primary-source research with access dates; direct coverage/contract/citation review; only new Markdown/YAML/text artifacts in the reserved allowlist; no product implementation, model/provider/runtime execution or download, heavy tests, browser/native build, deployment, stage/commit/push."
         stop_if: "Stop before editing any existing file or product code, changing a live contract, running a local model/provider, starting an implementation worker, or writing outside the exact reserved allowlist."
         verification: "SOL coverage/contract/citation/readability PASS; 31/31 official primary-source URLs reported HTTP 200 on 2026-08-10; lead exact allowlist/package/security/relative-link/whitespace review PASS; canonical non-force push confirmed at integration_commit."
+      - id: T927-desktop-ui-execution
+        agent: router_opencode_go_deepseek_v4_flash
+        reasoning_effort: max
+        status: active
+        branch: agent/t927-desktop-ui-execution
+        thread: null
+        notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
+        depends_on: "Accepted canonical desktop client/actions, T910 frontend program, Founder-approved ui-execution-brief.md, and current Rust migration truth. Parallel-safe with Rust integration because product-code ownership is disjoint."
+        owns: "Exclusive apps/desktop/src/** and .agent-work/handoffs/T927-desktop-ui-execution.md. Documentation is read-only. Excludes every manifest/lockfile, apps/desktop/src-tauri/**, Core/Rust/Python/Android, GoalBuddy state, ledger, other handoffs, generated assets and caches."
+        input_contract: "Implement the exact six-destination, model-first, concise-English, no-slop desktop UI specified by docs/desktop-frontend-program/ui-execution-brief.md. Preserve real accepted data/actions; unsupported Rust-cutover contracts remain honest unavailable states."
+        output_contract: "One dependency-complete production React desktop UI milestone covering Home, Models, Create, Library, Activity and Settings with all required secondary product surfaces, real-state wiring where accepted, compact recovery states where unavailable, responsive/keyboard/accessibility behavior, focused tests and a clean handoff."
+        gates: "Focused Vitest plus existing touched-surface regression tests; TypeScript; ESLint; git diff --check; direct contract/copy/a11y/focus/redaction/bounded-DOM/performance/readability review; zero dependency/manifests changes; one product commit plus one receipt; clean; no push."
+        stop_if: "Stop before changing a Core/API/Tauri/Android/interface contract, adding a dependency, inventing data/progress/benchmark/compatibility/catalog state, exposing secrets/paths, or running app/browser/native/live/model/provider/download/training/install/broad/load work."
     expected_output:
       - "Integrated working application"
       - "Full test and runtime evidence"

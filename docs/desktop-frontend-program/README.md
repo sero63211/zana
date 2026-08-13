@@ -19,6 +19,8 @@ It is not a marketing site, generic dashboard, mockup shell, or permission to im
 5. [`research-sources.md`](research-sources.md) — current primary/official sources, direct URLs, synthesis, and access date.
 6. [`kimi-k3-gold-prompt.md`](kimi-k3-gold-prompt.md) — the English implementation prompt for the future Design Director and frontend owner.
 7. [`goal-launcher.md`](goal-launcher.md) — the short copy-paste Founder launcher. Merely storing it starts nothing.
+8. [`ui-execution-brief.md`](ui-execution-brief.md) — the current exact, minimal, no-slop desktop UI direction authorized for T927.
+9. [`ui-agent-prompt.md`](ui-agent-prompt.md) — the cold-readable visible Flash-Max implementation task prompt.
 
 ## Truth hierarchy
 
