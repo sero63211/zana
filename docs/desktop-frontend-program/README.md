@@ -21,6 +21,7 @@ It is not a marketing site, generic dashboard, mockup shell, or permission to im
 7. [`goal-launcher.md`](goal-launcher.md) — the short copy-paste Founder launcher. Merely storing it starts nothing.
 8. [`ui-execution-brief.md`](ui-execution-brief.md) — the current exact, minimal, no-slop desktop UI direction authorized for T927.
 9. [`ui-agent-prompt.md`](ui-agent-prompt.md) — the cold-readable visible Flash-Max implementation task prompt.
+10. [`ui-goal-launcher.md`](ui-goal-launcher.md) — the short Founder copy-paste command for starting the UI task manually.
 
 ## Truth hierarchy
 
