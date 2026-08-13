@@ -1633,7 +1633,7 @@ tasks:
         branch: agent/t927-desktop-ui-execution
         thread: 019ffa93-0231-70b2-9d18-fc59f8d198d8
         worktree: /Users/sero/.codex/worktrees/a473/zana
-        stopped_task_state: "Founder stopped and archived the prematurely launched task before commit/push/integration; its uncommitted partial worktree is preserved read-only and is not an accepted source. A fresh task must be started manually from ui-goal-launcher.md."
+        stopped_task_state: "Founder stopped and archived the prematurely launched task before commit/push/integration. Codex removed its generated uncommitted worktree during archival; no partial product change is accepted or available for integration. A fresh task must be started manually from ui-goal-launcher.md."
         notification_mode: "silent; BLOCK, INTERFACE, COMPLETE only"
         depends_on: "Accepted canonical desktop client/actions, T910 frontend program, Founder-approved ui-execution-brief.md, and current Rust migration truth. Parallel-safe with Rust integration because product-code ownership is disjoint."
         owns: "Exclusive apps/desktop/src/** and .agent-work/handoffs/T927-desktop-ui-execution.md. Documentation is read-only. Excludes every manifest/lockfile, apps/desktop/src-tauri/**, Core/Rust/Python/Android, GoalBuddy state, ledger, other handoffs, generated assets and caches."
